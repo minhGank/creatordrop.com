@@ -42,6 +42,7 @@ export default tseslint.config(
       'apps/api/**/*.ts',
       'apps/worker/**/*.ts',
       'packages/config/**/*.ts',
+      'packages/database/**/*.ts',
       'packages/observability/**/*.ts',
       'packages/test-support/**/*.ts',
       'tests/**/*.ts',

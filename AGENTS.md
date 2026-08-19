@@ -84,7 +84,19 @@ npm run build
 npm run db:migrations:validate
 ```
 
-Run `npm run check:workspaces` and `npm run secrets:scan` as additional Phase 1 quality gates. Run focused tests while iterating, then the full applicable suite. `db:migrations:validate` remains unavailable until Roadmap Phase 2; state that explicitly until it exists rather than inventing or bypassing it. For documentation-only changes, inspect links/content and run the repository's Markdown formatter/linter when one exists.
+Run `npm run check:workspaces` and `npm run secrets:scan` as additional quality gates. Database work requires local Docker plus `npm run db:start`; `db:migrations:validate` resets the local database from empty and is destructive to local development data. Integration tests must use this real PostgreSQL instance. Run focused tests while iterating, then the full applicable suite. For documentation-only changes, inspect links/content and run the repository's Markdown formatter/linter when one exists.
+
+## PostgreSQL and migration rules
+
+- Use only forward, explicitly named SQL files under `infra/supabase/migrations`. Never use ORM schema auto-sync or edit a migration that has left an ephemeral local environment.
+- Create a migration with `npm run db:migration:new -- descriptive_name`, then review every generated statement before applying it.
+- Keep application objects in `app` and intentionally private objects in `app_private`; never place CreatorDrop domain tables in `public`.
+- Run privileged extension/role statements as the Supabase migration runner, then use `set role creatordrop_migrator` while creating normal application schemas, tables, functions, triggers, and constraints. End with `reset role`.
+- Grant application access deliberately. Functions are not executable by the application role unless a migration explicitly grants that privilege.
+- Runtime database connections use the restricted application role. Migration/test-admin credentials must not be used by request handlers or workers.
+- All SQL values from application data use parameters. Identifiers cannot be parameterized and must come from fixed allowlists or narrowly validated infrastructure-only helpers.
+- The shared transaction helper owns `BEGIN`, `COMMIT`, `ROLLBACK`, and client release. Repositories receive its transaction-scoped `QueryExecutor`; they do not open hidden transactions.
+- Integration tests isolate state with a dedicated PostgreSQL session and temporary objects or another documented database-level mechanism. Do not replace PostgreSQL with an in-memory imitation.
 
 ## Completion report
 

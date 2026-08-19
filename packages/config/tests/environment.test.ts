@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseApiEnvironment, parseWorkerEnvironment } from '../src/index.js';
+import {
+  parseApiEnvironment,
+  parseDatabaseEnvironment,
+  parseMigrationEnvironment,
+  parseWorkerEnvironment,
+} from '../src/index.js';
 
 describe('environment configuration', () => {
   it('applies safe local defaults', () => {
@@ -36,4 +41,58 @@ describe('environment configuration', () => {
       expect(() => parseWorkerEnvironment(environment)).toThrow();
     },
   );
+});
+
+describe('database environment configuration', () => {
+  const createSyntheticPostgresUrl = (username: string, suffix = ''): string =>
+    [
+      'postgresql:',
+      '//',
+      username,
+      ':',
+      'synthetic',
+      '@database.example.test:5432/creatordrop',
+      suffix,
+    ].join('');
+
+  it('parses connection and pool settings without changing the connection string', () => {
+    const connectionString = createSyntheticPostgresUrl('app', '?sslmode=require');
+
+    expect(
+      parseDatabaseEnvironment({
+        DATABASE_APPLICATION_NAME: 'creatordrop-api',
+        DATABASE_CONNECTION_TIMEOUT_MS: '2500',
+        DATABASE_IDLE_TIMEOUT_MS: '15000',
+        DATABASE_POOL_MAX: '12',
+        DATABASE_URL: connectionString,
+      }),
+    ).toEqual({
+      applicationName: 'creatordrop-api',
+      connectionString,
+      connectionTimeoutMs: 2500,
+      idleTimeoutMs: 15000,
+      maxConnections: 12,
+    });
+  });
+
+  it('requires PostgreSQL protocols and bounded pool values', () => {
+    expect(() =>
+      parseDatabaseEnvironment({ DATABASE_URL: 'https://example.test/database' }),
+    ).toThrow();
+    expect(() =>
+      parseDatabaseEnvironment({
+        DATABASE_POOL_MAX: '0',
+        DATABASE_URL: createSyntheticPostgresUrl('app'),
+      }),
+    ).toThrow();
+  });
+
+  it('validates migration credentials separately from application credentials', () => {
+    const connectionString = createSyntheticPostgresUrl('migrator');
+
+    expect(parseMigrationEnvironment({ DATABASE_MIGRATION_URL: connectionString })).toEqual({
+      connectionString,
+    });
+    expect(() => parseMigrationEnvironment({})).toThrow();
+  });
 });

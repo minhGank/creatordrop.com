@@ -15,7 +15,10 @@ concurrency:
 jobs:
   quality:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
+    env:
+      DATABASE_MIGRATION_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres?options=-c%20role%3Dcreatordrop_app
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -28,6 +31,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Start local Supabase PostgreSQL
+        run: npm run db:start
 
       - name: Check workspace boundaries
         run: npm run check:workspaces
@@ -44,7 +50,10 @@ jobs:
       - name: Run unit tests
         run: npm test
 
-      - name: Run integration test entry point
+      - name: Validate SQL migrations from empty
+        run: npm run db:migrations:validate
+
+      - name: Run PostgreSQL integration tests
         run: npm run test:integration
 
       - name: Build all applications and packages
@@ -55,3 +64,7 @@ jobs:
 
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
+
+      - name: Stop local Supabase PostgreSQL
+        if: always()
+        run: npm run db:stop

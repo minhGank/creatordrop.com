@@ -9,6 +9,7 @@ export default defineConfig({
     alias: {
       '@creatordrop/config': fromRoot('./packages/config/src/index.ts'),
       '@creatordrop/contracts': fromRoot('./packages/contracts/src/index.ts'),
+      '@creatordrop/database': fromRoot('./packages/database/src/index.ts'),
       '@creatordrop/observability': fromRoot('./packages/observability/src/index.ts'),
       '@creatordrop/test-support': fromRoot('./packages/test-support/src/index.ts'),
     },
@@ -19,6 +20,7 @@ export default defineConfig({
       reporter: ['text', 'json-summary'],
     },
     include: ['apps/**/*.test.{ts,tsx}', 'packages/**/*.test.ts', 'tests/**/*.test.ts'],
+    exclude: ['**/*.integration.test.ts', '**/dist/**', '**/node_modules/**'],
     passWithNoTests: false,
   },
 });
