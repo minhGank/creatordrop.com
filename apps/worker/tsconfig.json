@@ -4,8 +4,12 @@
     "composite": true,
     "outDir": "dist",
     "rootDir": "src",
-    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
+    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo",
+    "types": ["node"]
   },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../../packages/config" }, { "path": "../../packages/observability" }]
+  "references": [
+    { "path": "../../packages/config/tsconfig.json" },
+    { "path": "../../packages/observability/tsconfig.json" }
+  ]
 }

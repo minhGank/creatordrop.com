@@ -31,7 +31,7 @@
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests",
     "test:watch": "vitest",
-    "typecheck": "tsc -b tsconfig.build.json --pretty false && npm run typecheck:tests --workspaces --if-present && tsc --noEmit --pretty false --project tsconfig.tests.json"
+    "typecheck": "tsc -b tsconfig.build.json --pretty false && npm run typecheck:tests --workspaces --if-present && npm run typecheck --workspace @creatordrop/app-web && tsc --noEmit --pretty false --project tsconfig.json"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

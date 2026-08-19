@@ -4,11 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc --noEmit && vite build",
+    "build": "npm run typecheck && vite build",
     "dev": "vite",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit --pretty false",
-    "typecheck:tests": "tsc --noEmit --pretty false"
+    "typecheck": "tsc --noEmit --pretty false --project tsconfig.json && tsc --noEmit --pretty false --project tsconfig.node.json",
+    "typecheck:tests": "tsc --noEmit --pretty false --project tsconfig.test.json"
   },
   "dependencies": {
     "framer-motion": "^13.1.0",

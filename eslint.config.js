@@ -20,12 +20,11 @@ export default tseslint.config(
   ...tseslint.configs.stylisticTypeChecked,
   {
     languageOptions: {
-      globals: globals.node,
       parserOptions: {
         project: [
-          './tsconfig.tests.json',
+          './tsconfig.json',
           './apps/*/tsconfig.json',
-          './apps/*/tsconfig.test.json',
+          './apps/*/tsconfig*.json',
           './packages/*/tsconfig.json',
           './packages/*/tsconfig.test.json',
         ],
@@ -36,6 +35,19 @@ export default tseslint.config(
       '@typescript-eslint/consistent-type-exports': 'error',
       '@typescript-eslint/consistent-type-imports': ['error', { fixStyle: 'inline-type-imports' }],
       '@typescript-eslint/no-confusing-void-expression': ['error', { ignoreArrowShorthand: true }],
+    },
+  },
+  {
+    files: [
+      'apps/api/**/*.ts',
+      'apps/worker/**/*.ts',
+      'packages/config/**/*.ts',
+      'packages/observability/**/*.ts',
+      'packages/test-support/**/*.ts',
+      'tests/**/*.ts',
+    ],
+    languageOptions: {
+      globals: globals.node,
     },
   },
   {
@@ -55,6 +67,9 @@ export default tseslint.config(
   {
     files: ['**/*.config.{js,mjs,ts}', 'scripts/**/*.mjs'],
     extends: [tseslint.configs.disableTypeChecked],
+    languageOptions: {
+      globals: globals.node,
+    },
   },
   prettier,
 );
