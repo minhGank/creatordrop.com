@@ -1,0 +1,53 @@
+{
+  "name": "creatordrop",
+  "version": "0.0.0",
+  "private": true,
+  "description": "CreatorDrop monorepo",
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25",
+    "npm": ">=11 <12"
+  },
+  "workspaces": [
+    "packages/config",
+    "packages/contracts",
+    "packages/observability",
+    "packages/test-support",
+    "apps/api",
+    "apps/worker",
+    "apps/web"
+  ],
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json && npm run build --workspace @creatordrop/app-web",
+    "check:workspaces": "node scripts/check-workspace-boundaries.mjs",
+    "ci": "npm run check:workspaces && npm run format:check && npm run lint && npm run typecheck && npm test && npm run test:integration && npm run build && npm run secrets:scan",
+    "dev:api": "npm run dev --workspace @creatordrop/app-api",
+    "dev:web": "npm run dev --workspace @creatordrop/app-web",
+    "dev:worker": "npm run dev --workspace @creatordrop/app-worker",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint . --max-warnings=0",
+    "secrets:scan": "secretlint \"**/*\"",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests",
+    "test:watch": "vitest",
+    "typecheck": "tsc -b tsconfig.build.json --pretty false && npm run typecheck:tests --workspaces --if-present && tsc --noEmit --pretty false --project tsconfig.tests.json"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@secretlint/secretlint-rule-preset-recommend": "^13.0.4",
+    "@types/node": "^24.13.3",
+    "@vitest/coverage-v8": "^4.1.11",
+    "eslint": "^10.8.1",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.4",
+    "globals": "^17.11.0",
+    "prettier": "^3.9.6",
+    "secretlint": "^13.0.4",
+    "tsx": "^4.23.12",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.67.0",
+    "vitest": "^4.1.11"
+  }
+}

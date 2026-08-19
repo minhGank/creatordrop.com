@@ -1,0 +1,205 @@
+# HTTP and Realtime API Design
+
+## Conventions
+
+- Base path: `/v1`. JSON over HTTPS only. OpenAPI is the contract source; shared TypeScript types are generated from or checked against runtime schemas, never trusted without validation.
+- Access tokens use `Authorization: Bearer <token>`. The API derives the actor from the verified token.
+- Public resource IDs are opaque. UUIDs are shown below as an implementation detail and must not be treated as authorization.
+- Monetary minor units and probability weights are decimal strings in JSON (`"1000"`), with an uppercase ISO 4217 currency.
+- Timestamps are RFC 3339 UTC. List endpoints use opaque cursor pagination with stable `(created_at, id)` ordering.
+- Mutating creation/command endpoints reject unknown fields. Creator edits require `If-Match`/revision to prevent lost updates.
+- Every response carries `X-Request-Id`; clients may supply a valid `X-Request-Id`, but the server sanitizes it.
+- `POST` commands that can cause a financial operation require `Idempotency-Key`. A key is scoped to actor and operation. Same key/same fingerprint replays the original status/body; same key/different fingerprint returns `409`.
+- Do not return active server seeds, wallet internals, ledger account IDs, encrypted data, provider payloads, or stack traces.
+
+Success uses the resource/command response directly. Errors use:
+
+```json
+{
+  "error": {
+    "code": "INSUFFICIENT_BALANCE",
+    "message": "The wallet has insufficient settled funds.",
+    "requestId": "opaque",
+    "details": {}
+  }
+}
+```
+
+Stable codes, not messages, drive clients. Expected statuses include `400` validation, `401` unauthenticated, `403` unauthorized, `404` absent or deliberately concealed cross-tenant resource, `409` state/idempotency conflict, `422` policy failure, `429` rate limit, and `503` transient dependency/unavailable operation.
+
+## Authentication
+
+Authentication ceremony is initially provided by Supabase Auth; password/OAuth tokens do not transit custom endpoints unless a future requirement changes that. The application API exposes:
+
+| Method   | Path                        | Purpose                                                                                |
+| -------- | --------------------------- | -------------------------------------------------------------------------------------- |
+| `POST`   | `/v1/auth/session/exchange` | Optional exchange/bootstrap after provider sign-in; create/map local user idempotently |
+| `GET`    | `/v1/auth/session`          | Return current local actor, roles/scopes, and creator memberships                      |
+| `DELETE` | `/v1/auth/session`          | Revoke/close the relevant session where provider support permits                       |
+
+Sensitive identity operations such as MFA and password reset remain provider-hosted. CSRF protection is required if credentials ever move to cookies; the initial API uses bearer tokens and strict CORS.
+
+## Users and fairness preferences
+
+| Method  | Path                          | Auth               | Purpose                                                                  |
+| ------- | ----------------------------- | ------------------ | ------------------------------------------------------------------------ |
+| `GET`   | `/v1/me`                      | user               | Own profile                                                              |
+| `PATCH` | `/v1/me`                      | user               | Update allowlisted profile fields                                        |
+| `GET`   | `/v1/me/openings`             | user               | Paginated private opening history                                        |
+| `GET`   | `/v1/me/rewards`              | user               | Reward wins and fulfillment summaries                                    |
+| `GET`   | `/v1/me/fairness`             | user               | Active seed-set ID/commitment, client seed, nonce count, rotation policy |
+| `PUT`   | `/v1/me/fairness/client-seed` | user               | Set future client seed with revision check                               |
+| `POST`  | `/v1/me/fairness/rotate`      | user + idempotency | Retire/reveal old seed and establish a newly committed seed              |
+
+Changing a client seed never mutates existing opening proofs.
+
+## Creators
+
+| Method   | Path                                      | Auth          | Purpose                                  |
+| -------- | ----------------------------------------- | ------------- | ---------------------------------------- |
+| `POST`   | `/v1/creators`                            | eligible user | Create creator workspace                 |
+| `GET`    | `/v1/creators/:slug`                      | public        | Public creator profile                   |
+| `PATCH`  | `/v1/creators/:creatorId`                 | owner/manager | Update creator profile with revision     |
+| `GET`    | `/v1/creators/:creatorId/members`         | member        | List members according to role           |
+| `POST`   | `/v1/creators/:creatorId/members`         | owner         | Invite/add a member                      |
+| `PATCH`  | `/v1/creators/:creatorId/members/:userId` | owner         | Change role                              |
+| `DELETE` | `/v1/creators/:creatorId/members/:userId` | owner         | Remove member; cannot remove final owner |
+
+All mutations query by creator scope plus actor membership. Cross-creator access returns `404` where revealing existence is inappropriate.
+
+## Public boxes and rewards
+
+| Method | Path                                   | Purpose                                                                                                        |
+| ------ | -------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/v1/boxes`                            | Discover active public boxes; filter by creator/category/currency                                              |
+| `GET`  | `/v1/boxes/:boxId`                     | Current published box, price, exact odds/weights, rewards, fairness algorithm                                  |
+| `GET`  | `/v1/boxes/:boxId/versions/:versionId` | Public immutable manifest when disclosure policy permits; always available for proofs referenced by an opening |
+| `GET`  | `/v1/creators/:creatorId/boxes`        | Public boxes for creator                                                                                       |
+| `GET`  | `/v1/rewards/:rewardId`                | Public current reward description where useful                                                                 |
+
+Cache headers/ETags are allowed for immutable versions. Eligibility, price, and availability returned by reads are advisory until validated again during opening.
+
+## Creator box/reward management
+
+| Method  | Path                                                 | Auth                   | Purpose                                           |
+| ------- | ---------------------------------------------------- | ---------------------- | ------------------------------------------------- |
+| `POST`  | `/v1/creators/:creatorId/boxes`                      | editor+                | Create box and draft                              |
+| `GET`   | `/v1/creators/:creatorId/boxes/:boxId`               | viewer+                | Dashboard detail including drafts                 |
+| `PATCH` | `/v1/creators/:creatorId/boxes/:boxId/draft`         | editor+                | Edit draft metadata/price with revision           |
+| `POST`  | `/v1/creators/:creatorId/rewards`                    | editor+                | Create reward identity/version                    |
+| `PATCH` | `/v1/creators/:creatorId/rewards/:rewardId/draft`    | editor+                | Edit draft reward version                         |
+| `PUT`   | `/v1/creators/:creatorId/boxes/:boxId/draft/rewards` | editor+                | Replace ordered weighted draft entries            |
+| `POST`  | `/v1/creators/:creatorId/boxes/:boxId/publish`       | manager+ + idempotency | Validate and atomically publish immutable version |
+| `POST`  | `/v1/creators/:creatorId/boxes/:boxId/pause`         | manager+ + idempotency | Stop new openings without rewriting version       |
+| `POST`  | `/v1/creators/:creatorId/boxes/:boxId/archive`       | manager+ + idempotency | Archive box identity                              |
+
+The publish response returns `versionId`, exact ordered weights, `totalWeight`, and `configurationHash`. The server calculates totals/hashes; client totals are never authoritative.
+
+## Box opening
+
+### `POST /v1/boxes/:boxId/open`
+
+Requires user authentication and `Idempotency-Key`. Request:
+
+```json
+{
+  "clientSeed": "64-lowercase-hex-characters"
+}
+```
+
+The seed must match the chosen/current seed policy. There is intentionally no price, currency, weight, probability, balance, reward, nonce, or server commitment field in the request.
+
+Successful `201` (or replayed original response):
+
+```json
+{
+  "opening": {
+    "id": "public-opening-id",
+    "boxId": "uuid",
+    "boxVersionId": "uuid",
+    "cost": { "minor": "1000", "currency": "USD" },
+    "reward": {
+      "rewardId": "uuid",
+      "rewardVersionId": "uuid",
+      "name": "Signed poster",
+      "imageUrl": "https://..."
+    },
+    "fairness": {
+      "algorithmVersion": "hmac-sha256-rejection-v1",
+      "seedSetId": "uuid",
+      "serverSeedCommitment": "64-hex",
+      "clientSeed": "64-hex",
+      "nonce": "7",
+      "configurationHash": "64-hex",
+      "revealStatus": "pending_reveal"
+    },
+    "createdAt": "2026-01-01T00:00:00Z"
+  },
+  "wallet": {
+    "availableBalance": { "minor": "2400", "currency": "USD" },
+    "version": "18"
+  }
+}
+```
+
+The server has already decided and committed the reward when this response is generated. The frontend reel must land on that reward. Expected domain errors include `BOX_NOT_ACTIVE`, `BOX_VERSION_CHANGED` (if a future expected-version option is added), `INSUFFICIENT_BALANCE`, `ELIGIBILITY_DENIED`, `OPEN_LIMIT_REACHED`, `SEED_ROTATION_REQUIRED`, and `IDEMPOTENCY_KEY_REUSED`.
+
+`GET /v1/openings/:publicOpeningId` returns a sanitized public receipt. Owners receive private fulfillment state through `/v1/me/rewards`; public routes never expose wallet balance or delivery data.
+
+## Fairness verification
+
+| Method | Path                                               | Auth   | Purpose                                                           |
+| ------ | -------------------------------------------------- | ------ | ----------------------------------------------------------------- |
+| `GET`  | `/v1/fairness/openings/:publicOpeningId`           | public | Proof inputs, manifest, computed fields, and reveal state         |
+| `GET`  | `/v1/fairness/seed-sets/:seedSetId`                | public | Commitment, lifecycle dates, reveal if retired, algorithm version |
+| `GET`  | `/v1/fairness/algorithms/hmac-sha256-rejection-v1` | public | Versioned machine-readable specification/test-vector link         |
+
+If the seed is active, the proof endpoint returns `verificationStatus: "pending_reveal"` and omits `serverSeed`. Once revealed it returns all inputs described in `RNG.md`. Old algorithms and manifests remain accessible for the full required retention period.
+
+## Wallet, funding, and ledger receipts
+
+| Method | Path                                           | Auth               | Purpose                                                    |
+| ------ | ---------------------------------------------- | ------------------ | ---------------------------------------------------------- |
+| `GET`  | `/v1/me/wallets`                               | user               | Settled balances by currency                               |
+| `GET`  | `/v1/me/wallets/:currency/transactions`        | user               | Paginated user-facing ledger receipts                      |
+| `POST` | `/v1/me/wallets/:currency/funding-intents`     | user + idempotency | Create provider funding intent after policy/provider phase |
+| `GET`  | `/v1/me/wallets/:currency/funding-intents/:id` | owner              | Provider-independent funding status                        |
+| `POST` | `/v1/payments/webhooks/:provider`              | signed provider    | Idempotent provider event ingestion; no user bearer token  |
+
+The client cannot credit a wallet or mark an intent settled. Webhook acknowledgment occurs only after durable event recording; processing can be asynchronous. Ledger APIs expose safe receipt descriptions and signed amounts, not internal balancing accounts.
+
+Refunds, withdrawals, creator payouts, promo credit, and administrator adjustments are omitted until policies are approved. They must be explicit commands with independent permissions/idempotency, not generic “set balance” endpoints.
+
+## Creator dashboard
+
+| Method | Path                                                         | Auth                         | Purpose                                                              |
+| ------ | ------------------------------------------------------------ | ---------------------------- | -------------------------------------------------------------------- |
+| `GET`  | `/v1/creators/:creatorId/dashboard/summary`                  | viewer+                      | PostgreSQL-derived/cached aggregate summary with freshness timestamp |
+| `GET`  | `/v1/creators/:creatorId/dashboard/openings`                 | viewer+                      | Paginated scoped openings without private fan data                   |
+| `GET`  | `/v1/creators/:creatorId/dashboard/rewards`                  | viewer+                      | Reward win/fulfillment aggregate                                     |
+| `GET`  | `/v1/creators/:creatorId/dashboard/leaderboard`              | viewer+                      | Redis projection plus `asOf`; fallback/rebuild semantics explicit    |
+| `GET`  | `/v1/creators/:creatorId/dashboard/fulfillments`             | permitted role               | Scoped fulfillment queue                                             |
+| `POST` | `/v1/creators/:creatorId/dashboard/fulfillments/:id/actions` | permitted role + idempotency | Typed transition, never arbitrary status overwrite                   |
+
+Metrics must define timezone, currency, settled/voided behavior, and freshness. Never sum different currencies into one monetary total without an approved conversion model.
+
+## Realtime contract
+
+Socket.io authenticates at connection and reauthorizes private subscriptions. Initial server events:
+
+- `drop.created.v1`: sanitized committed public opening for creator/global rooms;
+- `opening.completed.v1`: private result notification, deduplicated by `eventId`/`openingId`;
+- `wallet.updated.v1`: private balance projection after a committed ledger operation;
+- `fulfillment.updated.v1`: private or creator-scoped allowlisted status;
+- `leaderboard.updated.v1`: disposable projection with `asOf`.
+
+Every event has `{ eventId, type, version, occurredAt, data }`. Delivery is at least once; clients deduplicate and refetch authoritative HTTP state after reconnect. The server never accepts client Socket.io events to perform openings, wallet mutations, odds changes, or fulfillment transitions.
+
+## API security and evolution
+
+- Apply per-IP and per-actor limits; opening limits do not substitute for transactional business limits.
+- Validate content type/size, URLs, Unicode lengths, image host policy, and all query parameters.
+- Document response schemas and negative authorization cases in OpenAPI contract tests.
+- Add fields compatibly within `/v1`; breaking semantics require a new API/algorithm/event version.
+- Deprecation never makes historical fairness verification unavailable.
+- Use field allowlists for logs, outbox, analytics, and public responses. Treat usernames, IPs, shipping data, and payment metadata according to the privacy classification policy.

@@ -1,0 +1,25 @@
+{
+  "name": "@creatordrop/app-api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./dist/server.js",
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "typecheck": "tsc -b --pretty false",
+    "typecheck:tests": "tsc --noEmit --pretty false --project tsconfig.test.json"
+  },
+  "dependencies": {
+    "@creatordrop/config": "*",
+    "@creatordrop/contracts": "*",
+    "@creatordrop/observability": "*",
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/supertest": "^7.2.1",
+    "supertest": "^7.2.2"
+  }
+}
