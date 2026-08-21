@@ -32,11 +32,13 @@ Phase 3 creates this table in the `app` schema. Bootstrap IDs are application-ge
 
 ### `creators`
 
-`id` PK, `handle citext` unique, `custom_slug citext` unique, `display_name`, `status`, `revision`, timestamps. Do not model creator ownership only as `creators.user_id`; membership supports teams without a later migration.
+Phase 4 creates `app.creators` with an application-generated UUIDv7 `id` primary key; case-insensitively unique, format-constrained `handle citext` and `custom_slug citext`; a length-constrained `display_name`; checked `status` (`active`, `suspended`, `closed`); positive optimistic `revision`; and timestamps. Creator settings increment `revision` with a conditional update. Ownership is not stored as `creators.user_id`; membership supports teams without a later migration.
 
 ### `creator_memberships`
 
-`creator_id` FK, `user_id` FK, `role` (`owner`, `manager`, `editor`, `viewer`), timestamps. PK `(creator_id, user_id)`. A partial/trigger-enforced rule must preserve at least one owner for an active creator. Index `(user_id, creator_id)` supports authorization.
+Phase 4 creates `app.creator_memberships` with `creator_id` and `user_id` restrictive foreign keys, checked role (`owner`, `manager`, `editor`, `viewer`), and timestamps. The composite primary key `(creator_id, user_id)` rejects duplicates. Index `(user_id, creator_id)` supports actor workspace lookup; a partial owner index supports the invariant check.
+
+Membership identity columns are immutable. Every membership insert, update, or delete locks its parent creator row, serializing ownership changes for that tenant. Deferred constraint triggers on both tables reject creator insertion without an owner and any transaction that leaves an active creator ownerless. This permits atomic creator-plus-owner creation while protecting final-owner demotion/removal, including concurrent attempts. Creator deletion and user deletion are `ON DELETE RESTRICT` in this phase.
 
 ## Boxes, rewards, and immutable versions
 

@@ -3,6 +3,7 @@ import type { RequestHandler } from 'express';
 import type { Logger } from '@creatordrop/observability';
 
 import { createApp, type AppOptions } from '../../src/app.js';
+import type { CreatorService } from '../../src/modules/creators/creator.service.js';
 
 export const createNoopLogger = (): Logger => ({
   error: () => undefined,
@@ -22,13 +23,32 @@ export const createSuccessfulAuthentication = (): RequestHandler => (request, _r
   next();
 };
 
+export const createUnhandledCreatorService = (): CreatorService => {
+  const unhandled = (): Promise<never> =>
+    Promise.reject(new Error('The test did not configure the creator service operation.'));
+
+  return {
+    addMember: unhandled,
+    createCreator: unhandled,
+    getCreator: unhandled,
+    listMembers: unhandled,
+    listMyWorkspaces: unhandled,
+    removeMember: unhandled,
+    updateCreator: unhandled,
+    updateMember: unhandled,
+  };
+};
+
 export const createTestAppOptions = (overrides: Partial<AppOptions> = {}): AppOptions => ({
   authenticate: createSuccessfulAuthentication(),
+  creatorService: createUnhandledCreatorService(),
   logger: createNoopLogger(),
   security: {
     allowedOrigins: ['http://localhost:5173'],
     authRateLimitMax: 100,
     authRateLimitWindowMs: 60_000,
+    creatorMutationRateLimitMax: 100,
+    creatorMutationRateLimitWindowMs: 60_000,
     requestBodyLimitBytes: 32_768,
   },
   ...overrides,

@@ -37,6 +37,13 @@ const apiEnvironmentSchema = z.object({
     .refine((origins) => new Set(origins).size === origins.length, {
       message: 'CORS origins must be unique.',
     }),
+  CREATOR_MUTATION_RATE_LIMIT_MAX: z.coerce.number().int().min(1).max(10_000).default(60),
+  CREATOR_MUTATION_RATE_LIMIT_WINDOW_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(86_400_000)
+    .default(60_000),
   HOST: z.string().trim().min(1).default('127.0.0.1'),
   PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
   REQUEST_BODY_LIMIT_BYTES: z.coerce.number().int().min(1_024).max(1_048_576).default(32_768),
@@ -75,6 +82,8 @@ export type ApiEnvironment = Readonly<{
   authRateLimitMax: number;
   authRateLimitWindowMs: number;
   corsAllowedOrigins: readonly string[];
+  creatorMutationRateLimitMax: number;
+  creatorMutationRateLimitWindowMs: number;
   host: string;
   nodeEnvironment: z.infer<typeof runtimeModeSchema>;
   port: number;
@@ -109,6 +118,8 @@ export const parseApiEnvironment = (input: NodeJS.ProcessEnv): ApiEnvironment =>
     authRateLimitMax: parsed.AUTH_RATE_LIMIT_MAX,
     authRateLimitWindowMs: parsed.AUTH_RATE_LIMIT_WINDOW_MS,
     corsAllowedOrigins: parsed.CORS_ALLOWED_ORIGINS,
+    creatorMutationRateLimitMax: parsed.CREATOR_MUTATION_RATE_LIMIT_MAX,
+    creatorMutationRateLimitWindowMs: parsed.CREATOR_MUTATION_RATE_LIMIT_WINDOW_MS,
     host: parsed.HOST,
     nodeEnvironment: parsed.NODE_ENV,
     port: parsed.PORT,

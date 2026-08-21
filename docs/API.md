@@ -71,17 +71,40 @@ Changing a client seed never mutates existing opening proofs.
 
 ## Creators
 
-| Method   | Path                                      | Auth          | Purpose                                  |
-| -------- | ----------------------------------------- | ------------- | ---------------------------------------- |
-| `POST`   | `/v1/creators`                            | eligible user | Create creator workspace                 |
-| `GET`    | `/v1/creators/:slug`                      | public        | Public creator profile                   |
-| `PATCH`  | `/v1/creators/:creatorId`                 | owner/manager | Update creator profile with revision     |
-| `GET`    | `/v1/creators/:creatorId/members`         | member        | List members according to role           |
-| `POST`   | `/v1/creators/:creatorId/members`         | owner         | Invite/add a member                      |
-| `PATCH`  | `/v1/creators/:creatorId/members/:userId` | owner         | Change role                              |
-| `DELETE` | `/v1/creators/:creatorId/members/:userId` | owner         | Remove member; cannot remove final owner |
+Phase 4 implements this private workspace surface:
 
-All mutations query by creator scope plus actor membership. Cross-creator access returns `404` where revealing existence is inappropriate.
+| Method   | Path                                      | Auth          | Purpose                                                  |
+| -------- | ----------------------------------------- | ------------- | -------------------------------------------------------- |
+| `GET`    | `/v1/me/creator-memberships`              | active user   | List the actor's workspaces and role in each             |
+| `POST`   | `/v1/creators`                            | active user   | Atomically create a workspace and actor owner membership |
+| `GET`    | `/v1/creators/:creatorId`                 | member        | Get a private creator workspace                          |
+| `PATCH`  | `/v1/creators/:creatorId`                 | owner/manager | Update `displayName` with a revision precondition        |
+| `GET`    | `/v1/creators/:creatorId/members`         | member        | List direct members                                      |
+| `POST`   | `/v1/creators/:creatorId/members`         | owner         | Add an existing active local user directly               |
+| `PATCH`  | `/v1/creators/:creatorId/members/:userId` | owner         | Change a member role                                     |
+| `DELETE` | `/v1/creators/:creatorId/members/:userId` | owner         | Remove a member; cannot remove the final active owner    |
+
+Creation accepts exactly `handle`, `customSlug`, and `displayName`; ownership always comes from the authenticated local actor. Handles use 3–32 lowercase letters, digits, or underscores. Custom slugs use 3–63 lowercase letters, digits, or hyphens. Both identities are case-insensitively unique.
+
+Creator updates accept only `displayName` and require a quoted positive revision such as `If-Match: "1"`. A successful response returns the new revision in both the resource and `ETag`; a stale update returns `409 CREATOR_REVISION_CONFLICT` with `details.currentRevision`, while a missing precondition returns `428 PRECONDITION_REQUIRED`.
+
+The centralized Phase 4 role policy is:
+
+| Action                 | owner | manager | editor | viewer |
+| ---------------------- | :---: | :-----: | :----: | :----: |
+| View workspace         |  yes  |   yes   |  yes   |  yes   |
+| List members           |  yes  |   yes   |  yes   |  yes   |
+| Update normal settings |  yes  |   yes   |   no   |   no   |
+| Write future drafts    |  yes  |   yes   |  yes   |   no   |
+| Publish future content |  yes  |   yes   |   no   |   no   |
+| Manage memberships     |  yes  |   no    |   no   |   no   |
+| Manage ownership       |  yes  |   no    |   no   |   no   |
+
+Authentication first resolves an active local user. Every private creator operation then scopes repository access by `creatorId`, actor user ID, and—on mutations—the allowed roles. A nonmember or different-creator member receives a concealed `404`; a same-creator member with an insufficient role receives `403`. Creator IDs are never authority by themselves.
+
+Membership bodies contain a local `userId` and an allowlisted role. The target must already be an active CreatorDrop user. This is intentionally direct membership management for local/API workflows; invitations, email delivery, and acceptance state are deferred. Successful creator creation and membership changes emit allowlisted `creator.audit` structured logs with IDs, action, roles/revision, and request ID only. A durable production audit subsystem remains a later concern.
+
+The future public creator profile by slug is not implemented in Phase 4; it belongs with the public catalog work after private tenancy is established.
 
 ## Public boxes and rewards
 

@@ -1,6 +1,6 @@
 # Database package
 
-This package is the only shared PostgreSQL access foundation. It intentionally contains no application-domain schema or repositories in Phase 2.
+This package is the shared PostgreSQL access foundation. Application-domain schemas live in SQL migrations, while domain-specific repositories remain inside their owning API modules.
 
 It provides:
 

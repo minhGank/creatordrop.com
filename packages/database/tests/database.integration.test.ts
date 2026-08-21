@@ -67,11 +67,35 @@ describe('PostgreSQL foundation', { concurrent: false }, () => {
   });
 
   it('allows local-user access without exposing Supabase Auth tables', async () => {
-    const localUserPrivileges = await applicationDatabase.query<{ canSelect: boolean }>(
-      `select has_table_privilege(current_user, 'app.users', 'SELECT') as "canSelect"`,
-    );
+    const applicationPrivileges = await applicationDatabase.query<{
+      readonly canManageCreatorMemberships: boolean;
+      readonly canManageCreators: boolean;
+      readonly canSelectUsers: boolean;
+      readonly privateSchemaVisible: boolean;
+    }>(`
+      select
+        has_table_privilege(current_user, 'app.users', 'SELECT') as "canSelectUsers",
+        has_table_privilege(
+          current_user,
+          'app.creators',
+          'SELECT, INSERT, UPDATE, DELETE'
+        ) as "canManageCreators",
+        has_table_privilege(
+          current_user,
+          'app.creator_memberships',
+          'SELECT, INSERT, UPDATE, DELETE'
+        ) as "canManageCreatorMemberships",
+        has_schema_privilege(current_user, 'app_private', 'USAGE') as "privateSchemaVisible"
+    `);
 
-    expect(localUserPrivileges.rows).toEqual([{ canSelect: true }]);
+    expect(applicationPrivileges.rows).toEqual([
+      {
+        canManageCreatorMemberships: true,
+        canManageCreators: true,
+        canSelectUsers: true,
+        privateSchemaVisible: false,
+      },
+    ]);
     await expect(applicationDatabase.query('select id from auth.users limit 1')).rejects.toThrow(
       /permission denied/iu,
     );
@@ -81,13 +105,15 @@ describe('PostgreSQL foundation', { concurrent: false }, () => {
     const migrationResult = await migrationDatabase.query<{ version: string }>(`
       select version
       from supabase_migrations.schema_migrations
-      where version in ('20260819000000', '20260820000000')
+      where version in ('20260819000000', '20260820000000', '20260820180000')
       order by version
     `);
     const foundationResult = await migrationDatabase.query<{
       applicationSchemaExists: boolean;
       applicationUsageGranted: boolean;
       citextInstalled: boolean;
+      creatorMembershipTableExists: boolean;
+      creatorTableExists: boolean;
       userTableExists: boolean;
       privateSchemaExists: boolean;
     }>(`
@@ -98,18 +124,23 @@ describe('PostgreSQL foundation', { concurrent: false }, () => {
         exists (
           select 1 from pg_extension where extname = 'citext'
         ) as "citextInstalled",
-        to_regclass('app.users') is not null as "userTableExists"
+        to_regclass('app.users') is not null as "userTableExists",
+        to_regclass('app.creators') is not null as "creatorTableExists",
+        to_regclass('app.creator_memberships') is not null as "creatorMembershipTableExists"
     `);
 
     expect(migrationResult.rows).toEqual([
       { version: '20260819000000' },
       { version: '20260820000000' },
+      { version: '20260820180000' },
     ]);
     expect(foundationResult.rows).toEqual([
       {
         applicationSchemaExists: true,
         applicationUsageGranted: true,
         citextInstalled: true,
+        creatorMembershipTableExists: true,
+        creatorTableExists: true,
         privateSchemaExists: true,
         userTableExists: true,
       },

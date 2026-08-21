@@ -19,6 +19,8 @@ describe('API environment adapter', () => {
       authRateLimitMax: 20,
       authRateLimitWindowMs: 60_000,
       corsAllowedOrigins: ['http://localhost:5173'],
+      creatorMutationRateLimitMax: 60,
+      creatorMutationRateLimitWindowMs: 60_000,
       host: '127.0.0.1',
       nodeEnvironment: 'test',
       port: 4321,

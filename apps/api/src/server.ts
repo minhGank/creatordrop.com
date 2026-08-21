@@ -6,6 +6,7 @@ import { getApiEnvironment, getDatabaseEnvironment } from './config/environment.
 import { createAuthenticationMiddleware } from './modules/auth/authentication.middleware.js';
 import { createJwtVerifier } from './modules/auth/jwt-verifier.js';
 import { createUserBootstrapService } from './modules/users/bootstrap-user.service.js';
+import { createCreatorService } from './modules/creators/creator.service.js';
 
 const environment = getApiEnvironment();
 const databaseEnvironment = getDatabaseEnvironment();
@@ -26,13 +27,17 @@ const authenticate = createAuthenticationMiddleware({
   bootstrapUsers: createUserBootstrapService({ database }),
   verifyAccessToken,
 });
+const creatorService = createCreatorService({ database, logger });
 const app = createApp({
   authenticate,
+  creatorService,
   logger,
   security: {
     allowedOrigins: environment.corsAllowedOrigins,
     authRateLimitMax: environment.authRateLimitMax,
     authRateLimitWindowMs: environment.authRateLimitWindowMs,
+    creatorMutationRateLimitMax: environment.creatorMutationRateLimitMax,
+    creatorMutationRateLimitWindowMs: environment.creatorMutationRateLimitWindowMs,
     requestBodyLimitBytes: environment.requestBodyLimitBytes,
   },
 });

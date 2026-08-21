@@ -10,6 +10,8 @@ import { createErrorHandler, notFoundHandler } from './http/error-handler.js';
 import { requestIdMiddleware } from './http/request-id.js';
 import { requestLoggingMiddleware } from './http/request-logging.js';
 import { createAuthRouter } from './modules/auth/auth.route.js';
+import { createCreatorRouter } from './modules/creators/creator.route.js';
+import type { CreatorService } from './modules/creators/creator.service.js';
 
 const sendStatus =
   (status: ServiceStatusResponse['status']) =>
@@ -19,16 +21,24 @@ const sendStatus =
 
 export interface AppOptions {
   readonly authenticate: RequestHandler;
+  readonly creatorService: CreatorService;
   readonly logger: Logger;
   readonly security: {
     readonly allowedOrigins: readonly string[];
     readonly authRateLimitMax: number;
     readonly authRateLimitWindowMs: number;
+    readonly creatorMutationRateLimitMax: number;
+    readonly creatorMutationRateLimitWindowMs: number;
     readonly requestBodyLimitBytes: number;
   };
 }
 
-export const createApp = ({ authenticate, logger, security }: AppOptions): Express => {
+export const createApp = ({
+  authenticate,
+  creatorService,
+  logger,
+  security,
+}: AppOptions): Express => {
   const app = express();
 
   app.disable('x-powered-by');
@@ -45,6 +55,15 @@ export const createApp = ({ authenticate, logger, security }: AppOptions): Expre
       authenticate,
       rateLimitMax: security.authRateLimitMax,
       rateLimitWindowMs: security.authRateLimitWindowMs,
+    }),
+  );
+  app.use(
+    '/v1',
+    createCreatorRouter({
+      authenticate,
+      mutationRateLimitMax: security.creatorMutationRateLimitMax,
+      mutationRateLimitWindowMs: security.creatorMutationRateLimitWindowMs,
+      service: creatorService,
     }),
   );
   app.use(notFoundHandler);
