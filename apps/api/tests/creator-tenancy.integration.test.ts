@@ -14,6 +14,7 @@ import { createJwtVerifier } from '../src/modules/auth/jwt-verifier.js';
 import { createCreatorService } from '../src/modules/creators/creator.service.js';
 import { trustedUserId } from '../src/modules/creators/creator.schema.js';
 import { createUserBootstrapService } from '../src/modules/users/bootstrap-user.service.js';
+import { createUnhandledCatalogService } from './support/test-app.js';
 
 const localApplicationUrl =
   'postgresql://postgres:postgres@127.0.0.1:54322/postgres?options=-c%20role%3Dcreatordrop_app';
@@ -232,6 +233,7 @@ describe('creator tenancy and authorization', { concurrent: false }, () => {
         bootstrapUsers: createUserBootstrapService({ database: applicationDatabase }),
         verifyAccessToken,
       }),
+      catalogService: createUnhandledCatalogService(),
       creatorService: createCreatorService({ database: applicationDatabase, logger }),
       logger,
       security: {

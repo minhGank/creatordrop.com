@@ -44,7 +44,7 @@ Membership identity columns are immutable. Every membership insert, update, or d
 
 ### `boxes`
 
-Stable identity: `id`, `creator_id` FK, `current_published_version_id` nullable FK (added after version table), `status` (`draft`, `active`, `paused`, `archived`), timestamps, `revision`. Index `(creator_id, status, created_at desc)`.
+Phase 5 creates this stable identity in `app`: `id`, `creator_id` FK, `current_published_version_id` nullable FK (added after the version table), `status` (`draft`, `active`, `paused`, `archived`), timestamps, and optimistic `revision`. Creator ownership is immutable. Index `(creator_id, status, created_at desc, id)` supports scoped listing.
 
 ### `box_versions`
 
@@ -57,21 +57,25 @@ Versioned publication record, immutable once published:
 - `configuration_hash bytea` (SHA-256 of canonical selection manifest), `rng_algorithm_version text`;
 - `state` (`draft`, `published`, `retired`), `published_at`, `created_by_user_id`, timestamps.
 
-Only drafts may be changed. Publishing validates the complete graph, computes the canonical manifest/hash and total, makes the rows immutable, and atomically switches `boxes.current_published_version_id`. Partial unique index: one draft per box if that is the chosen editing UX. Index `(box_id, state, version_number desc)`.
+Only drafts may be changed. Phase 5 enforces one draft per box with a partial unique index. Publishing locks the box, validates the complete graph, computes the canonical manifest/hash and total, changes the draft to `published`, marks referenced reward versions published, and atomically switches `boxes.current_published_version_id` while incrementing its revision. The box identity becomes `active` on its first publication. Later edits lazily clone the latest version into a new numbered draft; history is never overwritten.
+
+The manifest is a fixed-schema RFC 8785-compatible canonical JSON object containing algorithm version, box/version IDs, currency, price, total weight, and the ordered association ID/reward-version ID/position/weight entries. Integer values that can exceed JavaScript's safe range are decimal strings. `configuration_hash` is SHA-256 over those exact UTF-8 canonical bytes. Phase 5 records `hmac-sha256-rejection-v1` as the future selection algorithm identifier but does not implement selection or RNG.
 
 ### `rewards`
 
-Stable identity: `id`, `creator_id`, `status` (`active`, `archived`), timestamps, revision. Keeping `creator_id` on the row makes ownership scope enforceable without traversing a mutable box relation.
+Phase 5 creates the stable identity with `id`, `creator_id`, `status` (`active`, `archived`), timestamps, and optimistic revision. Keeping `creator_id` on the row makes ownership scope enforceable without traversing a mutable box relation, and a trigger prevents reassignment.
 
 ### `reward_versions`
 
-Versioned content snapshot: `id`, `reward_id`, `version_number`, `state` (`draft`, `published`, `retired`), `name`, `description`, `image_url`, `reward_type` (`digital`, `physical`, `experience`), `declared_value_minor` nullable, `declared_value_currency` nullable, `fulfillment_definition jsonb`, timestamps, `created_by_user_id`. Unique `(reward_id, version_number)`. Drafts may change; publication makes the row immutable. JSON is schema-validated at publication; secrets and physical addresses never belong here.
+Versioned content snapshot: `id`, `reward_id`, `version_number`, `state` (`draft`, `published`, `retired`), `name`, `description`, `image_url`, `reward_type` (`digital`, `physical`, `experience`), inventory configuration, optional declared value, an empty Phase 5 `fulfillment_definition` object, timestamps, and `created_by_user_id`. Unique `(reward_id, version_number)` with one draft per reward. Drafts may change. A reward version becomes published when a box publication first references it; a trigger then prevents updates/deletes, including through another box draft. Later edits lazily create a new reward version.
+
+Inventory configuration is either `unlimited` with a null quantity or `finite` with a nonnegative `bigint` quantity. A zero finite quantity is allowed while drafting but cannot be included in a published box. Phase 5 does not decrement, reserve, claim, or fulfill inventory.
 
 ### `box_version_rewards`
 
 The exact ordered probability table: `id`, `box_version_id`, `reward_version_id`, `position integer CHECK (position >= 0)`, `weight bigint CHECK (weight > 0)`, optional immutable public label metadata. Unique `(box_version_id, position)` and `(box_version_id, reward_version_id)`. Index `(box_version_id, position)`. The canonical selection order is `position`, then ID as a corruption-detection tie breaker.
 
-A deferred validation trigger or publish transaction verifies `sum(weight) = box_versions.total_weight`, all reward versions belong to the same creator, positions are contiguous, currencies/value rules hold, and the canonical manifest matches `configuration_hash`.
+The Phase 5 publish transaction verifies at least one association, positive weights, a nonoverflowing total, contiguous positions, same-creator ownership, active reward identities, and valid publication inventory. Database triggers repeat the cross-row ownership/publication checks and require `sum(weight) = box_versions.total_weight`. Triggers also prevent inserting, updating, or deleting associations after publication and prevent mutation of any referenced published reward version. The application reconstructs public output and verifies the stored total and canonical hash before returning it.
 
 ## Fairness state
 
@@ -121,7 +125,7 @@ Unique `(rng_seed_set_id, nonce)` guarantees no nonce reuse. Indexes `(user_id, 
 
 `id`, `reward_win_id` unique FK, `type`, `status` (`pending`, `action_required`, `processing`, `fulfilled`, `failed`, `cancelled`), encrypted/tokenized `delivery_details`, `provider`, `provider_reference`, `attempt_count`, `last_error_code`, `next_attempt_at`, timestamps. Unique `(provider, provider_reference)` when not null. Index `(status, next_attempt_at)` for workers. Status changes are recorded in `fulfillment_events(id, fulfillment_id, from_status, to_status, actor_type, actor_id, reason, created_at)`.
 
-Finite inventory is deliberately not finalized. If approved, add `reward_inventory` with an immutable publication policy and conditional reservations in the opening transaction; see the open decision in `ARCHITECTURE.md`.
+Phase 5 stores finite inventory only as immutable published configuration. The consumption/reservation policy is deliberately not finalized. If approved, add transactional inventory state in the opening phase without mutating historical reward versions; see the open decision in `ARCHITECTURE.md`.
 
 ## Wallet and double-entry ledger
 

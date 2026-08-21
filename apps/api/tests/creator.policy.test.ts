@@ -4,16 +4,26 @@ import { canPerformCreatorAction, creatorActions } from '../src/modules/creators
 import { creatorRoles, type CreatorRole } from '../src/modules/creators/creator.js';
 
 const expectedActionsByRole: Readonly<Record<CreatorRole, readonly string[]>> = {
-  editor: ['workspace.view', 'membership.list', 'content.draft.write'],
+  editor: [
+    'workspace.view',
+    'membership.list',
+    'content.draft.write',
+    'catalog.view',
+    'catalog.draft.write',
+  ],
   manager: [
     'workspace.view',
     'membership.list',
     'settings.update',
     'content.draft.write',
     'content.publish',
+    'catalog.view',
+    'catalog.draft.write',
+    'catalog.publish',
+    'catalog.archive',
   ],
   owner: [...creatorActions],
-  viewer: ['workspace.view', 'membership.list'],
+  viewer: ['workspace.view', 'membership.list', 'catalog.view'],
 };
 
 describe('creator authorization policy', () => {

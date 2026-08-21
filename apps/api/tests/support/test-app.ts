@@ -3,6 +3,7 @@ import type { RequestHandler } from 'express';
 import type { Logger } from '@creatordrop/observability';
 
 import { createApp, type AppOptions } from '../../src/app.js';
+import type { CatalogService } from '../../src/modules/catalog/catalog.service.js';
 import type { CreatorService } from '../../src/modules/creators/creator.service.js';
 
 export const createNoopLogger = (): Logger => ({
@@ -39,8 +40,34 @@ export const createUnhandledCreatorService = (): CreatorService => {
   };
 };
 
+export const createUnhandledCatalogService = (): CatalogService => {
+  const unhandled = (): Promise<never> =>
+    Promise.reject(new Error('The test did not configure the catalog service operation.'));
+
+  return {
+    archiveBox: unhandled,
+    archiveReward: unhandled,
+    createBox: unhandled,
+    createReward: unhandled,
+    getBox: unhandled,
+    getDraftConfiguration: unhandled,
+    getPublicBox: unhandled,
+    getPublicBoxVersion: unhandled,
+    getReward: unhandled,
+    listBoxes: unhandled,
+    listBoxVersions: unhandled,
+    listRewards: unhandled,
+    listRewardVersions: unhandled,
+    publishBox: unhandled,
+    replaceDraftConfiguration: unhandled,
+    updateBox: unhandled,
+    updateReward: unhandled,
+  };
+};
+
 export const createTestAppOptions = (overrides: Partial<AppOptions> = {}): AppOptions => ({
   authenticate: createSuccessfulAuthentication(),
+  catalogService: createUnhandledCatalogService(),
   creatorService: createUnhandledCreatorService(),
   logger: createNoopLogger(),
   security: {

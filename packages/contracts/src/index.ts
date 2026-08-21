@@ -74,3 +74,139 @@ export interface CreatorMembersResponse {
 export interface CreatorMemberResponse {
   readonly member: CreatorMemberContract;
 }
+
+export const boxStatuses = ['draft', 'active', 'paused', 'archived'] as const;
+export type BoxStatus = (typeof boxStatuses)[number];
+
+export const boxVersionStates = ['draft', 'published', 'retired'] as const;
+export type BoxVersionState = (typeof boxVersionStates)[number];
+
+export const rewardStatuses = ['active', 'archived'] as const;
+export type RewardStatus = (typeof rewardStatuses)[number];
+
+export const rewardVersionStates = ['draft', 'published', 'retired'] as const;
+export type RewardVersionState = (typeof rewardVersionStates)[number];
+
+export const rewardTypes = ['digital', 'physical', 'experience'] as const;
+export type RewardType = (typeof rewardTypes)[number];
+
+export const inventoryModes = ['unlimited', 'finite'] as const;
+export type InventoryMode = (typeof inventoryModes)[number];
+
+export interface BoxVersionContract {
+  readonly configurationHash: string | null;
+  readonly createdAt: string;
+  readonly currency: string;
+  readonly description: string;
+  readonly id: string;
+  readonly imageUrl: string | null;
+  readonly name: string;
+  readonly priceMinor: string;
+  readonly publishedAt: string | null;
+  readonly rngAlgorithmVersion: string | null;
+  readonly state: BoxVersionState;
+  readonly totalWeight: string | null;
+  readonly updatedAt: string;
+  readonly versionNumber: number;
+}
+
+export interface BoxContract {
+  readonly createdAt: string;
+  readonly creatorId: string;
+  readonly currentPublishedVersionId: string | null;
+  readonly draft: BoxVersionContract | null;
+  readonly id: string;
+  readonly revision: number;
+  readonly role: CreatorRole;
+  readonly status: BoxStatus;
+  readonly updatedAt: string;
+}
+
+export interface RewardVersionContract {
+  readonly createdAt: string;
+  readonly declaredValueCurrency: string | null;
+  readonly declaredValueMinor: string | null;
+  readonly description: string;
+  readonly id: string;
+  readonly imageUrl: string | null;
+  readonly inventoryMode: InventoryMode;
+  readonly inventoryQuantity: string | null;
+  readonly name: string;
+  readonly publishedAt: string | null;
+  readonly rewardType: RewardType;
+  readonly state: RewardVersionState;
+  readonly updatedAt: string;
+  readonly versionNumber: number;
+}
+
+export interface RewardContract {
+  readonly createdAt: string;
+  readonly creatorId: string;
+  readonly draft: RewardVersionContract | null;
+  readonly id: string;
+  readonly revision: number;
+  readonly role: CreatorRole;
+  readonly status: RewardStatus;
+  readonly updatedAt: string;
+}
+
+export interface BoxResponse {
+  readonly box: BoxContract;
+}
+
+export interface BoxesResponse {
+  readonly boxes: readonly BoxContract[];
+}
+
+export interface RewardResponse {
+  readonly reward: RewardContract;
+}
+
+export interface RewardsResponse {
+  readonly rewards: readonly RewardContract[];
+}
+
+export interface BoxVersionResponse {
+  readonly version: BoxVersionContract;
+}
+
+export interface BoxVersionsResponse {
+  readonly versions: readonly BoxVersionContract[];
+}
+
+export interface RewardVersionsResponse {
+  readonly versions: readonly RewardVersionContract[];
+}
+
+export interface BoxDraftRewardContract {
+  readonly id: string;
+  readonly position: number;
+  readonly rewardVersion: RewardVersionContract;
+  readonly weight: string;
+}
+
+export interface BoxDraftRewardsResponse {
+  readonly entries: readonly BoxDraftRewardContract[];
+}
+
+export interface PublishedManifestContract {
+  readonly algorithmVersion: 'hmac-sha256-rejection-v1';
+  readonly boxId: string;
+  readonly boxVersionId: string;
+  readonly currency: string;
+  readonly entries: readonly {
+    readonly boxVersionRewardId: string;
+    readonly position: number;
+    readonly rewardVersionId: string;
+    readonly weight: string;
+  }[];
+  readonly priceMinor: string;
+  readonly totalWeight: string;
+}
+
+export interface PublishedBoxVersionResponse {
+  readonly configurationHash: string;
+  readonly entries: readonly BoxDraftRewardContract[];
+  readonly manifest: PublishedManifestContract;
+  readonly version: BoxVersionContract;
+}

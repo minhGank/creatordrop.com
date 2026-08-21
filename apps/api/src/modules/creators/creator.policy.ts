@@ -6,6 +6,10 @@ export const creatorActions = [
   'settings.update',
   'content.draft.write',
   'content.publish',
+  'catalog.view',
+  'catalog.draft.write',
+  'catalog.publish',
+  'catalog.archive',
   'membership.manage',
   'ownership.manage',
 ] as const;
@@ -13,6 +17,10 @@ export const creatorActions = [
 export type CreatorAction = (typeof creatorActions)[number];
 
 const permissions: Readonly<Record<CreatorAction, readonly CreatorRole[]>> = {
+  'catalog.archive': ['owner', 'manager'],
+  'catalog.draft.write': ['owner', 'manager', 'editor'],
+  'catalog.publish': ['owner', 'manager'],
+  'catalog.view': creatorRoles,
   'content.draft.write': ['owner', 'manager', 'editor'],
   'content.publish': ['owner', 'manager'],
   'membership.list': creatorRoles,

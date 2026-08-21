@@ -108,31 +108,46 @@ The future public creator profile by slug is not implemented in Phase 4; it belo
 
 ## Public boxes and rewards
 
-| Method | Path                                   | Purpose                                                                                                        |
-| ------ | -------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `GET`  | `/v1/boxes`                            | Discover active public boxes; filter by creator/category/currency                                              |
-| `GET`  | `/v1/boxes/:boxId`                     | Current published box, price, exact odds/weights, rewards, fairness algorithm                                  |
-| `GET`  | `/v1/boxes/:boxId/versions/:versionId` | Public immutable manifest when disclosure policy permits; always available for proofs referenced by an opening |
-| `GET`  | `/v1/creators/:creatorId/boxes`        | Public boxes for creator                                                                                       |
-| `GET`  | `/v1/rewards/:rewardId`                | Public current reward description where useful                                                                 |
+Phase 5 implements only immutable box reads, not discovery or a marketplace:
 
-Cache headers/ETags are allowed for immutable versions. Eligibility, price, and availability returned by reads are advisory until validated again during opening.
+| Method | Path                                   | Purpose                                                                                  |
+| ------ | -------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `GET`  | `/v1/boxes/:boxId`                     | Current active published box, exact ordered entries, reward snapshots, and manifest/hash |
+| `GET`  | `/v1/boxes/:boxId/versions/:versionId` | A specific immutable published version belonging to that box                             |
+
+`GET /v1/boxes`, public creator listings, and standalone public reward reads remain future catalog work. Cache headers/ETags may be added later for immutable versions. Eligibility, price, and availability returned by reads remain advisory until an opening transaction validates them again.
+
+Public responses contain the published version snapshot, its ordered reward-version snapshots, the canonical manifest, and a lowercase hexadecimal SHA-256 `configurationHash`. Price, quantity, weight, and total fields are decimal strings. No floating-point odds are returned or accepted.
 
 ## Creator box/reward management
 
-| Method  | Path                                                 | Auth                   | Purpose                                           |
-| ------- | ---------------------------------------------------- | ---------------------- | ------------------------------------------------- |
-| `POST`  | `/v1/creators/:creatorId/boxes`                      | editor+                | Create box and draft                              |
-| `GET`   | `/v1/creators/:creatorId/boxes/:boxId`               | viewer+                | Dashboard detail including drafts                 |
-| `PATCH` | `/v1/creators/:creatorId/boxes/:boxId/draft`         | editor+                | Edit draft metadata/price with revision           |
-| `POST`  | `/v1/creators/:creatorId/rewards`                    | editor+                | Create reward identity/version                    |
-| `PATCH` | `/v1/creators/:creatorId/rewards/:rewardId/draft`    | editor+                | Edit draft reward version                         |
-| `PUT`   | `/v1/creators/:creatorId/boxes/:boxId/draft/rewards` | editor+                | Replace ordered weighted draft entries            |
-| `POST`  | `/v1/creators/:creatorId/boxes/:boxId/publish`       | manager+ + idempotency | Validate and atomically publish immutable version |
-| `POST`  | `/v1/creators/:creatorId/boxes/:boxId/pause`         | manager+ + idempotency | Stop new openings without rewriting version       |
-| `POST`  | `/v1/creators/:creatorId/boxes/:boxId/archive`       | manager+ + idempotency | Archive box identity                              |
+Phase 5 implements:
 
-The publish response returns `versionId`, exact ordered weights, `totalWeight`, and `configurationHash`. The server calculates totals/hashes; client totals are never authoritative.
+| Method  | Path                                                 | Auth     | Purpose                                           |
+| ------- | ---------------------------------------------------- | -------- | ------------------------------------------------- |
+| `GET`   | `/v1/creators/:creatorId/boxes`                      | viewer+  | List creator-scoped boxes and current drafts      |
+| `POST`  | `/v1/creators/:creatorId/boxes`                      | editor+  | Create stable identity and version 1 draft        |
+| `GET`   | `/v1/creators/:creatorId/boxes/:boxId`               | viewer+  | Get creator-scoped box/current draft              |
+| `PATCH` | `/v1/creators/:creatorId/boxes/:boxId/draft`         | editor+  | Edit or lazily create the next box draft          |
+| `GET`   | `/v1/creators/:creatorId/boxes/:boxId/draft/rewards` | viewer+  | Read ordered draft configuration                  |
+| `PUT`   | `/v1/creators/:creatorId/boxes/:boxId/draft/rewards` | editor+  | Atomically replace ordered weighted draft entries |
+| `GET`   | `/v1/creators/:creatorId/boxes/:boxId/versions`      | viewer+  | List box-version history                          |
+| `POST`  | `/v1/creators/:creatorId/boxes/:boxId/publish`       | manager+ | Validate and atomically publish the current draft |
+| `POST`  | `/v1/creators/:creatorId/boxes/:boxId/archive`       | manager+ | Archive the stable box identity                   |
+| `GET`   | `/v1/creators/:creatorId/rewards`                    | viewer+  | List creator-scoped rewards and current drafts    |
+| `POST`  | `/v1/creators/:creatorId/rewards`                    | editor+  | Create stable identity and version 1 draft        |
+| `GET`   | `/v1/creators/:creatorId/rewards/:rewardId`          | viewer+  | Get creator-scoped reward/current draft           |
+| `PATCH` | `/v1/creators/:creatorId/rewards/:rewardId/draft`    | editor+  | Edit or lazily create the next reward draft       |
+| `GET`   | `/v1/creators/:creatorId/rewards/:rewardId/versions` | viewer+  | List reward-version history                       |
+| `POST`  | `/v1/creators/:creatorId/rewards/:rewardId/archive`  | manager+ | Archive the stable reward identity                |
+
+All Phase 5 draft configuration, publication, and archive commands require a quoted positive revision in `If-Match`; missing preconditions return `428 PRECONDITION_REQUIRED`, and stale revisions return `409 CATALOG_REVISION_CONFLICT`. Creation derives ownership from the authenticated creator membership and accepts no creator ID in the body. The API rejects unknown fields and accepts monetary amounts, inventory quantities, and weights only as canonical decimal strings within signed 64-bit storage.
+
+`PUT .../draft/rewards` accepts `{ "entries": [{ "rewardVersionId": "uuid", "weight": "5" }] }`. Array order is the canonical position. An empty array is a valid draft, but publication rejects it. A version may occur only once and every referenced reward must belong to the authenticated creator.
+
+The publish response returns the immutable version, reward snapshots, exact ordered weights, calculated `totalWeight`, canonical manifest, and `configurationHash`. The server calculates totals/hashes; client totals are never authoritative. Publication failures use stable codes including `CATALOG_PUBLICATION_EMPTY_CONFIGURATION`, `CATALOG_PUBLICATION_INELIGIBLE_REWARD`, `CATALOG_PUBLICATION_INVALID_INVENTORY`, and `CATALOG_PUBLICATION_WEIGHT_OVERFLOW`. Pause behavior and durable command idempotency are not introduced in Phase 5; optimistic revision and row locking serialize publication against edits.
+
+The shared creator policy—not controllers—allows owner/manager/editor draft writes, owner/manager publication and archival actions, and viewer reads. Same-creator insufficient roles receive `403`; nonmembers, cross-creator actors, or mismatched resources receive concealed `404`. Catalog mutations emit allowlisted `catalog.audit` records for creation, publication, and archival without tokens, headers, secrets, or profile data.
 
 ## Box opening
 

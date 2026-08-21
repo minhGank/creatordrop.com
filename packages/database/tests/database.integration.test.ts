@@ -70,6 +70,7 @@ describe('PostgreSQL foundation', { concurrent: false }, () => {
     const applicationPrivileges = await applicationDatabase.query<{
       readonly canManageCreatorMemberships: boolean;
       readonly canManageCreators: boolean;
+      readonly canManageCatalog: boolean;
       readonly canSelectUsers: boolean;
       readonly privateSchemaVisible: boolean;
     }>(`
@@ -85,6 +86,11 @@ describe('PostgreSQL foundation', { concurrent: false }, () => {
           'app.creator_memberships',
           'SELECT, INSERT, UPDATE, DELETE'
         ) as "canManageCreatorMemberships",
+        has_table_privilege(
+          current_user,
+          'app.box_versions',
+          'SELECT, INSERT, UPDATE, DELETE'
+        ) as "canManageCatalog",
         has_schema_privilege(current_user, 'app_private', 'USAGE') as "privateSchemaVisible"
     `);
 
@@ -92,6 +98,7 @@ describe('PostgreSQL foundation', { concurrent: false }, () => {
       {
         canManageCreatorMemberships: true,
         canManageCreators: true,
+        canManageCatalog: true,
         canSelectUsers: true,
         privateSchemaVisible: false,
       },
@@ -105,15 +112,25 @@ describe('PostgreSQL foundation', { concurrent: false }, () => {
     const migrationResult = await migrationDatabase.query<{ version: string }>(`
       select version
       from supabase_migrations.schema_migrations
-      where version in ('20260819000000', '20260820000000', '20260820180000')
+      where version in (
+        '20260819000000',
+        '20260820000000',
+        '20260820180000',
+        '20260821132759'
+      )
       order by version
     `);
     const foundationResult = await migrationDatabase.query<{
       applicationSchemaExists: boolean;
       applicationUsageGranted: boolean;
+      boxTableExists: boolean;
+      boxVersionRewardTableExists: boolean;
+      boxVersionTableExists: boolean;
       citextInstalled: boolean;
       creatorMembershipTableExists: boolean;
       creatorTableExists: boolean;
+      rewardTableExists: boolean;
+      rewardVersionTableExists: boolean;
       userTableExists: boolean;
       privateSchemaExists: boolean;
     }>(`
@@ -126,22 +143,33 @@ describe('PostgreSQL foundation', { concurrent: false }, () => {
         ) as "citextInstalled",
         to_regclass('app.users') is not null as "userTableExists",
         to_regclass('app.creators') is not null as "creatorTableExists",
-        to_regclass('app.creator_memberships') is not null as "creatorMembershipTableExists"
+        to_regclass('app.creator_memberships') is not null as "creatorMembershipTableExists",
+        to_regclass('app.boxes') is not null as "boxTableExists",
+        to_regclass('app.box_versions') is not null as "boxVersionTableExists",
+        to_regclass('app.rewards') is not null as "rewardTableExists",
+        to_regclass('app.reward_versions') is not null as "rewardVersionTableExists",
+        to_regclass('app.box_version_rewards') is not null as "boxVersionRewardTableExists"
     `);
 
     expect(migrationResult.rows).toEqual([
       { version: '20260819000000' },
       { version: '20260820000000' },
       { version: '20260820180000' },
+      { version: '20260821132759' },
     ]);
     expect(foundationResult.rows).toEqual([
       {
         applicationSchemaExists: true,
         applicationUsageGranted: true,
+        boxTableExists: true,
+        boxVersionRewardTableExists: true,
+        boxVersionTableExists: true,
         citextInstalled: true,
         creatorMembershipTableExists: true,
         creatorTableExists: true,
         privateSchemaExists: true,
+        rewardTableExists: true,
+        rewardVersionTableExists: true,
         userTableExists: true,
       },
     ]);

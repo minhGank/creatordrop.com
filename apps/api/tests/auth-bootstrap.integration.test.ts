@@ -10,7 +10,11 @@ import { createApp } from '../src/app.js';
 import { createAuthenticationMiddleware } from '../src/modules/auth/authentication.middleware.js';
 import { createJwtVerifier } from '../src/modules/auth/jwt-verifier.js';
 import { createUserBootstrapService } from '../src/modules/users/bootstrap-user.service.js';
-import { createNoopLogger, createUnhandledCreatorService } from './support/test-app.js';
+import {
+  createNoopLogger,
+  createUnhandledCatalogService,
+  createUnhandledCreatorService,
+} from './support/test-app.js';
 
 const localApplicationUrl =
   'postgresql://postgres:postgres@127.0.0.1:54322/postgres?options=-c%20role%3Dcreatordrop_app';
@@ -138,6 +142,7 @@ describe('local Supabase identity bootstrap', { concurrent: false }, () => {
         bootstrapUsers: createUserBootstrapService({ database: applicationDatabase }),
         verifyAccessToken,
       }),
+      catalogService: createUnhandledCatalogService(),
       creatorService: createUnhandledCreatorService(),
       logger,
       security: {

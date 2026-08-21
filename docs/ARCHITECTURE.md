@@ -150,7 +150,7 @@ creatordrop.com/
 │   │   ├── src/
 │   │   │   ├── config/
 │   │   │   ├── http/{middleware,routes}/
-│   │   │   ├── modules/{auth,users,creators,boxes,openings,wallet,fairness,fulfillment,payments}/
+│   │   │   ├── modules/{auth,users,creators,catalog,openings,wallet,fairness,fulfillment,payments}/
 │   │   │   ├── platform/{db,redis,realtime,logging,telemetry}/
 │   │   │   ├── app.ts
 │   │   │   └── server.ts

@@ -10,7 +10,7 @@ The Supabase CLI is a lockfile-pinned development dependency. No global CLI inst
 
 ## Local PostgreSQL and Auth workflow
 
-Start the minimal Supabase stack required by Phases 3–4:
+Start the minimal Supabase stack required by Phases 3–5:
 
 ```bash
 npm run db:start
@@ -52,7 +52,7 @@ set role creatordrop_migrator;
 reset role;
 ```
 
-Phase 2 creates `app` and `app_private`, restricted roles, default privileges, and foundational extensions. Phase 3 adds local users; Phase 4 adds creator workspaces, memberships, and their ownership invariants. Later-domain tables remain absent.
+Phase 2 creates `app` and `app_private`, restricted roles, default privileges, and foundational extensions. Phase 3 adds local users; Phase 4 adds creator workspaces, memberships, and their ownership invariants. Phase 5 adds only box/reward identities, immutable version snapshots, and ordered weighted associations. Opening, RNG state, wallet, ledger, fulfillment, outbox, payment, Redis, and realtime tables remain absent.
 
 ## Database package
 
@@ -68,7 +68,7 @@ With local PostgreSQL running and migrations validated:
 npm run test:integration
 ```
 
-Tests connect to real PostgreSQL. Foundation transaction tests use dedicated PostgreSQL sessions and session-private temporary tables. Identity and creator-tenancy tests create unique synthetic users through the local Supabase Auth HTTP API, obtain real issued access tokens, verify those tokens through the live local JWKS endpoint, and clean up creator memberships, creators, `app.users`, and `auth.users` after every test. Creator integration tests exercise the full role matrix, tenant-scoped queries, final-owner races, and optimistic-update races. The test runner reads the local publishable key from `supabase status` in memory and does not print or commit it.
+Tests connect to real PostgreSQL. Foundation transaction tests use dedicated PostgreSQL sessions and session-private temporary tables. Identity, creator-tenancy, and catalog tests create unique synthetic users through the local Supabase Auth HTTP API, obtain real issued access tokens, verify those tokens through the live local JWKS endpoint, and clean up their synthetic state after every test. Creator integration tests exercise the full role matrix, tenant-scoped queries, final-owner races, and optimistic-update races. Catalog integration tests use the restricted application role and production migrations to exercise box/reward drafts, publication rollback, tenant ownership, optimistic concurrency, canonical history, and database immutability/constraint triggers. The test runner reads the local publishable key from `supabase status` in memory and does not print or commit it.
 
 `npm test` excludes `*.integration.test.ts`; unit tests never silently require PostgreSQL.
 
@@ -85,7 +85,7 @@ set +a
 npm run dev:api
 ```
 
-Supabase Auth performs sign-up/sign-in. Send its access token as `Authorization: Bearer <token>` to `POST /v1/auth/session/exchange` with `{}` to create or retrieve the local user. The same bearer token can then create a creator workspace, list the actor's workspaces, and use creator-scoped endpoints documented in `API.md`. Adding a member currently uses that existing local user's CreatorDrop UUID directly; invitation/email workflows are intentionally deferred. The API needs only the public JWKS URL for verification; never add a Supabase service-role/secret key to browser code.
+Supabase Auth performs sign-up/sign-in. Send its access token as `Authorization: Bearer <token>` to `POST /v1/auth/session/exchange` with `{}` to create or retrieve the local user. The same bearer token can then create a creator workspace, list the actor's workspaces, and use the creator-scoped box/reward draft and publication endpoints documented in `API.md`. Monetary amounts, inventory quantities, and weights are JSON decimal strings. Mutations after creation require the current quoted revision in `If-Match`. Adding a member currently uses that existing local user's CreatorDrop UUID directly; invitation/email workflows are intentionally deferred. The API needs only the public JWKS URL for verification; never add a Supabase service-role/secret key to browser code.
 
 The bootstrap and creator-mutation rate limiters are intentionally in memory and per API process. Creator mutations have their own `CREATOR_MUTATION_RATE_LIMIT_*` budget. Before horizontally scaled production deployment, choose a shared limiter store and define the trusted reverse-proxy/IP policy.
 

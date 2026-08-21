@@ -5,6 +5,7 @@ import { createApp } from './app.js';
 import { getApiEnvironment, getDatabaseEnvironment } from './config/environment.js';
 import { createAuthenticationMiddleware } from './modules/auth/authentication.middleware.js';
 import { createJwtVerifier } from './modules/auth/jwt-verifier.js';
+import { createCatalogService } from './modules/catalog/catalog.service.js';
 import { createUserBootstrapService } from './modules/users/bootstrap-user.service.js';
 import { createCreatorService } from './modules/creators/creator.service.js';
 
@@ -28,8 +29,10 @@ const authenticate = createAuthenticationMiddleware({
   verifyAccessToken,
 });
 const creatorService = createCreatorService({ database, logger });
+const catalogService = createCatalogService({ database, logger });
 const app = createApp({
   authenticate,
+  catalogService,
   creatorService,
   logger,
   security: {

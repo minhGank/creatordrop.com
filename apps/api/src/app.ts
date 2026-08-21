@@ -10,6 +10,8 @@ import { createErrorHandler, notFoundHandler } from './http/error-handler.js';
 import { requestIdMiddleware } from './http/request-id.js';
 import { requestLoggingMiddleware } from './http/request-logging.js';
 import { createAuthRouter } from './modules/auth/auth.route.js';
+import { createCatalogRouter } from './modules/catalog/catalog.route.js';
+import type { CatalogService } from './modules/catalog/catalog.service.js';
 import { createCreatorRouter } from './modules/creators/creator.route.js';
 import type { CreatorService } from './modules/creators/creator.service.js';
 
@@ -21,6 +23,7 @@ const sendStatus =
 
 export interface AppOptions {
   readonly authenticate: RequestHandler;
+  readonly catalogService: CatalogService;
   readonly creatorService: CreatorService;
   readonly logger: Logger;
   readonly security: {
@@ -35,6 +38,7 @@ export interface AppOptions {
 
 export const createApp = ({
   authenticate,
+  catalogService,
   creatorService,
   logger,
   security,
@@ -55,6 +59,15 @@ export const createApp = ({
       authenticate,
       rateLimitMax: security.authRateLimitMax,
       rateLimitWindowMs: security.authRateLimitWindowMs,
+    }),
+  );
+  app.use(
+    '/v1',
+    createCatalogRouter({
+      authenticate,
+      mutationRateLimitMax: security.creatorMutationRateLimitMax,
+      mutationRateLimitWindowMs: security.creatorMutationRateLimitWindowMs,
+      service: catalogService,
     }),
   );
   app.use(
