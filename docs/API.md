@@ -39,6 +39,22 @@ Authentication ceremony is initially provided by Supabase Auth; password/OAuth t
 
 Sensitive identity operations such as MFA and password reset remain provider-hosted. CSRF protection is required if credentials ever move to cookies; the initial API uses bearer tokens and strict CORS.
 
+Phase 3 implements only `POST /v1/auth/session/exchange`; the `GET` and `DELETE` session operations remain contract direction for later phases. The exchange accepts an empty JSON object (or no body), rejects unknown fields, verifies the bearer JWT signature and `iss`/`aud`/`exp`/`nbf`/`sub` claims against trusted configuration and JWKS, and idempotently maps the verified subject to a local user. It returns only the allowlisted local user identity:
+
+```json
+{
+  "user": {
+    "id": "uuid-v7",
+    "username": "user_bootstrap-name",
+    "status": "active"
+  }
+}
+```
+
+Missing, malformed, unverifiable, expired, or claim-invalid tokens return `401 AUTHENTICATION_REQUIRED`. A valid provider token mapped to a suspended or closed local user returns `403 ACCOUNT_NOT_ACTIVE`. The response and logs do not disclose token verification or account-state internals.
+
+Every request receives `X-Request-Id`. A caller value is retained only when it matches the strict 8–64 character request-ID format; otherwise the API generates a cryptographically random UUID. API request/error logs use allowlisted metadata and redact credential-like attribute names. The bootstrap endpoint currently uses a per-process, in-memory IP limiter. Production horizontal scaling will require a shared limiter store and an explicitly configured trusted-proxy policy.
+
 ## Users and fairness preferences
 
 | Method  | Path                          | Auth               | Purpose                                                                  |

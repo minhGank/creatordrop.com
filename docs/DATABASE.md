@@ -2,7 +2,7 @@
 
 ## Conventions
 
-- PostgreSQL is the system of record. Use SQL migrations checked into `packages/database/migrations`; never use schema auto-sync in production.
+- PostgreSQL is the system of record. Use SQL migrations checked into `infra/supabase/migrations`; never use schema auto-sync in production.
 - Primary keys are UUIDv7 (application-generated) unless a table explicitly uses a monotonic identity. Public IDs may be separate opaque strings if enumeration becomes a concern.
 - Timestamps are `timestamptz`, stored in UTC, with `created_at` and `updated_at` where mutation is allowed.
 - Money is `bigint` minor units with a `char(3)` ISO 4217 currency. Application types brand `MoneyMinor` and serialize it as a decimal string in JSON to avoid JavaScript precision loss.
@@ -27,6 +27,8 @@
 | `closed_at`                | timestamptz | nullable                        |
 
 Unique: `(auth_provider, auth_subject)`, `username`. Authentication identity is never accepted from request data.
+
+Phase 3 creates this table in the `app` schema. Bootstrap IDs are application-generated UUIDv7 values. Until profile editing is implemented, the API derives a collision-resistant placeholder username from that new local ID; it does not derive a username from email, token metadata, or request data. Bootstrap uses `INSERT ... ON CONFLICT DO NOTHING` followed by a transaction-scoped identity lookup, so retries and concurrent requests map to one row without changing an existing profile. `closed_at` is present exactly when status is `closed`.
 
 ### `creators`
 

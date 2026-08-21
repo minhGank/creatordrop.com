@@ -66,17 +66,29 @@ describe('PostgreSQL foundation', { concurrent: false }, () => {
     expect(result.rows).toEqual([{ currentUser: 'creatordrop_app', probe: 1 }]);
   });
 
-  it('records the foundational migration after initialization from empty', async () => {
+  it('allows local-user access without exposing Supabase Auth tables', async () => {
+    const localUserPrivileges = await applicationDatabase.query<{ canSelect: boolean }>(
+      `select has_table_privilege(current_user, 'app.users', 'SELECT') as "canSelect"`,
+    );
+
+    expect(localUserPrivileges.rows).toEqual([{ canSelect: true }]);
+    await expect(applicationDatabase.query('select id from auth.users limit 1')).rejects.toThrow(
+      /permission denied/iu,
+    );
+  });
+
+  it('records all migrations after initialization from empty', async () => {
     const migrationResult = await migrationDatabase.query<{ version: string }>(`
       select version
       from supabase_migrations.schema_migrations
-      where version = '20260819000000'
+      where version in ('20260819000000', '20260820000000')
+      order by version
     `);
     const foundationResult = await migrationDatabase.query<{
       applicationSchemaExists: boolean;
       applicationUsageGranted: boolean;
       citextInstalled: boolean;
-      domainTableCount: string;
+      userTableExists: boolean;
       privateSchemaExists: boolean;
     }>(`
       select
@@ -86,21 +98,20 @@ describe('PostgreSQL foundation', { concurrent: false }, () => {
         exists (
           select 1 from pg_extension where extname = 'citext'
         ) as "citextInstalled",
-        (
-          select count(*)::text
-          from information_schema.tables
-          where table_schema in ('app', 'app_private')
-        ) as "domainTableCount"
+        to_regclass('app.users') is not null as "userTableExists"
     `);
 
-    expect(migrationResult.rows).toEqual([{ version: '20260819000000' }]);
+    expect(migrationResult.rows).toEqual([
+      { version: '20260819000000' },
+      { version: '20260820000000' },
+    ]);
     expect(foundationResult.rows).toEqual([
       {
         applicationSchemaExists: true,
         applicationUsageGranted: true,
         citextInstalled: true,
-        domainTableCount: '0',
         privateSchemaExists: true,
+        userTableExists: true,
       },
     ]);
   });

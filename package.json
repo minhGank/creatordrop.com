@@ -26,7 +26,7 @@
     "db:migrations:check": "node scripts/validate-migrations.mjs",
     "db:migrations:validate": "npm run db:migrations:check && supabase db reset --local --no-seed --workdir infra && supabase db lint --local --schema app,app_private --level error --fail-on error --workdir infra",
     "db:reset": "supabase db reset --local --no-seed --workdir infra",
-    "db:start": "supabase start --workdir infra --exclude gotrue,realtime,storage-api,imgproxy,kong,mailpit,postgrest,postgres-meta,studio,edge-runtime,logflare,vector,supavisor",
+    "db:start": "npm run supabase:start",
     "db:stop": "supabase stop --workdir infra --no-backup",
     "dev:api": "npm run dev --workspace @creatordrop/app-api",
     "dev:web": "npm run dev --workspace @creatordrop/app-web",
@@ -36,7 +36,8 @@
     "lint": "eslint . --max-warnings=0",
     "secrets:scan": "secretlint \"**/*\"",
     "test": "vitest run",
-    "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests",
+    "supabase:start": "node scripts/start-local-supabase.mjs",
+    "test:integration": "node scripts/run-integration-tests.mjs",
     "test:watch": "vitest",
     "typecheck": "tsc -b tsconfig.build.json --pretty false && npm run typecheck:tests --workspaces --if-present && npm run typecheck --workspace @creatordrop/app-web && tsc --noEmit --pretty false --project tsconfig.json"
   },

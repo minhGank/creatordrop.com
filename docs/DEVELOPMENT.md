@@ -8,15 +8,17 @@
 
 The Supabase CLI is a lockfile-pinned development dependency. No global CLI installation, Supabase login, hosted project, or `supabase link` is required.
 
-## Local PostgreSQL workflow
+## Local PostgreSQL and Auth workflow
 
-Start the database-only Supabase stack:
+Start the minimal Supabase stack required by Phase 3:
 
 ```bash
 npm run db:start
 ```
 
-Copy `.env.example` to `.env` if local overrides are needed. The default integration-test URLs connect to port `54322`; the application URL assumes the restricted `creatordrop_app` role through a local `postgres` connection. Production must use separately provisioned credentials and must never reuse these local values.
+This starts PostgreSQL, Supabase Auth, and the local API gateway. Realtime, storage, PostgREST, Studio, Edge Runtime, analytics, the pooler, and mail services remain excluded. This project is local-only: no Supabase login, hosted project, link, or cloud mutation is used.
+
+Copy `.env.example` to `.env` if local overrides are needed. The default integration-test URLs connect to PostgreSQL on port `54322`; Auth/JWKS are exposed through the local gateway on port `54321`. The application URL assumes the restricted `creatordrop_app` role through a local `postgres` connection. Production must use separately provisioned credentials and must never reuse these local values.
 
 Reset from empty, apply all migrations, and lint the resulting schemas:
 
@@ -66,9 +68,26 @@ With local PostgreSQL running and migrations validated:
 npm run test:integration
 ```
 
-Tests connect to real PostgreSQL. Each stateful test uses a pool limited to one dedicated session and a PostgreSQL temporary table. Temporary schemas/tables are session-private and disappear when the pool closes, so tests cannot observe one another's state. The migration inspection uses the separate local migration connection.
+Tests connect to real PostgreSQL. Foundation transaction tests use dedicated PostgreSQL sessions and session-private temporary tables. Identity tests create unique synthetic users through the local Supabase Auth HTTP API, obtain real issued access tokens, verify those tokens through the live local JWKS endpoint, and remove their `auth.users` and `app.users` rows after every test. The test runner reads the local publishable key from `supabase status` in memory and does not print or commit it.
 
 `npm test` excludes `*.integration.test.ts`; unit tests never silently require PostgreSQL.
+
+## Run the API locally
+
+Start Supabase, export the example environment, and run the API watcher:
+
+```bash
+npm run db:start
+cp .env.example .env
+set -a
+source .env
+set +a
+npm run dev:api
+```
+
+Supabase Auth performs sign-up/sign-in. Send its access token as `Authorization: Bearer <token>` to `POST /v1/auth/session/exchange` with `{}` to create or retrieve the local user. The API needs only the public JWKS URL for verification; never add a Supabase service-role/secret key to browser code.
+
+The Phase 3 bootstrap rate limiter is intentionally in memory and per API process. Before horizontally scaled production deployment, choose a shared limiter store and define the trusted reverse-proxy/IP policy.
 
 ## Full validation
 
