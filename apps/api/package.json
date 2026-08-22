@@ -15,6 +15,7 @@
     "@creatordrop/config": "*",
     "@creatordrop/contracts": "*",
     "@creatordrop/database": "*",
+    "@creatordrop/domain": "*",
     "@creatordrop/observability": "*",
     "cors": "^2.8.6",
     "express": "^5.2.1",

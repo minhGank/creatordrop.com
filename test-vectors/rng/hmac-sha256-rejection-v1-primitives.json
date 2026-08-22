@@ -1,0 +1,56 @@
+{
+  "algorithmVersion": "hmac-sha256-rejection-v1",
+  "description": "Language-neutral primitive fixtures for nonzero-round HMAC and crafted rejection boundaries.",
+  "generator": "scripts/generate-rng-test-vectors.mjs",
+  "hmacCases": [
+    {
+      "clientSeed": "407ec48d8a0e707c1c2c539222ddb9ebef1192c4f844f934acee17762ddd4afd",
+      "digestHex": "f4f6a891e6fc80d47b6b5a44b92463df15f64d508354973a9ba2639952dda616",
+      "message": "creatordrop:rng:v1|00000001-0001-7000-8000-000000000000|407ec48d8a0e707c1c2c539222ddb9ebef1192c4f844f934acee17762ddd4afd|0|10",
+      "name": "nonzero-round-10",
+      "nonce": "0",
+      "round": "10",
+      "seedSetId": "00000001-0001-7000-8000-000000000000",
+      "serverSeedHex": "7e5901fa621d9084d2fc3f22630495ecec05b9c16d8a625d528a9a5406d190aa"
+    }
+  ],
+  "rejectionCases": [
+    {
+      "acceptedDigestHex": "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff9",
+      "acceptedRound": "0",
+      "digests": [
+        {
+          "digestHex": "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff9",
+          "round": "0"
+        }
+      ],
+      "limit": "115792089237316195423570985008687907853269984665640564039457584007913129639930",
+      "name": "limit-minus-one",
+      "selectionValue": "9",
+      "totalWeight": "10"
+    },
+    {
+      "acceptedDigestHex": "0000000000000000000000000000000000000000000000000000000000000007",
+      "acceptedRound": "2",
+      "digests": [
+        {
+          "digestHex": "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffa",
+          "round": "0"
+        },
+        {
+          "digestHex": "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffb",
+          "round": "1"
+        },
+        {
+          "digestHex": "0000000000000000000000000000000000000000000000000000000000000007",
+          "round": "2"
+        }
+      ],
+      "limit": "115792089237316195423570985008687907853269984665640564039457584007913129639930",
+      "name": "limit-limit-plus-one-then-seven",
+      "selectionValue": "7",
+      "totalWeight": "10"
+    }
+  ],
+  "schemaVersion": 1
+}

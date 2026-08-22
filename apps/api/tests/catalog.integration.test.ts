@@ -639,11 +639,33 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
     await configure(owner, creator.id, secondBox, [
       { rewardVersionId: unlimited.draftId, weight: '1' },
     ]);
+    const uppercaseBoxId = secondBox.id.toUpperCase();
+    const uppercaseVersionId = secondBox.draftId.toUpperCase();
     const ownerPublish = await request(app)
-      .post(`/v1/creators/${creator.id}/boxes/${secondBox.id}/publish`)
+      .post(`/v1/creators/${creator.id}/boxes/${uppercaseBoxId}/publish`)
       .set(authorization(owner))
       .set('If-Match', '"2"');
     expect(ownerPublish.status).toBe(200);
+    expect(ownerPublish.body).toMatchObject({
+      manifest: { boxId: secondBox.id, boxVersionId: secondBox.draftId },
+    });
+    const uppercaseCurrent = await request(app).get(`/v1/boxes/${uppercaseBoxId}`);
+    const uppercaseHistorical = await request(app).get(
+      `/v1/boxes/${uppercaseBoxId}/versions/${uppercaseVersionId}`,
+    );
+    expect([uppercaseCurrent.status, uppercaseHistorical.status]).toEqual([200, 200]);
+    expect(uppercaseCurrent.body).toMatchObject({ manifest: { boxId: secondBox.id } });
+    expect(uppercaseHistorical.body).toMatchObject({
+      manifest: { boxId: secondBox.id, boxVersionId: secondBox.draftId },
+    });
+    const uppercasePublicationState = await applicationDatabase.query<{
+      readonly currentVersionId: string | null;
+    }>(
+      `select current_published_version_id::text as "currentVersionId"
+         from app.boxes where id = $1`,
+      [secondBox.id],
+    );
+    expect(uppercasePublicationState.rows).toEqual([{ currentVersionId: secondBox.draftId }]);
 
     const auditActions = auditRecords
       .filter((record) => record.message === 'catalog.audit')

@@ -160,13 +160,15 @@ creatordrop.com/
 │       └── tests/
 ├── packages/
 │   ├── contracts/               # schemas and generated API types, no business logic
-│   ├── domain/                  # pure money/RNG/policy primitives
+│   ├── domain/                  # pure production money/RNG/policy primitives
 │   ├── database/                # SQL migrations, typed client, test helpers
 │   │   ├── migrations/
 │   │   └── src/
 │   ├── observability/
+│   ├── rng-verifier/            # independent fairness proof implementation
 │   ├── test-support/
 │   └── config/                  # shared TS/lint configuration
+├── test-vectors/rng/            # language-neutral normative RNG fixtures
 ├── docs/
 │   ├── ARCHITECTURE.md
 │   ├── DATABASE.md

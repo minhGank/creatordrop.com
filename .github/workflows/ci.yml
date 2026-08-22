@@ -38,6 +38,9 @@ jobs:
       - name: Check workspace boundaries
         run: npm run check:workspaces
 
+      - name: Check deterministic RNG vectors
+        run: npm run check:rng-vectors
+
       - name: Check formatting
         run: npm run format:check
 

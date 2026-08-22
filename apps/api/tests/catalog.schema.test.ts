@@ -2,12 +2,23 @@ import { describe, expect, it } from 'vitest';
 
 import {
   parseBoxDraftInput,
+  parseBoxId,
+  parseBoxVersionId,
   parseDraftRewardConfiguration,
   parseExpectedCatalogRevision,
   parseRewardDraftInput,
 } from '../src/modules/catalog/catalog.schema.js';
 
 describe('catalog request validation', () => {
+  it('normalizes valid UUID route parameters to canonical lowercase text', () => {
+    expect(parseBoxId('019C0000-0000-7000-8000-000000000010')).toBe(
+      '019c0000-0000-7000-8000-000000000010',
+    );
+    expect(parseBoxVersionId('019C0000-0000-7000-8000-000000000020')).toBe(
+      '019c0000-0000-7000-8000-000000000020',
+    );
+  });
+
   it('parses decimal-string money without floating point', () => {
     const input = parseBoxDraftInput({
       currency: 'USD',

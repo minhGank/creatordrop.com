@@ -1,0 +1,522 @@
+{
+  "algorithmVersion": "hmac-sha256-rejection-v1",
+  "description": "Synthetic language-neutral CreatorDrop Phase 6 vectors. These values are public test fixtures, not active secrets.",
+  "generator": "scripts/generate-rng-test-vectors.mjs",
+  "schemaVersion": 1,
+  "vectors": [
+    {
+      "acceptedDigestHex": "27b5a32bede2cc2b38fa85b8f00c66d1a2f72163ff1bd901228ab5ad2fb3794a",
+      "acceptedRound": "0",
+      "clientSeed": "407ec48d8a0e707c1c2c539222ddb9ebef1192c4f844f934acee17762ddd4afd",
+      "manifest": {
+        "algorithmVersion": "hmac-sha256-rejection-v1",
+        "boxId": "00000001-0002-7000-8000-000000000000",
+        "boxVersionId": "00000001-0003-7000-8000-000000000000",
+        "currency": "USD",
+        "entries": [
+          {
+            "boxVersionRewardId": "00000001-0004-7000-8000-000000000001",
+            "position": 0,
+            "rewardVersionId": "00000001-0005-7000-8000-000000000001",
+            "weight": "1"
+          }
+        ],
+        "priceMinor": "1001",
+        "totalWeight": "1"
+      },
+      "manifestHash": "51420c2d43713a641e2ff28dccafa914030bdb0ad10b85cad13bf52f4bcf3eda",
+      "name": "synthetic-vector-01",
+      "nonce": "0",
+      "roundDigests": [
+        {
+          "digestHex": "27b5a32bede2cc2b38fa85b8f00c66d1a2f72163ff1bd901228ab5ad2fb3794a",
+          "round": "0"
+        }
+      ],
+      "seedSetId": "00000001-0001-7000-8000-000000000000",
+      "selectionValue": "0",
+      "serverSeedCommitment": "0bd526142865b88f777fb1ca99c69afcb9d0cf2b2d3e660d238591ce228715df",
+      "serverSeedHex": "7e5901fa621d9084d2fc3f22630495ecec05b9c16d8a625d528a9a5406d190aa",
+      "winningEntry": {
+        "boxVersionRewardId": "00000001-0004-7000-8000-000000000001",
+        "position": 0,
+        "rewardVersionId": "00000001-0005-7000-8000-000000000001",
+        "weight": "1"
+      }
+    },
+    {
+      "acceptedDigestHex": "1d935f00d8617f8613ccf48e5323988c31c3a7d0aca1329e5ed11f447e7e5a69",
+      "acceptedRound": "0",
+      "clientSeed": "f4d9b39406571898f319ebf0c79014602024ea182956d5b79bec6d98cfb85727",
+      "manifest": {
+        "algorithmVersion": "hmac-sha256-rejection-v1",
+        "boxId": "00000002-0002-7000-8000-000000000000",
+        "boxVersionId": "00000002-0003-7000-8000-000000000000",
+        "currency": "CAD",
+        "entries": [
+          {
+            "boxVersionRewardId": "00000002-0004-7000-8000-000000000001",
+            "position": 0,
+            "rewardVersionId": "00000002-0005-7000-8000-000000000001",
+            "weight": "5"
+          },
+          {
+            "boxVersionRewardId": "00000002-0004-7000-8000-000000000002",
+            "position": 1,
+            "rewardVersionId": "00000002-0005-7000-8000-000000000002",
+            "weight": "20"
+          },
+          {
+            "boxVersionRewardId": "00000002-0004-7000-8000-000000000003",
+            "position": 2,
+            "rewardVersionId": "00000002-0005-7000-8000-000000000003",
+            "weight": "75"
+          }
+        ],
+        "priceMinor": "1002",
+        "totalWeight": "100"
+      },
+      "manifestHash": "e0e2a3668f815d48f9eabd245fea4a0b9586b752ba4926bc03ec39e668114b24",
+      "name": "synthetic-vector-02",
+      "nonce": "1",
+      "roundDigests": [
+        {
+          "digestHex": "1d935f00d8617f8613ccf48e5323988c31c3a7d0aca1329e5ed11f447e7e5a69",
+          "round": "0"
+        }
+      ],
+      "seedSetId": "00000002-0001-7000-8000-000000000000",
+      "selectionValue": "53",
+      "serverSeedCommitment": "ee2a71b5cd9847056f55295ad8f60b8e1d7fd743892fabb2764bcedbc258e93f",
+      "serverSeedHex": "289e9eb1237306b4799fa1c31e32e09be404f8f8bb82359282b39dcc1019c821",
+      "winningEntry": {
+        "boxVersionRewardId": "00000002-0004-7000-8000-000000000003",
+        "position": 2,
+        "rewardVersionId": "00000002-0005-7000-8000-000000000003",
+        "weight": "75"
+      }
+    },
+    {
+      "acceptedDigestHex": "a826352e2355b4696f057b7487a6fd1e832b5cc2330503c3f0bd0a46580096b3",
+      "acceptedRound": "0",
+      "clientSeed": "6e04d138a91f1ee7c1a1cdb4c74c50cb59286f8dc36aed3fa0e81a22cce9d9b8",
+      "manifest": {
+        "algorithmVersion": "hmac-sha256-rejection-v1",
+        "boxId": "00000003-0002-7000-8000-000000000000",
+        "boxVersionId": "00000003-0003-7000-8000-000000000000",
+        "currency": "USD",
+        "entries": [
+          {
+            "boxVersionRewardId": "00000003-0004-7000-8000-000000000001",
+            "position": 0,
+            "rewardVersionId": "00000003-0005-7000-8000-000000000001",
+            "weight": "1"
+          },
+          {
+            "boxVersionRewardId": "00000003-0004-7000-8000-000000000002",
+            "position": 1,
+            "rewardVersionId": "00000003-0005-7000-8000-000000000002",
+            "weight": "1"
+          }
+        ],
+        "priceMinor": "1003",
+        "totalWeight": "2"
+      },
+      "manifestHash": "b3d1d2c0dd874ca86d58428dfb61aeb265a83b6e632452a06f879b0814963065",
+      "name": "synthetic-vector-03",
+      "nonce": "7",
+      "roundDigests": [
+        {
+          "digestHex": "a826352e2355b4696f057b7487a6fd1e832b5cc2330503c3f0bd0a46580096b3",
+          "round": "0"
+        }
+      ],
+      "seedSetId": "00000003-0001-7000-8000-000000000000",
+      "selectionValue": "1",
+      "serverSeedCommitment": "f6b2f5ce56148d3e40be37cee4696617795e11582cc2a835062c1d8799917539",
+      "serverSeedHex": "d66b52d557e0ff028571140601bf05df4c06d85e2f7b9c69bb92ee0ef501a2e6",
+      "winningEntry": {
+        "boxVersionRewardId": "00000003-0004-7000-8000-000000000002",
+        "position": 1,
+        "rewardVersionId": "00000003-0005-7000-8000-000000000002",
+        "weight": "1"
+      }
+    },
+    {
+      "acceptedDigestHex": "7a11f0f22464064e243f646fcab91018300b0b04c2dd61c76e4f1421da41e5b7",
+      "acceptedRound": "0",
+      "clientSeed": "ad42c0042a925929be8703314d9aebc526111864da841869bf9a5b970760306c",
+      "manifest": {
+        "algorithmVersion": "hmac-sha256-rejection-v1",
+        "boxId": "00000004-0002-7000-8000-000000000000",
+        "boxVersionId": "00000004-0003-7000-8000-000000000000",
+        "currency": "CAD",
+        "entries": [
+          {
+            "boxVersionRewardId": "00000004-0004-7000-8000-000000000001",
+            "position": 0,
+            "rewardVersionId": "00000004-0005-7000-8000-000000000001",
+            "weight": "9223372036854775805"
+          },
+          {
+            "boxVersionRewardId": "00000004-0004-7000-8000-000000000002",
+            "position": 1,
+            "rewardVersionId": "00000004-0005-7000-8000-000000000002",
+            "weight": "1"
+          },
+          {
+            "boxVersionRewardId": "00000004-0004-7000-8000-000000000003",
+            "position": 2,
+            "rewardVersionId": "00000004-0005-7000-8000-000000000003",
+            "weight": "1"
+          }
+        ],
+        "priceMinor": "1004",
+        "totalWeight": "9223372036854775807"
+      },
+      "manifestHash": "27ef2b9549290879de8ff2fcfb46ccfd072ebdb997311bb35d20e853fab40a46",
+      "name": "synthetic-vector-04",
+      "nonce": "42",
+      "roundDigests": [
+        {
+          "digestHex": "7a11f0f22464064e243f646fcab91018300b0b04c2dd61c76e4f1421da41e5b7",
+          "round": "0"
+        }
+      ],
+      "seedSetId": "00000004-0001-7000-8000-000000000000",
+      "selectionValue": "3454898062625938463",
+      "serverSeedCommitment": "695266ebc418464a9f8add1d2fed3e08b95afbd767921b646b18808769878ad6",
+      "serverSeedHex": "e12d75f176709d133187608b83ea012f86bb28fd925819bed7f7fb2a66b081c4",
+      "winningEntry": {
+        "boxVersionRewardId": "00000004-0004-7000-8000-000000000001",
+        "position": 0,
+        "rewardVersionId": "00000004-0005-7000-8000-000000000001",
+        "weight": "9223372036854775805"
+      }
+    },
+    {
+      "acceptedDigestHex": "5bdf68e69e3cc6db40b985c708f0a1e630777d73bbd6ca1c34095c93da7730ea",
+      "acceptedRound": "0",
+      "clientSeed": "0d529f909a28a1adfefb278764dfec0cd1a97ac5008bfbd305c10f186eb03bd6",
+      "manifest": {
+        "algorithmVersion": "hmac-sha256-rejection-v1",
+        "boxId": "00000005-0002-7000-8000-000000000000",
+        "boxVersionId": "00000005-0003-7000-8000-000000000000",
+        "currency": "USD",
+        "entries": [
+          {
+            "boxVersionRewardId": "00000005-0004-7000-8000-000000000001",
+            "position": 0,
+            "rewardVersionId": "00000005-0005-7000-8000-000000000001",
+            "weight": "5"
+          },
+          {
+            "boxVersionRewardId": "00000005-0004-7000-8000-000000000002",
+            "position": 1,
+            "rewardVersionId": "00000005-0005-7000-8000-000000000002",
+            "weight": "100"
+          },
+          {
+            "boxVersionRewardId": "00000005-0004-7000-8000-000000000003",
+            "position": 2,
+            "rewardVersionId": "00000005-0005-7000-8000-000000000003",
+            "weight": "395"
+          }
+        ],
+        "priceMinor": "1005",
+        "totalWeight": "500"
+      },
+      "manifestHash": "4038171c44eec92e9d479bfb4d3b03563ee6d25e211df22762c5586f01111993",
+      "name": "synthetic-vector-05",
+      "nonce": "99",
+      "roundDigests": [
+        {
+          "digestHex": "5bdf68e69e3cc6db40b985c708f0a1e630777d73bbd6ca1c34095c93da7730ea",
+          "round": "0"
+        }
+      ],
+      "seedSetId": "00000005-0001-7000-8000-000000000000",
+      "selectionValue": "130",
+      "serverSeedCommitment": "1e1b9e5be5c52d4f2566c7005c18c4f627763876007b7b997d7a1577b0ec5546",
+      "serverSeedHex": "d4ae465d31e53451fe8999d12474fd299d283563dda2ddc234ebf3aba1c36783",
+      "winningEntry": {
+        "boxVersionRewardId": "00000005-0004-7000-8000-000000000003",
+        "position": 2,
+        "rewardVersionId": "00000005-0005-7000-8000-000000000003",
+        "weight": "395"
+      }
+    },
+    {
+      "acceptedDigestHex": "1177be2a75c64045ac5ee0748a55be47447bee2ebe3b2f843eb42090cfe931b0",
+      "acceptedRound": "0",
+      "clientSeed": "74fc0a09d08085d9e23da1cf783d6ca94a986a0331e634aee25f6a4e05038ded",
+      "manifest": {
+        "algorithmVersion": "hmac-sha256-rejection-v1",
+        "boxId": "00000006-0002-7000-8000-000000000000",
+        "boxVersionId": "00000006-0003-7000-8000-000000000000",
+        "currency": "CAD",
+        "entries": [
+          {
+            "boxVersionRewardId": "00000006-0004-7000-8000-000000000001",
+            "position": 0,
+            "rewardVersionId": "00000006-0005-7000-8000-000000000001",
+            "weight": "3"
+          },
+          {
+            "boxVersionRewardId": "00000006-0004-7000-8000-000000000002",
+            "position": 1,
+            "rewardVersionId": "00000006-0005-7000-8000-000000000002",
+            "weight": "7"
+          },
+          {
+            "boxVersionRewardId": "00000006-0004-7000-8000-000000000003",
+            "position": 2,
+            "rewardVersionId": "00000006-0005-7000-8000-000000000003",
+            "weight": "11"
+          },
+          {
+            "boxVersionRewardId": "00000006-0004-7000-8000-000000000004",
+            "position": 3,
+            "rewardVersionId": "00000006-0005-7000-8000-000000000004",
+            "weight": "13"
+          }
+        ],
+        "priceMinor": "1006",
+        "totalWeight": "34"
+      },
+      "manifestHash": "3f5981f3a0f69ab2bf68a444268b4543dd0bcf4d2e2beb06ad50e76b4b371504",
+      "name": "synthetic-vector-06",
+      "nonce": "1000",
+      "roundDigests": [
+        {
+          "digestHex": "1177be2a75c64045ac5ee0748a55be47447bee2ebe3b2f843eb42090cfe931b0",
+          "round": "0"
+        }
+      ],
+      "seedSetId": "00000006-0001-7000-8000-000000000000",
+      "selectionValue": "16",
+      "serverSeedCommitment": "37ab86cefe39c888371032016dd4b5a41916ff392c615116677c9c6ba028e429",
+      "serverSeedHex": "6191a4ee41c876ce2b1fa45b440b494ae90b8d5434ad0d627f9feef0f195b028",
+      "winningEntry": {
+        "boxVersionRewardId": "00000006-0004-7000-8000-000000000003",
+        "position": 2,
+        "rewardVersionId": "00000006-0005-7000-8000-000000000003",
+        "weight": "11"
+      }
+    },
+    {
+      "acceptedDigestHex": "5a223227c97eea5acddaa15e7e9c920ff005ebbc934f89c0f203bf9cc130d4ce",
+      "acceptedRound": "0",
+      "clientSeed": "b52b0a0f37c22f09607d77605af177e999c5c47021367b9e515c5b7dfbaf28e2",
+      "manifest": {
+        "algorithmVersion": "hmac-sha256-rejection-v1",
+        "boxId": "00000007-0002-7000-8000-000000000000",
+        "boxVersionId": "00000007-0003-7000-8000-000000000000",
+        "currency": "USD",
+        "entries": [
+          {
+            "boxVersionRewardId": "00000007-0004-7000-8000-000000000001",
+            "position": 0,
+            "rewardVersionId": "00000007-0005-7000-8000-000000000001",
+            "weight": "1000"
+          },
+          {
+            "boxVersionRewardId": "00000007-0004-7000-8000-000000000002",
+            "position": 1,
+            "rewardVersionId": "00000007-0005-7000-8000-000000000002",
+            "weight": "1"
+          }
+        ],
+        "priceMinor": "1007",
+        "totalWeight": "1001"
+      },
+      "manifestHash": "63babaabd117502ae0c8a67df7d7aeb669d62cd60621a19abbcf59d74e77bb0e",
+      "name": "synthetic-vector-07",
+      "nonce": "65535",
+      "roundDigests": [
+        {
+          "digestHex": "5a223227c97eea5acddaa15e7e9c920ff005ebbc934f89c0f203bf9cc130d4ce",
+          "round": "0"
+        }
+      ],
+      "seedSetId": "00000007-0001-7000-8000-000000000000",
+      "selectionValue": "899",
+      "serverSeedCommitment": "9cbbe34ae172fc1e58e306086bed4643b8f97a6affd9d25b3f805fbf77a80941",
+      "serverSeedHex": "cc2f1515b4c81daf8a460c361c707924c03551ed4f5ba92db4be6f7aeca24379",
+      "winningEntry": {
+        "boxVersionRewardId": "00000007-0004-7000-8000-000000000001",
+        "position": 0,
+        "rewardVersionId": "00000007-0005-7000-8000-000000000001",
+        "weight": "1000"
+      }
+    },
+    {
+      "acceptedDigestHex": "ec8f9a180f878570ff71b91cda8c329cc37ef71afe30551d0bd2ec1793cea9ac",
+      "acceptedRound": "0",
+      "clientSeed": "2a03dbf011ffcbda7c75cbb79e465c06f6a15116bf197d4dee118ee3380f43ba",
+      "manifest": {
+        "algorithmVersion": "hmac-sha256-rejection-v1",
+        "boxId": "00000008-0002-7000-8000-000000000000",
+        "boxVersionId": "00000008-0003-7000-8000-000000000000",
+        "currency": "CAD",
+        "entries": [
+          {
+            "boxVersionRewardId": "00000008-0004-7000-8000-000000000001",
+            "position": 0,
+            "rewardVersionId": "00000008-0005-7000-8000-000000000001",
+            "weight": "9"
+          },
+          {
+            "boxVersionRewardId": "00000008-0004-7000-8000-000000000002",
+            "position": 1,
+            "rewardVersionId": "00000008-0005-7000-8000-000000000002",
+            "weight": "90"
+          },
+          {
+            "boxVersionRewardId": "00000008-0004-7000-8000-000000000003",
+            "position": 2,
+            "rewardVersionId": "00000008-0005-7000-8000-000000000003",
+            "weight": "900"
+          }
+        ],
+        "priceMinor": "1008",
+        "totalWeight": "999"
+      },
+      "manifestHash": "a1c16005c55f5fc1a7cb0df63c0d498b6c2d6d62a7b5b14f27a7fed0ca900fb3",
+      "name": "synthetic-vector-08",
+      "nonce": "4294967296",
+      "roundDigests": [
+        {
+          "digestHex": "ec8f9a180f878570ff71b91cda8c329cc37ef71afe30551d0bd2ec1793cea9ac",
+          "round": "0"
+        }
+      ],
+      "seedSetId": "00000008-0001-7000-8000-000000000000",
+      "selectionValue": "99",
+      "serverSeedCommitment": "e838056f5a8f75bd0a5daedcf5c761e8324392e2ccb48951b0c8697a3dd4ed98",
+      "serverSeedHex": "0d8eb4d05de42e75b57aff5f2bdab4d29d2443603f365e68e352d7f08c1dda75",
+      "winningEntry": {
+        "boxVersionRewardId": "00000008-0004-7000-8000-000000000003",
+        "position": 2,
+        "rewardVersionId": "00000008-0005-7000-8000-000000000003",
+        "weight": "900"
+      }
+    },
+    {
+      "acceptedDigestHex": "4f1f9debfcb1aa310b0fc736f689e3638d21c7ac07e09ba667f809f7dda92ac2",
+      "acceptedRound": "0",
+      "clientSeed": "97e43a5f92a7fa096e90f6c9f92bf4751c95636ddec8ac6d2429bc5cf3432586",
+      "manifest": {
+        "algorithmVersion": "hmac-sha256-rejection-v1",
+        "boxId": "00000009-0002-7000-8000-000000000000",
+        "boxVersionId": "00000009-0003-7000-8000-000000000000",
+        "currency": "USD",
+        "entries": [
+          {
+            "boxVersionRewardId": "00000009-0004-7000-8000-000000000001",
+            "position": 0,
+            "rewardVersionId": "00000009-0005-7000-8000-000000000001",
+            "weight": "2"
+          },
+          {
+            "boxVersionRewardId": "00000009-0004-7000-8000-000000000002",
+            "position": 1,
+            "rewardVersionId": "00000009-0005-7000-8000-000000000002",
+            "weight": "3"
+          },
+          {
+            "boxVersionRewardId": "00000009-0004-7000-8000-000000000003",
+            "position": 2,
+            "rewardVersionId": "00000009-0005-7000-8000-000000000003",
+            "weight": "5"
+          },
+          {
+            "boxVersionRewardId": "00000009-0004-7000-8000-000000000004",
+            "position": 3,
+            "rewardVersionId": "00000009-0005-7000-8000-000000000004",
+            "weight": "7"
+          },
+          {
+            "boxVersionRewardId": "00000009-0004-7000-8000-000000000005",
+            "position": 4,
+            "rewardVersionId": "00000009-0005-7000-8000-000000000005",
+            "weight": "11"
+          }
+        ],
+        "priceMinor": "1009",
+        "totalWeight": "28"
+      },
+      "manifestHash": "2527acbcd7db93bb77f7ba78ba89b67b29f0b78cc2aaaa64f35768b2b8e1ab6b",
+      "name": "synthetic-vector-09",
+      "nonce": "9007199254740993",
+      "roundDigests": [
+        {
+          "digestHex": "4f1f9debfcb1aa310b0fc736f689e3638d21c7ac07e09ba667f809f7dda92ac2",
+          "round": "0"
+        }
+      ],
+      "seedSetId": "00000009-0001-7000-8000-000000000000",
+      "selectionValue": "18",
+      "serverSeedCommitment": "a45d676fcd7b6bb93da1cd1203dd0ed6fe23011d311e2a7758260ffc99517fb5",
+      "serverSeedHex": "9b07f7894bb3059182c66a7080e748a245fe141df89ea495d14d5514f793705c",
+      "winningEntry": {
+        "boxVersionRewardId": "00000009-0004-7000-8000-000000000005",
+        "position": 4,
+        "rewardVersionId": "00000009-0005-7000-8000-000000000005",
+        "weight": "11"
+      }
+    },
+    {
+      "acceptedDigestHex": "0b20f8d1ab7a1da79015c1599b9c0ae682946e9c50692ee3b3b8b81eff8d9023",
+      "acceptedRound": "0",
+      "clientSeed": "cf86fa187ff94006f7a3bfa22f5607c5545073eaca9a693250abe0f0add013ac",
+      "manifest": {
+        "algorithmVersion": "hmac-sha256-rejection-v1",
+        "boxId": "0000000a-0002-7000-8000-000000000000",
+        "boxVersionId": "0000000a-0003-7000-8000-000000000000",
+        "currency": "CAD",
+        "entries": [
+          {
+            "boxVersionRewardId": "0000000a-0004-7000-8000-000000000001",
+            "position": 0,
+            "rewardVersionId": "0000000a-0005-7000-8000-000000000001",
+            "weight": "79"
+          },
+          {
+            "boxVersionRewardId": "0000000a-0004-7000-8000-000000000002",
+            "position": 1,
+            "rewardVersionId": "0000000a-0005-7000-8000-000000000002",
+            "weight": "20"
+          },
+          {
+            "boxVersionRewardId": "0000000a-0004-7000-8000-000000000003",
+            "position": 2,
+            "rewardVersionId": "0000000a-0005-7000-8000-000000000003",
+            "weight": "1"
+          }
+        ],
+        "priceMinor": "1010",
+        "totalWeight": "100"
+      },
+      "manifestHash": "8f04855c65415d0ddfa034174600e2524e89ae705114feafeaef25daa5d56518",
+      "name": "synthetic-vector-10",
+      "nonce": "9223372036854775807",
+      "roundDigests": [
+        {
+          "digestHex": "0b20f8d1ab7a1da79015c1599b9c0ae682946e9c50692ee3b3b8b81eff8d9023",
+          "round": "0"
+        }
+      ],
+      "seedSetId": "0000000a-0001-7000-8000-000000000000",
+      "selectionValue": "11",
+      "serverSeedCommitment": "1e293e75044b786fb6ef51f124fa1c466848ae326500b2732a8be99e5ddb7551",
+      "serverSeedHex": "e2649971fd19d069122d4aff44e928cad9037129d901c640e47c58687a28eed9",
+      "winningEntry": {
+        "boxVersionRewardId": "0000000a-0004-7000-8000-000000000001",
+        "position": 0,
+        "rewardVersionId": "0000000a-0005-7000-8000-000000000001",
+        "weight": "79"
+      }
+    }
+  ]
+}

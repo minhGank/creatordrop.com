@@ -179,3 +179,21 @@ Tests must cover:
 - a separate verifier package/tool with no imports from the production selection function.
 
 Statistical tests may detect gross implementation mistakes but cannot replace deterministic vectors or prove fairness. Keep them non-flaky with fixed seeds and generous, reviewed thresholds.
+
+## Phase 6 implementation
+
+The pure production engine lives in `@creatordrop/domain`. Its public `selectReward` operation accepts an explicit 32-byte server seed, canonical client seed, seed-set ID, nonce, algorithm version, immutable manifest, and optional expected manifest hash. It returns the accepted digest bytes/hex, accepted round, unbiased `BigInt` selection value, exact selected association/reward-version IDs, manifest hash, and total weight. It has no HTTP, PostgreSQL, Supabase, environment, filesystem, clock, or seed-lifecycle dependency.
+
+The engine exposes its rejection sampler separately with an injected digest source. Production `selectReward` always constructs that source with Node's HMAC-SHA256 implementation; injection exists only at the pure sampler boundary so deterministic tests can exercise otherwise vanishingly rare rejected rounds.
+
+`@creatordrop/rng-verifier` is an independent implementation. It does not import or depend on `@creatordrop/domain`; it separately validates and canonicalizes the manifest, verifies the revealed seed commitment, reconstructs each HMAC message, performs rejection sampling and weighted selection, and compares all recorded proof fields. Well-formed disagreements return explicit mismatch codes. Malformed inputs throw stable, secret-free verifier errors.
+
+Language-neutral fixtures are checked in at `test-vectors/rng/hmac-sha256-rejection-v1.json`. They contain ten obviously synthetic server/client seeds, commitments, manifests/hashes, per-round digests, nonces (including values beyond JavaScript's safe integer range), selections, and winners. The companion `hmac-sha256-rejection-v1-primitives.json` contains an independently checked nonzero-round HMAC answer and crafted `limit`, `limit + 1`, and accepted-digest sequences so rejection behavior is executable without waiting for an infeasibly rare natural HMAC rejection. `scripts/generate-rng-test-vectors.mjs` is a standalone reference implementation that imports neither production nor verifier code. Reproducibility is a CI gate:
+
+```bash
+npm run check:rng-vectors
+```
+
+The workspace-boundary gate also scans verifier and generator source imports, including deep, dynamic, undeclared-hoisted, and relative cross-workspace imports, so their independence is enforced in addition to being documented.
+
+Phase 6 adds no endpoint, seed persistence, nonce allocation, opening record, or database migration.

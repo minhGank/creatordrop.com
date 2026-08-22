@@ -127,7 +127,7 @@ const parseUuid = (value: string | undefined, field: string): string => {
   if (value === undefined || !isUuid(value)) {
     throw validationError(`${field} must be a UUID.`, { field });
   }
-  return value;
+  return value.toLowerCase();
 };
 
 export const parseBoxId = (value: string | undefined): BoxId => parseUuid(value, 'boxId') as BoxId;

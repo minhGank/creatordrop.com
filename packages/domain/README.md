@@ -1,3 +1,5 @@
-# Domain package (deferred)
+# Domain package
 
-This architecture slot is intentionally not an npm workspace yet. Domain behavior begins in a later roadmap phase; Phase 1 contains no product logic.
+This workspace contains pure CreatorDrop domain behavior with no dependency on HTTP, databases, environment variables, clocks, filesystems, or network access.
+
+Phase 6 introduces the production `hmac-sha256-rejection-v1` selector, strict published-manifest validation, deterministic cryptographic primitives, unbiased rejection sampling, and half-open weighted selection. Seed persistence and box-opening orchestration remain outside this package.

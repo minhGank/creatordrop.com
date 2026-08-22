@@ -72,6 +72,21 @@ Tests connect to real PostgreSQL. Foundation transaction tests use dedicated Pos
 
 `npm test` excludes `*.integration.test.ts`; unit tests never silently require PostgreSQL.
 
+## Deterministic RNG and verifier
+
+Phase 6 has two deliberately separate workspaces:
+
+- `@creatordrop/domain` contains strict manifest verification, production HMAC construction, rejection sampling, weighted selection, and `selectReward`;
+- `@creatordrop/rng-verifier` independently recomputes revealed proofs and has no dependency on the production domain package.
+
+The checked-in JSON vectors are public synthetic fixtures, not active seed material. The primitive corpus includes crafted rejection-boundary sequences and an independently checked round-10 HMAC known answer. Verify that the standalone reference generator reproduces both vector documents exactly with:
+
+```bash
+npm run check:rng-vectors
+```
+
+Use `node scripts/generate-rng-test-vectors.mjs --primitives` to print the primitive corpus for review. The check command and source-level verifier/generator independence check are part of local and GitHub CI. RNG tests run under ordinary `npm test` and require no Supabase, database, network, clock, or environment configuration.
+
 ## Run the API locally
 
 Start Supabase, export the example environment, and run the API watcher:

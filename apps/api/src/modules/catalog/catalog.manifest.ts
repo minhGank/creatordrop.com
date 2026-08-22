@@ -1,4 +1,8 @@
-import { createHash } from 'node:crypto';
+import {
+  canonicalizePublishedManifest as canonicalizeDomainManifest,
+  hashPublishedManifest as hashDomainManifest,
+  rngAlgorithmVersion,
+} from '@creatordrop/domain';
 
 import { CatalogPublicationError } from './catalog.errors.js';
 import type {
@@ -11,7 +15,6 @@ import type {
   RewardVersionId,
 } from './catalog.js';
 
-export const rngAlgorithmVersion = 'hmac-sha256-rejection-v1' as const;
 const maximumSignedBigint = 9_223_372_036_854_775_807n;
 
 export interface ManifestEntryInput {
@@ -28,8 +31,6 @@ export interface ManifestInput {
   readonly entries: readonly ManifestEntryInput[];
   readonly priceMinor: MoneyMinor;
 }
-
-const quoted = (value: string): string => JSON.stringify(value);
 
 export const totalProbabilityWeight = (
   entries: readonly ManifestEntryInput[],
@@ -75,17 +76,11 @@ export const createPublishedManifest = (input: ManifestInput): PublishedManifest
   };
 };
 
-// This fixed-schema serializer follows RFC 8785 key ordering and JSON scalar encoding.
-export const canonicalizePublishedManifest = (manifest: PublishedManifest): string => {
-  const entries = manifest.entries
-    .map(
-      (entry) =>
-        `{"boxVersionRewardId":${quoted(entry.boxVersionRewardId)},"position":${entry.position.toString()},"rewardVersionId":${quoted(entry.rewardVersionId)},"weight":${quoted(entry.weight)}}`,
-    )
-    .join(',');
-
-  return `{"algorithmVersion":${quoted(manifest.algorithmVersion)},"boxId":${quoted(manifest.boxId)},"boxVersionId":${quoted(manifest.boxVersionId)},"currency":${quoted(manifest.currency)},"entries":[${entries}],"priceMinor":${quoted(manifest.priceMinor)},"totalWeight":${quoted(manifest.totalWeight)}}`;
-};
+// The shared domain canonicalizer preserves the exact Phase 5 persisted byte format.
+export const canonicalizePublishedManifest = (manifest: PublishedManifest): string =>
+  canonicalizeDomainManifest(manifest);
 
 export const hashPublishedManifest = (manifest: PublishedManifest): string =>
-  createHash('sha256').update(canonicalizePublishedManifest(manifest), 'utf8').digest('hex');
+  hashDomainManifest(manifest);
+
+export { rngAlgorithmVersion };

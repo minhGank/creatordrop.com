@@ -89,6 +89,10 @@ interface BoxVersionRow {
   readonly versionNumber: unknown;
 }
 
+interface PublicBoxVersionRow extends BoxVersionRow {
+  readonly boxId: unknown;
+}
+
 interface RewardVersionRow {
   readonly createdAt: unknown;
   readonly declaredValueCurrency: unknown;
@@ -124,6 +128,11 @@ export interface RewardVersionRecord {
   readonly rewardId: RewardId;
   readonly rewardStatus: RewardStatus;
   readonly version: RewardVersion;
+}
+
+export interface PublicBoxVersionRecord {
+  readonly boxId: BoxId;
+  readonly version: BoxVersion;
 }
 
 const isOneOf = <T extends string>(value: unknown, values: readonly T[]): value is T =>
@@ -185,6 +194,11 @@ const parseBoxVersion = (row: BoxVersionRow): BoxVersion => {
     versionNumber: requiredNumber(row.versionNumber, 'box version number'),
   };
 };
+
+const parsePublicBoxVersion = (row: PublicBoxVersionRow): PublicBoxVersionRecord => ({
+  boxId: requiredString(row.boxId, 'box ID') as BoxId,
+  version: parseBoxVersion(row),
+});
 
 const boxVersionFromJoinedRow = (row: BoxRow): BoxVersion | null => {
   if (row.draftId === null) return null;
@@ -892,29 +906,29 @@ export const archiveRewardScoped = async (
 export const findPublicCurrentVersion = async (
   executor: QueryExecutor,
   boxId: BoxId,
-): Promise<BoxVersion | undefined> => {
-  const result = await executor.query<BoxVersionRow>(
-    `select ${boxVersionColumns}
+): Promise<PublicBoxVersionRecord | undefined> => {
+  const result = await executor.query<PublicBoxVersionRow>(
+    `select bv.box_id::text as "boxId", ${boxVersionColumns}
        from app.boxes b
        join app.box_versions bv on bv.id = b.current_published_version_id
       where b.id = $1 and b.status = 'active' and bv.state = 'published'`,
     [boxId],
   );
-  return result.rows[0] === undefined ? undefined : parseBoxVersion(result.rows[0]);
+  return result.rows[0] === undefined ? undefined : parsePublicBoxVersion(result.rows[0]);
 };
 
 export const findPublicPublishedVersion = async (
   executor: QueryExecutor,
   boxId: BoxId,
   versionId: BoxVersionId,
-): Promise<BoxVersion | undefined> => {
-  const result = await executor.query<BoxVersionRow>(
-    `select ${boxVersionColumns}
+): Promise<PublicBoxVersionRecord | undefined> => {
+  const result = await executor.query<PublicBoxVersionRow>(
+    `select bv.box_id::text as "boxId", ${boxVersionColumns}
        from app.box_versions bv
       where bv.box_id = $1 and bv.id = $2 and bv.state = 'published'`,
     [boxId, versionId],
   );
-  return result.rows[0] === undefined ? undefined : parseBoxVersion(result.rows[0]);
+  return result.rows[0] === undefined ? undefined : parsePublicBoxVersion(result.rows[0]);
 };
 
 export const listPublishedConfiguration = async (

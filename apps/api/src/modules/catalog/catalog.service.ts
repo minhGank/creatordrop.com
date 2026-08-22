@@ -596,14 +596,18 @@ export const createCatalogService = ({
       return box.draft;
     });
 
-    const version = await findPublicPublishedVersion(database, command.boxId, publishedVersion.id);
-    if (version === undefined) throw new Error('Published version was not found.');
-    const catalog = await buildPublishedCatalog(database, command.boxId, version);
+    const published = await findPublicPublishedVersion(
+      database,
+      command.boxId,
+      publishedVersion.id,
+    );
+    if (published === undefined) throw new Error('Published version was not found.');
+    const catalog = await buildPublishedCatalog(database, published.boxId, published.version);
     logger.info('catalog.audit', {
       action: 'box.published',
       actorUserId: command.actorUserId,
       boxId: command.boxId,
-      boxVersionId: version.id,
+      boxVersionId: published.version.id,
       configurationHash: catalog.configurationHash,
       creatorId: command.creatorId,
       requestId: command.requestId,
@@ -623,15 +627,15 @@ export const createCatalogService = ({
   },
 
   getPublicBox: async (boxId) => {
-    const version = await findPublicCurrentVersion(database, boxId);
-    if (version === undefined) throw new CatalogResourceNotFoundError();
-    return buildPublishedCatalog(database, boxId, version);
+    const published = await findPublicCurrentVersion(database, boxId);
+    if (published === undefined) throw new CatalogResourceNotFoundError();
+    return buildPublishedCatalog(database, published.boxId, published.version);
   },
 
   getPublicBoxVersion: async (boxId, versionId) => {
-    const version = await findPublicPublishedVersion(database, boxId, versionId);
-    if (version === undefined) throw new CatalogResourceNotFoundError();
-    return buildPublishedCatalog(database, boxId, version);
+    const published = await findPublicPublishedVersion(database, boxId, versionId);
+    if (published === undefined) throw new CatalogResourceNotFoundError();
+    return buildPublishedCatalog(database, published.boxId, published.version);
   },
 
   archiveBox: async (command) => {

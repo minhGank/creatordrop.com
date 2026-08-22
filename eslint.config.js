@@ -43,7 +43,9 @@ export default tseslint.config(
       'apps/worker/**/*.ts',
       'packages/config/**/*.ts',
       'packages/database/**/*.ts',
+      'packages/domain/**/*.ts',
       'packages/observability/**/*.ts',
+      'packages/rng-verifier/**/*.ts',
       'packages/test-support/**/*.ts',
       'tests/**/*.ts',
     ],
@@ -63,6 +65,43 @@ export default tseslint.config(
     rules: {
       ...reactHooks.configs.recommended.rules,
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
+    },
+  },
+  {
+    files: ['packages/rng-verifier/**/*.{js,mjs,ts}'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['@creatordrop/domain', '@creatordrop/domain/*'],
+              message: 'The independent RNG verifier must not import the production domain.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ['scripts/generate-rng-test-vectors.mjs'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: [
+                '@creatordrop/domain',
+                '@creatordrop/domain/*',
+                '@creatordrop/rng-verifier',
+                '@creatordrop/rng-verifier/*',
+              ],
+              message: 'The RNG vector generator must remain implementation-independent.',
+            },
+          ],
+        },
+      ],
     },
   },
   {

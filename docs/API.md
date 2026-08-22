@@ -202,6 +202,8 @@ The server has already decided and committed the reward when this response is ge
 
 ## Fairness verification
 
+The routes below are the future HTTP contract direction. Phase 6 implements only the pure `@creatordrop/domain` selector, independent `@creatordrop/rng-verifier`, and language-neutral fixtures; it adds no HTTP endpoint and never accepts a server seed through the production API.
+
 | Method | Path                                               | Auth   | Purpose                                                           |
 | ------ | -------------------------------------------------- | ------ | ----------------------------------------------------------------- |
 | `GET`  | `/v1/fairness/openings/:publicOpeningId`           | public | Proof inputs, manifest, computed fields, and reveal state         |

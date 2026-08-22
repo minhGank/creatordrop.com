@@ -1,0 +1,17 @@
+{
+  "name": "@creatordrop/rng-verifier",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false",
+    "typecheck:tests": "tsc --noEmit --pretty false --project tsconfig.test.json"
+  }
+}
