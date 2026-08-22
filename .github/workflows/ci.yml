@@ -45,6 +45,8 @@ jobs:
         run: npm run format:check
 
       - name: Lint
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: npm run lint
 
       - name: Typecheck
