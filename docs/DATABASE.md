@@ -79,26 +79,38 @@ The Phase 5 publish transaction verifies at least one association, positive weig
 
 ## Fairness state
 
+### `rng_encryption_key_versions`
+
+Immutable operator-provisioned registry with `version` as the primary key and a unique 32-byte `key_identity` equal to `SHA-256(raw 32-byte key material)`. A version can identify only one key and the same key material cannot be relabeled under another version. The restricted application role has `SELECT` only; inserts require the migration/operator role, and updates/deletes are trigger-prohibited. The raw key is never stored. The documented `local-dev-v1` all-zero example fingerprint is provisioned by migration; every non-local version requires an explicit deployment operation.
+
 ### `fairness_profiles`
 
-One per user: `user_id` PK/FK, `current_client_seed_hash bytea`, optional encrypted/current seed storage only if server-side recovery is a product requirement, timestamps/revision. The opening stores the actual client seed used. A seed must be 32 random bytes encoded as 64 lowercase hex characters; the UI may generate it, but the user can replace it before opening.
+One per user: `user_id` PK/FK, canonical `current_client_seed text`, generated `current_client_seed_hash bytea`, timestamps, and optimistic `revision`. The value is stored because the authenticated API returns it and a later opening may use the precommitted preference; a client seed is public fairness input, not equivalent to the protected server seed. It must be exactly 32 bytes represented by 64 lowercase hexadecimal characters. Initialization always requires the user to submit it explicitly. Each future opening stores its exact client seed, so profile updates do not alter history. This row is also the authoritative per-user RNG-lifecycle mutex: seed and rotation writes acquire it with `SELECT ... FOR UPDATE` before seed rows and then rotation rows.
 
 ### `rng_seed_sets`
 
-| Column                                    | Type        | Rules                                               |
-| ----------------------------------------- | ----------- | --------------------------------------------------- |
-| `id`                                      | uuid        | PK and part of RNG message                          |
-| `user_id`                                 | uuid        | FK; initial per-user scope                          |
-| `commitment`                              | bytea       | unique, SHA-256 of raw seed                         |
-| `server_seed_ciphertext`                  | bytea       | not null until retention policy permits destruction |
-| `encryption_key_version`                  | text        | not null                                            |
-| `revealed_server_seed`                    | bytea       | nullable; set only after retirement                 |
-| `status`                                  | text        | `active`, `retired`, `revealed`, `compromised`      |
-| `next_nonce`                              | bigint      | `>= 0`, allocated under row lock                    |
-| `max_nonce_exclusive`                     | bigint      | rotation boundary                                   |
-| `created_at`, `retired_at`, `revealed_at` | timestamptz | lifecycle times                                     |
+| Column                       | Type        | Rules                                          |
+| ---------------------------- | ----------- | ---------------------------------------------- |
+| `id`                         | uuid        | PK and part of RNG message                     |
+| `user_id`                    | uuid        | FK; initial per-user scope                     |
+| `commitment`                 | bytea       | unique, SHA-256 of raw seed                    |
+| `server_seed_ciphertext`     | bytea       | 32-byte AES-GCM ciphertext                     |
+| `encryption_iv`              | bytea       | fresh 12-byte GCM IV                           |
+| `encryption_auth_tag`        | bytea       | 16-byte GCM authentication tag                 |
+| `encryption_key_identity`    | bytea       | nullable legacy / 32-byte SHA-256 key identity |
+| `encryption_key_version`     | text        | versioned external key reference               |
+| `rng_algorithm_version`      | text        | versioned deterministic selection algorithm    |
+| `revealed_server_seed`       | bytea       | nullable; set only after retirement            |
+| `status`                     | text        | `active`, `retired`, `revealed`, `compromised` |
+| `next_nonce`                 | bigint      | `>= 0`, allocated under row lock               |
+| `max_nonce_exclusive`        | bigint      | rotation boundary                              |
+| `rotate_after`               | timestamptz | age-policy boundary fixed at creation          |
+| `rotated_from_seed_set_id`   | uuid        | nullable immutable predecessor                 |
+| lifecycle reasons/timestamps | text/time   | retirement, reveal, and compromise evidence    |
 
-Partial unique index `(user_id) WHERE status = 'active'`; unique `commitment`; index `(status, retired_at)` for reveal jobs. A trigger rejects setting `revealed_server_seed` on an active row and verifies its hash equals the commitment. Server seed plaintext never appears in general query views or logs.
+Partial unique index `(user_id) WHERE status = 'active'`; unique `commitment`, predecessor, `(encryption_key_version, encryption_iv)`, and populated `(encryption_key_identity, encryption_iv)`; index `(status, retired_at)` for future reveal scheduling. The key identity is used only for equality, never decryption, and new rows derive it from `rng_encryption_key_versions` rather than trusting an application-supplied fingerprint. A not-yet-validated composite foreign key preserves pre-registry rows while enforcing the exact registered `(version, identity)` pair on new writes. A profile foreign key and composite predecessor key keep seed history within an initialized user. Checks enforce exact cryptographic byte lengths, nonnegative bounded nonces, allowlisted lifecycle reasons, and status/timestamp shape and ordering. Insert/update triggers require a canonical active initial row with an authoritative key identity, allow only `active -> retired -> revealed` or `active/retired -> compromised`, require nonce increments of exactly one while active, preserve retirement and cryptographic history, block deletion, reject null/active/mismatched reveals, and verify the revealed SHA-256 value against the commitment.
+
+`rng_seed_rotations` records a user-scoped allowlisted idempotency key, a SHA-256 operation fingerprint, transition type/reason, and immutable previous/new seed-set IDs. A compromise-remediation row may temporarily have a null successor while the compromised predecessor safely leaves the user with zero active seeds; the only permitted update completes that row once. Early seed/rotation write guards serialize each user's lifecycle through the matching `fairness_profiles` row before deferred checks inspect cross-row state. Inserts wait for the profile lock; an unordered raw update that already holds its target row uses a non-waiting profile lock and fails with retryable SQLSTATE `40001` on contention, avoiding a reverse-order deadlock with application paths. Deferred constraints on both rotation and seed writes prohibit any standalone active seed while remediation is pending and verify the compromised predecessor/reason and active same-user lineage successor at commit, including different registered key identity and version after `key_compromise`. Unique constraints prevent one request or predecessor from producing multiple successors. The restricted application role may read/insert/update lifecycle rows as required but cannot delete them. PostgreSQL stores ciphertext while a seed is unrevealed and deliberately stores plaintext only after the row reaches `revealed`; active and historical master keys remain solely in the application secret source.
 
 ## Opening, wins, and fulfillment
 
@@ -188,7 +200,7 @@ Cross-row rules require deferred constraint triggers or narrowly permissioned da
 
 ## Transaction isolation and lock policy
 
-Use `READ COMMITTED` plus explicit `SELECT ... FOR UPDATE`/conditional updates for opening and payment posting. Keep transactions free of HTTP, Redis, Socket.io, and file operations. Maintain the global lock order documented in `ARCHITECTURE.md`. Retry PostgreSQL deadlocks/serialization failures with bounded jitter using the same command/idempotency identity. Use advisory locks only for singleton maintenance jobs, not wallet correctness.
+Use `READ COMMITTED` plus explicit `SELECT ... FOR UPDATE`/conditional updates for opening and payment posting. Keep transactions free of HTTP, Redis, Socket.io, and file operations. Maintain the global lock order documented in `ARCHITECTURE.md`; within fairness lifecycle work it is the per-user `fairness_profiles` row, relevant seed-set rows, then a rotation row. Retry PostgreSQL deadlocks/serialization failures with bounded jitter using the same command/idempotency identity. Use advisory locks only for singleton maintenance jobs, not wallet correctness.
 
 ## Retention and deletion
 

@@ -14,6 +14,7 @@ import { createJwtVerifier } from '../src/modules/auth/jwt-verifier.js';
 import { createCatalogService } from '../src/modules/catalog/catalog.service.js';
 import { createCreatorService } from '../src/modules/creators/creator.service.js';
 import { createUserBootstrapService } from '../src/modules/users/bootstrap-user.service.js';
+import { createUnhandledFairnessService } from './support/test-app.js';
 
 const localApplicationUrl =
   'postgresql://postgres:postgres@127.0.0.1:54322/postgres?options=-c%20role%3Dcreatordrop_app';
@@ -339,6 +340,7 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
       }),
       catalogService: createCatalogService({ database: applicationDatabase, logger }),
       creatorService: createCreatorService({ database: applicationDatabase, logger }),
+      fairnessService: createUnhandledFairnessService(),
       logger,
       security: {
         allowedOrigins: ['http://localhost:5173'],
@@ -346,6 +348,8 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
         authRateLimitWindowMs: 60_000,
         creatorMutationRateLimitMax: 10_000,
         creatorMutationRateLimitWindowMs: 60_000,
+        fairnessMutationRateLimitMax: 10_000,
+        fairnessMutationRateLimitWindowMs: 60_000,
         requestBodyLimitBytes: 262_144,
       },
     });

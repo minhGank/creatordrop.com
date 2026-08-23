@@ -14,6 +14,8 @@ import { createCatalogRouter } from './modules/catalog/catalog.route.js';
 import type { CatalogService } from './modules/catalog/catalog.service.js';
 import { createCreatorRouter } from './modules/creators/creator.route.js';
 import type { CreatorService } from './modules/creators/creator.service.js';
+import { createFairnessRouter } from './modules/fairness/fairness.route.js';
+import type { FairnessService } from './modules/fairness/fairness.service.js';
 
 const sendStatus =
   (status: ServiceStatusResponse['status']) =>
@@ -25,6 +27,7 @@ export interface AppOptions {
   readonly authenticate: RequestHandler;
   readonly catalogService: CatalogService;
   readonly creatorService: CreatorService;
+  readonly fairnessService: FairnessService;
   readonly logger: Logger;
   readonly security: {
     readonly allowedOrigins: readonly string[];
@@ -32,6 +35,8 @@ export interface AppOptions {
     readonly authRateLimitWindowMs: number;
     readonly creatorMutationRateLimitMax: number;
     readonly creatorMutationRateLimitWindowMs: number;
+    readonly fairnessMutationRateLimitMax: number;
+    readonly fairnessMutationRateLimitWindowMs: number;
     readonly requestBodyLimitBytes: number;
   };
 }
@@ -40,6 +45,7 @@ export const createApp = ({
   authenticate,
   catalogService,
   creatorService,
+  fairnessService,
   logger,
   security,
 }: AppOptions): Express => {
@@ -68,6 +74,15 @@ export const createApp = ({
       mutationRateLimitMax: security.creatorMutationRateLimitMax,
       mutationRateLimitWindowMs: security.creatorMutationRateLimitWindowMs,
       service: catalogService,
+    }),
+  );
+  app.use(
+    '/v1',
+    createFairnessRouter({
+      authenticate,
+      mutationRateLimitMax: security.fairnessMutationRateLimitMax,
+      mutationRateLimitWindowMs: security.fairnessMutationRateLimitWindowMs,
+      service: fairnessService,
     }),
   );
   app.use(

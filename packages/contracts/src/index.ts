@@ -210,3 +210,43 @@ export interface PublishedBoxVersionResponse {
   readonly manifest: PublishedManifestContract;
   readonly version: BoxVersionContract;
 }
+
+export const rngSeedSetStatuses = ['active', 'retired', 'revealed', 'compromised'] as const;
+export type RngSeedSetStatus = (typeof rngSeedSetStatuses)[number];
+
+export interface PublicRngSeedSetContract {
+  readonly algorithmVersion: 'hmac-sha256-rejection-v1';
+  readonly commitment: string;
+  readonly compromisedAt: string | null;
+  readonly createdAt: string;
+  readonly id: string;
+  readonly maxNonceExclusive: string;
+  readonly nextNonce: string;
+  readonly retiredAt: string | null;
+  readonly revealedAt: string | null;
+  readonly revealedServerSeed: string | null;
+  readonly rotateAfter: string;
+  readonly status: RngSeedSetStatus;
+}
+
+export interface CurrentFairnessResponse {
+  readonly fairness: {
+    readonly activeSeedSet: PublicRngSeedSetContract;
+    readonly clientSeed: string;
+    readonly revision: number;
+    readonly rotationPolicy: {
+      readonly maxAgeMs: number;
+      readonly maxOpenings: string;
+    };
+  };
+}
+
+export interface PublicRngSeedSetResponse {
+  readonly seedSet: PublicRngSeedSetContract;
+}
+
+export interface RngSeedRotationResponse {
+  readonly newSeedSet: PublicRngSeedSetContract;
+  readonly previousSeedSetId: string;
+  readonly replayed: boolean;
+}

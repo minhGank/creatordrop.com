@@ -91,10 +91,18 @@ The opening endpoint is a short PostgreSQL transaction at `READ COMMITTED` with 
 
 1. idempotency key claim;
 2. wallet row;
-3. active RNG seed-set row (allocates nonce);
-4. any inventory/reservation rows, in UUID order;
-5. immutable box version reads;
-6. ledger/open/fulfillment/outbox inserts.
+3. fairness-profile row;
+4. active RNG seed-set row (allocates nonce);
+5. any inventory/reservation rows, in UUID order;
+6. immutable box version reads;
+7. ledger/open/fulfillment/outbox inserts.
+
+The `fairness_profiles` row is the authoritative per-user RNG-lifecycle lock. Every transaction
+that can create or activate a seed, change seed lifecycle state, allocate a nonce, or create or
+complete a rotation acquires that row before the user's seed rows and then any rotation row.
+Database guards apply the same serialization to restricted-role seed/rotation writes; a raw
+update that arrives in reverse order fails retryably instead of waiting while holding its target
+row. Different users lock different profile rows and remain independent.
 
 The wallet update is conditional (`balance >= cost`) and checked by affected-row count. A unique idempotency record and unique `box_opens.idempotency_record_id` prevent double charge. Deadlocks and serialization failures may be retried a small bounded number of times using the same idempotency key.
 
@@ -185,7 +193,7 @@ Feature folders inside API modules use `*.route.ts`, `*.controller.ts`, `*.servi
 
 ## Security, operational, and compliance requirements
 
-- TLS everywhere; secrets come from a managed secret store. Server seeds are encrypted with versioned envelope encryption and never logged.
+- TLS everywhere; secrets come from a managed secret store. Phase 7 server seeds use versioned authenticated AES-256-GCM encryption under an environment-supplied key and are never logged; true per-record DEK/KMS envelope encryption remains production hardening.
 - Rate-limit login, seed rotation, opening, funding, and creator mutation endpoints by actor and network. Add bot/abuse signals without using them to silently alter odds.
 - Use secure headers, strict CORS allowlists, request size limits, structured redacted logs, dependency scanning, and regular key rotation.
 - Audit creator publishing, probability changes, seed lifecycle, support access, fulfillment address access, payouts, and ledger adjustments.

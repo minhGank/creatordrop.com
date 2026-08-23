@@ -5,6 +5,7 @@ import type { Logger } from '@creatordrop/observability';
 import { createApp, type AppOptions } from '../../src/app.js';
 import type { CatalogService } from '../../src/modules/catalog/catalog.service.js';
 import type { CreatorService } from '../../src/modules/creators/creator.service.js';
+import type { FairnessService } from '../../src/modules/fairness/fairness.service.js';
 
 export const createNoopLogger = (): Logger => ({
   error: () => undefined,
@@ -65,10 +66,26 @@ export const createUnhandledCatalogService = (): CatalogService => {
   };
 };
 
+export const createUnhandledFairnessService = (): FairnessService => {
+  const unhandled = (): Promise<never> =>
+    Promise.reject(new Error('The test did not configure the fairness service operation.'));
+
+  return {
+    getCurrent: unhandled,
+    getPublicSeedSet: unhandled,
+    initialize: unhandled,
+    replaceCompromisedActiveSeed: unhandled,
+    revealRetiredSeedSet: unhandled,
+    rotate: unhandled,
+    updateClientSeed: unhandled,
+  };
+};
+
 export const createTestAppOptions = (overrides: Partial<AppOptions> = {}): AppOptions => ({
   authenticate: createSuccessfulAuthentication(),
   catalogService: createUnhandledCatalogService(),
   creatorService: createUnhandledCreatorService(),
+  fairnessService: createUnhandledFairnessService(),
   logger: createNoopLogger(),
   security: {
     allowedOrigins: ['http://localhost:5173'],
@@ -76,6 +93,8 @@ export const createTestAppOptions = (overrides: Partial<AppOptions> = {}): AppOp
     authRateLimitWindowMs: 60_000,
     creatorMutationRateLimitMax: 100,
     creatorMutationRateLimitWindowMs: 60_000,
+    fairnessMutationRateLimitMax: 100,
+    fairnessMutationRateLimitWindowMs: 60_000,
     requestBodyLimitBytes: 32_768,
   },
   ...overrides,

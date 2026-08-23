@@ -53,7 +53,7 @@ Phase 3 implements only `POST /v1/auth/session/exchange`; the `GET` and `DELETE`
 
 Missing, malformed, unverifiable, expired, or claim-invalid tokens return `401 AUTHENTICATION_REQUIRED`. A valid provider token mapped to a suspended or closed local user returns `403 ACCOUNT_NOT_ACTIVE`. The response and logs do not disclose token verification or account-state internals.
 
-Every request receives `X-Request-Id`. A caller value is retained only when it matches the strict 8–64 character request-ID format; otherwise the API generates a cryptographically random UUID. API request/error logs use allowlisted metadata and redact credential-like attribute names. The bootstrap endpoint currently uses a per-process, in-memory IP limiter. Production horizontal scaling will require a shared limiter store and an explicitly configured trusted-proxy policy.
+Every request receives `X-Request-Id`. A caller value is retained only when it matches the strict 8–64 character request-ID format; otherwise the API generates a cryptographically random UUID. API request/error logs use allowlisted metadata and redact credential-like and RNG-secret attribute names. Fairness mutations use a generous per-process pre-authentication IP limiter followed by a per-process actor-keyed limiter; public seed-history reads have a separate generous IP limit. Production horizontal scaling will require a shared limiter store and an explicitly configured trusted-proxy policy.
 
 ## Users and fairness preferences
 
@@ -64,10 +64,13 @@ Every request receives `X-Request-Id`. A caller value is retained only when it m
 | `GET`   | `/v1/me/openings`             | user               | Paginated private opening history                                        |
 | `GET`   | `/v1/me/rewards`              | user               | Reward wins and fulfillment summaries                                    |
 | `GET`   | `/v1/me/fairness`             | user               | Active seed-set ID/commitment, client seed, nonce count, rotation policy |
+| `POST`  | `/v1/me/fairness`             | user               | Initialize client seed and encrypted active server-seed commitment       |
 | `PUT`   | `/v1/me/fairness/client-seed` | user               | Set future client seed with revision check                               |
-| `POST`  | `/v1/me/fairness/rotate`      | user + idempotency | Retire/reveal old seed and establish a newly committed seed              |
+| `POST`  | `/v1/me/fairness/rotate`      | user + idempotency | Retire old seed and establish a newly committed active seed              |
 
-Changing a client seed never mutates existing opening proofs.
+Initialization requires an explicit canonical 64-character lowercase-hex client seed; the server does not silently choose one. Repeating initialization with the same seed is safe, while a different seed returns `409 FAIRNESS_ALREADY_INITIALIZED`. Current-state and client-seed responses carry an `ETag`; client-seed updates require the quoted current revision in `If-Match`. Changing a client seed never mutates existing lifecycle history or historical opening proofs.
+
+Rotation requires an 8–128 character allowlisted `Idempotency-Key` and an empty body/query. It locks the user's fairness/active-seed state, retires the old row, activates a fresh commitment at nonce `0`, and records the operation type/reason fingerprint and old/new relationship atomically. Same-key/same-intent retries replay; reuse for a different transition conflicts. Phase 7 exposes the authenticated lifecycle service primitive for eligible retirement reveal; automatic scheduling remains deferred. Active ciphertext, IV, authentication tag, key material, and raw server seed are never response fields.
 
 ## Creators
 
@@ -202,7 +205,7 @@ The server has already decided and committed the reward when this response is ge
 
 ## Fairness verification
 
-The routes below are the future HTTP contract direction. Phase 6 implements only the pure `@creatordrop/domain` selector, independent `@creatordrop/rng-verifier`, and language-neutral fixtures; it adds no HTTP endpoint and never accepts a server seed through the production API.
+Phase 7 implements the public seed-set lifecycle route below. Opening proof and machine-readable algorithm routes remain future HTTP contract direction. No route accepts a server seed through the production API.
 
 | Method | Path                                               | Auth   | Purpose                                                           |
 | ------ | -------------------------------------------------- | ------ | ----------------------------------------------------------------- |
@@ -210,7 +213,7 @@ The routes below are the future HTTP contract direction. Phase 6 implements only
 | `GET`  | `/v1/fairness/seed-sets/:seedSetId`                | public | Commitment, lifecycle dates, reveal if retired, algorithm version |
 | `GET`  | `/v1/fairness/algorithms/hmac-sha256-rejection-v1` | public | Versioned machine-readable specification/test-vector link         |
 
-If the seed is active, the proof endpoint returns `verificationStatus: "pending_reveal"` and omits `serverSeed`. Once revealed it returns all inputs described in `RNG.md`. Old algorithms and manifests remain accessible for the full required retention period.
+`GET /v1/fairness/seed-sets/:seedSetId` returns only the commitment, algorithm, nonce/rotation metadata, lifecycle timestamps/status, and `revealedServerSeed`. That field is a lowercase seed only for `revealed` status and is `null` for active, retired, or compromised state; encryption metadata is never returned. If an opening's seed is active, the future proof endpoint returns `verificationStatus: "pending_reveal"` and omits `serverSeed`. Old algorithms and manifests remain accessible for the full required retention period.
 
 ## Wallet, funding, and ledger receipts
 

@@ -2,15 +2,22 @@ import { createConsoleLogger } from '@creatordrop/observability';
 import { createDatabasePool } from '@creatordrop/database';
 
 import { createApp } from './app.js';
-import { getApiEnvironment, getDatabaseEnvironment } from './config/environment.js';
+import {
+  getApiEnvironment,
+  getDatabaseEnvironment,
+  getRngEnvironment,
+} from './config/environment.js';
 import { createAuthenticationMiddleware } from './modules/auth/authentication.middleware.js';
 import { createJwtVerifier } from './modules/auth/jwt-verifier.js';
 import { createCatalogService } from './modules/catalog/catalog.service.js';
 import { createUserBootstrapService } from './modules/users/bootstrap-user.service.js';
 import { createCreatorService } from './modules/creators/creator.service.js';
+import { createEnvironmentSeedEncryptionKeyProvider } from './modules/fairness/fairness.key-provider.js';
+import { createFairnessService } from './modules/fairness/fairness.service.js';
 
 const environment = getApiEnvironment();
 const databaseEnvironment = getDatabaseEnvironment();
+const rngEnvironment = getRngEnvironment();
 const logger = createConsoleLogger({ service: 'api' });
 const database = createDatabasePool({
   ...databaseEnvironment,
@@ -30,10 +37,24 @@ const authenticate = createAuthenticationMiddleware({
 });
 const creatorService = createCreatorService({ database, logger });
 const catalogService = createCatalogService({ database, logger });
+const fairnessService = createFairnessService({
+  database,
+  keyProvider: createEnvironmentSeedEncryptionKeyProvider({
+    historicalKeys: rngEnvironment.historicalMasterKeys,
+    keyHex: rngEnvironment.masterKeyHex,
+    version: rngEnvironment.masterKeyVersion,
+  }),
+  logger,
+  policy: {
+    maxAgeMs: rngEnvironment.maxSeedAgeMs,
+    maxOpenings: rngEnvironment.maxOpeningsPerSeed,
+  },
+});
 const app = createApp({
   authenticate,
   catalogService,
   creatorService,
+  fairnessService,
   logger,
   security: {
     allowedOrigins: environment.corsAllowedOrigins,
@@ -41,6 +62,8 @@ const app = createApp({
     authRateLimitWindowMs: environment.authRateLimitWindowMs,
     creatorMutationRateLimitMax: environment.creatorMutationRateLimitMax,
     creatorMutationRateLimitWindowMs: environment.creatorMutationRateLimitWindowMs,
+    fairnessMutationRateLimitMax: rngEnvironment.fairnessMutationRateLimitMax,
+    fairnessMutationRateLimitWindowMs: rngEnvironment.fairnessMutationRateLimitWindowMs,
     requestBodyLimitBytes: environment.requestBodyLimitBytes,
   },
 });

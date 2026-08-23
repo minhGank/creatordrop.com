@@ -4,6 +4,8 @@ export type {
   Database,
   QueryExecutor,
   TransactionCallback,
+  TransactionExecutor,
   TransactionIsolationLevel,
   TransactionOptions,
 } from './types.js';
+export { assertTransactionExecutor } from './transaction.js';

@@ -4,6 +4,7 @@ import {
   parseApiEnvironment,
   parseDatabaseEnvironment,
   parseMigrationEnvironment,
+  parseRngEnvironment,
   parseWorkerEnvironment,
 } from '../src/index.js';
 
@@ -88,6 +89,138 @@ describe('environment configuration', () => {
       expect(() => parseWorkerEnvironment(environment)).toThrow();
     },
   );
+});
+
+describe('RNG lifecycle environment configuration', () => {
+  const valid = {
+    RNG_MASTER_KEY: '01'.repeat(32),
+    RNG_MASTER_KEY_VERSION: 'synthetic-test-v1',
+    RNG_MAX_OPENINGS_PER_SEED: '1000',
+  } as const;
+
+  it('parses a versioned 32-byte key and bounded rotation policy', () => {
+    expect(parseRngEnvironment(valid)).toEqual({
+      fairnessMutationRateLimitMax: 20,
+      fairnessMutationRateLimitWindowMs: 60_000,
+      historicalMasterKeys: {},
+      masterKeyHex: valid.RNG_MASTER_KEY,
+      masterKeyVersion: 'synthetic-test-v1',
+      maxOpeningsPerSeed: 1000n,
+      maxSeedAgeMs: 86_400_000,
+    });
+    expect(
+      parseRngEnvironment({
+        ...valid,
+        RNG_FAIRNESS_MUTATION_RATE_LIMIT_MAX: '7',
+        RNG_FAIRNESS_MUTATION_RATE_LIMIT_WINDOW_MS: '5000',
+        RNG_MAX_OPENINGS_PER_SEED: '9223372036854775807',
+        RNG_MAX_SEED_AGE_MS: '60000',
+      }),
+    ).toMatchObject({
+      fairnessMutationRateLimitMax: 7,
+      fairnessMutationRateLimitWindowMs: 5000,
+      maxOpeningsPerSeed: 9_223_372_036_854_775_807n,
+      maxSeedAgeMs: 60_000,
+    });
+  });
+
+  it.each([
+    {},
+    { ...valid, RNG_MASTER_KEY: '01'.repeat(31) },
+    { ...valid, RNG_MASTER_KEY: 'AB'.repeat(32) },
+    { ...valid, RNG_MASTER_KEY_VERSION: '' },
+    { ...valid, RNG_MASTER_KEY_VERSION: '__proto__' },
+    { ...valid, RNG_MAX_OPENINGS_PER_SEED: '0' },
+    { ...valid, RNG_MAX_OPENINGS_PER_SEED: '01' },
+    { ...valid, RNG_MAX_OPENINGS_PER_SEED: '9223372036854775808' },
+    { ...valid, RNG_MAX_SEED_AGE_MS: '59999' },
+  ])('rejects unsafe RNG lifecycle configuration: %o', (environment) => {
+    expect(() => parseRngEnvironment(environment)).toThrow();
+  });
+
+  it('parses retained decrypt-only keys and rejects active-version duplication', () => {
+    expect(
+      parseRngEnvironment({
+        ...valid,
+        RNG_HISTORICAL_MASTER_KEYS: JSON.stringify([
+          { key: '02'.repeat(32), version: 'synthetic-test-v0' },
+        ]),
+      }).historicalMasterKeys,
+    ).toEqual({ 'synthetic-test-v0': '02'.repeat(32) });
+    expect(() =>
+      parseRngEnvironment({
+        ...valid,
+        RNG_HISTORICAL_MASTER_KEYS: JSON.stringify([
+          { key: '02'.repeat(32), version: valid.RNG_MASTER_KEY_VERSION },
+        ]),
+      }),
+    ).toThrow();
+    expect(() =>
+      parseRngEnvironment({
+        ...valid,
+        RNG_HISTORICAL_MASTER_KEYS: JSON.stringify([
+          { key: valid.RNG_MASTER_KEY, version: 'synthetic-test-v0' },
+        ]),
+      }),
+    ).toThrow();
+  });
+
+  it('rejects duplicate, escaped-equivalent, reserved, and malformed historical entries', () => {
+    const duplicateKey = '02'.repeat(32);
+    for (const historicalKeys of [
+      JSON.stringify([
+        { key: duplicateKey, version: 'production-v1' },
+        { key: '03'.repeat(32), version: 'production-v1' },
+      ]),
+      `[{"key":"${duplicateKey}","version":"production-v1"},{"key":"${'03'.repeat(
+        32,
+      )}","version":"production-\\u00761"}]`,
+      JSON.stringify([{ key: duplicateKey, version: '__proto__' }]),
+      JSON.stringify([{ key: duplicateKey, unexpected: true, version: 'production-v1' }]),
+      JSON.stringify([{ key: 'not-hex', version: 'production-v1' }]),
+      JSON.stringify({ 'production-v1': duplicateKey }),
+    ]) {
+      expect(() =>
+        parseRngEnvironment({ ...valid, RNG_HISTORICAL_MASTER_KEYS: historicalKeys }),
+      ).toThrow();
+    }
+  });
+
+  it('allows local fixtures only with an explicit development or test runtime', () => {
+    const localExample = {
+      RNG_MASTER_KEY: '00'.repeat(32),
+      RNG_MASTER_KEY_VERSION: 'local-dev-v1',
+    } as const;
+    expect(() => parseRngEnvironment(localExample)).toThrow();
+    expect(() => parseRngEnvironment({ ...localExample, NODE_ENV: 'production' })).toThrow();
+    for (const nodeEnvironment of ['development', 'test'] as const) {
+      expect(parseRngEnvironment({ ...localExample, NODE_ENV: nodeEnvironment }).masterKeyHex).toBe(
+        localExample.RNG_MASTER_KEY,
+      );
+    }
+
+    expect(() =>
+      parseRngEnvironment({
+        ...valid,
+        RNG_MASTER_KEY: localExample.RNG_MASTER_KEY,
+      }),
+    ).toThrow();
+    expect(() =>
+      parseRngEnvironment({
+        ...valid,
+        RNG_MASTER_KEY_VERSION: localExample.RNG_MASTER_KEY_VERSION,
+      }),
+    ).toThrow();
+    expect(() =>
+      parseRngEnvironment({
+        ...valid,
+        NODE_ENV: 'production',
+        RNG_HISTORICAL_MASTER_KEYS: JSON.stringify([
+          { key: '02'.repeat(32), version: 'local-dev-v0' },
+        ]),
+      }),
+    ).toThrow();
+  });
 });
 
 describe('database environment configuration', () => {

@@ -14,7 +14,10 @@ import { createJwtVerifier } from '../src/modules/auth/jwt-verifier.js';
 import { createCreatorService } from '../src/modules/creators/creator.service.js';
 import { trustedUserId } from '../src/modules/creators/creator.schema.js';
 import { createUserBootstrapService } from '../src/modules/users/bootstrap-user.service.js';
-import { createUnhandledCatalogService } from './support/test-app.js';
+import {
+  createUnhandledCatalogService,
+  createUnhandledFairnessService,
+} from './support/test-app.js';
 
 const localApplicationUrl =
   'postgresql://postgres:postgres@127.0.0.1:54322/postgres?options=-c%20role%3Dcreatordrop_app';
@@ -235,6 +238,7 @@ describe('creator tenancy and authorization', { concurrent: false }, () => {
       }),
       catalogService: createUnhandledCatalogService(),
       creatorService: createCreatorService({ database: applicationDatabase, logger }),
+      fairnessService: createUnhandledFairnessService(),
       logger,
       security: {
         allowedOrigins: ['http://localhost:5173'],
@@ -242,6 +246,8 @@ describe('creator tenancy and authorization', { concurrent: false }, () => {
         authRateLimitWindowMs: 60_000,
         creatorMutationRateLimitMax: 10_000,
         creatorMutationRateLimitWindowMs: 60_000,
+        fairnessMutationRateLimitMax: 10_000,
+        fairnessMutationRateLimitWindowMs: 60_000,
         requestBodyLimitBytes: 32_768,
       },
     });

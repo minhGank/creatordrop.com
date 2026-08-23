@@ -14,6 +14,7 @@ import {
   createNoopLogger,
   createUnhandledCatalogService,
   createUnhandledCreatorService,
+  createUnhandledFairnessService,
 } from './support/test-app.js';
 
 const localApplicationUrl =
@@ -144,6 +145,7 @@ describe('local Supabase identity bootstrap', { concurrent: false }, () => {
       }),
       catalogService: createUnhandledCatalogService(),
       creatorService: createUnhandledCreatorService(),
+      fairnessService: createUnhandledFairnessService(),
       logger,
       security: {
         allowedOrigins: ['http://localhost:5173'],
@@ -151,6 +153,8 @@ describe('local Supabase identity bootstrap', { concurrent: false }, () => {
         authRateLimitWindowMs: 60_000,
         creatorMutationRateLimitMax: 100,
         creatorMutationRateLimitWindowMs: 60_000,
+        fairnessMutationRateLimitMax: 100,
+        fairnessMutationRateLimitWindowMs: 60_000,
         requestBodyLimitBytes: 32_768,
       },
     });

@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { getApiEnvironment, getDatabaseEnvironment } from '../src/config/environment.js';
+import {
+  getApiEnvironment,
+  getDatabaseEnvironment,
+  getRngEnvironment,
+} from '../src/config/environment.js';
 
 describe('API environment adapter', () => {
   it('reads and validates process.env at the configuration boundary', () => {
@@ -42,6 +46,21 @@ describe('API environment adapter', () => {
     expect(getDatabaseEnvironment()).toMatchObject({
       applicationName: 'creatordrop',
       maxConnections: 10,
+    });
+
+    vi.unstubAllEnvs();
+  });
+
+  it('requires and validates RNG key material through the process boundary', () => {
+    vi.stubEnv('RNG_MASTER_KEY', '01'.repeat(32));
+    vi.stubEnv('RNG_MASTER_KEY_VERSION', 'synthetic-test-v1');
+    vi.stubEnv('RNG_MAX_OPENINGS_PER_SEED', '1000');
+
+    expect(getRngEnvironment()).toMatchObject({
+      historicalMasterKeys: {},
+      masterKeyHex: '01'.repeat(32),
+      masterKeyVersion: 'synthetic-test-v1',
+      maxOpeningsPerSeed: 1000n,
     });
 
     vi.unstubAllEnvs();

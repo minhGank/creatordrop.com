@@ -43,6 +43,33 @@ describe('request security', () => {
     expect(denied.headers['access-control-allow-origin']).toBeUndefined();
   });
 
+  it('permits Phase 7 browser preflights and exposes optimistic concurrency headers', async () => {
+    const app = createTestApp();
+    const clientSeedPreflight = await request(app)
+      .options('/v1/me/fairness/client-seed')
+      .set('Origin', 'http://localhost:5173')
+      .set('Access-Control-Request-Method', 'PUT')
+      .set('Access-Control-Request-Headers', 'content-type,if-match');
+    const rotationPreflight = await request(app)
+      .options('/v1/me/fairness/rotate')
+      .set('Origin', 'http://localhost:5173')
+      .set('Access-Control-Request-Method', 'POST')
+      .set('Access-Control-Request-Headers', 'idempotency-key');
+
+    expect(clientSeedPreflight.status).toBe(204);
+    expect(clientSeedPreflight.headers['access-control-allow-methods']).toContain('PUT');
+    expect(clientSeedPreflight.headers['access-control-allow-headers']?.toLowerCase()).toContain(
+      'if-match',
+    );
+    expect(rotationPreflight.status).toBe(204);
+    expect(rotationPreflight.headers['access-control-allow-headers']?.toLowerCase()).toContain(
+      'idempotency-key',
+    );
+
+    const response = await request(app).get('/health').set('Origin', 'http://localhost:5173');
+    expect(response.headers['access-control-expose-headers']?.toLowerCase()).toContain('etag');
+  });
+
   it('returns consistent request-correlated 401 and 403 envelopes', async () => {
     const unauthenticated = await request(
       createTestApp({ authenticate: createRejectingAuthentication(authenticationRequired()) }),

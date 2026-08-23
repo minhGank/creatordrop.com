@@ -91,7 +91,7 @@ All 64-bit integers are decimal strings in the manifest and public JSON. Entry o
 
 ### 1. Generate and commit
 
-For each user, generate a seed on a trusted backend/worker, calculate its commitment, encrypt the raw seed with authenticated envelope encryption, and persist the seed-set with status `active` and `next_nonce = 0`. Return the commitment, seed-set ID, algorithm version, and rotation policy to the user before the first opening.
+For each user, generate a seed on a trusted backend/worker, calculate its commitment, encrypt the raw seed with authenticated encryption, and persist the seed-set with status `active` and `next_nonce = 0`. Return the commitment, seed-set ID, algorithm version, and rotation policy to the user before the first opening. The Phase 7 local/environment-key implementation is not true envelope encryption; a per-record data-encryption key wrapped by a managed KMS remains production hardening.
 
 The commitment is public; the ciphertext and plaintext are not. Application logs, traces, error reports, analytics, Redis, and Socket.io payloads must exclude server seeds and ciphertext.
 
@@ -103,11 +103,12 @@ The user sees the active server commitment and chooses/accepts a client seed bef
 
 Inside the same atomic transaction as the wallet debit and opening:
 
-1. lock the active seed-set row;
-2. read `next_nonce` and validate it is below the rotation limit;
-3. increment `next_nonce` exactly once;
-4. compute the result from the immutable box manifest;
-5. store seed-set ID, commitment, client seed, nonce, algorithm version, accepted round/digest/selection, manifest hash, and selected entry.
+1. lock the user's fairness-profile row;
+2. lock the active seed-set row;
+3. read `next_nonce` and validate it is below the rotation limit;
+4. increment `next_nonce` exactly once;
+5. compute the result from the immutable box manifest;
+6. store seed-set ID, commitment, client seed, nonce, algorithm version, accepted round/digest/selection, manifest hash, and selected entry.
 
 Rollback also rolls back nonce allocation. Unique `(rng_seed_set_id, nonce)` is a final defense. Idempotency replay returns the existing opening and must not allocate a new nonce.
 
@@ -144,9 +145,11 @@ Before reveal, the endpoint returns proof inputs and status `pending_reveal`, bu
 
 ## Rotation and concurrency details
 
-Per-user seed-sets are chosen for v1. They naturally pair a public commitment with the user's openings, avoid revealing a global seed while another user's opening is in flight, and limit blast radius. The tradeoff is more key material and seed lifecycle rows. Wallet locking already serializes a user's paid opens, so the additional seed row lock is not a material throughput constraint.
+Per-user seed-sets are chosen for v1. They naturally pair a public commitment with the user's openings, avoid revealing a global seed while another user's opening is in flight, and limit blast radius. The tradeoff is more key material and seed lifecycle rows. Wallet locking already serializes a user's paid opens, so the additional profile/seed row locks are not a material throughput constraint.
 
-Rotation uses the same user/seed lock. If the current seed hits its nonce/age boundary during an open request, the transaction may retire it and activate a pre-generated committed successor, but the successor commitment must be returned/visible before it is used. The simpler recommended behavior is `409 SEED_ROTATION_REQUIRED`, rotate, show the commitment, and require an explicit retry with the same client seed and a new idempotency key because no financial mutation committed.
+The `fairness_profiles` row is the authoritative per-user lifecycle lock. Initialization owns or locks it before inserting the initial seed. Nonce allocation, activation, retirement, reveal, compromise, normal rotation, pending compromise-remediation creation, and remediation completion acquire it before seed rows and then rotation rows. Restricted-role seed/rotation insert and update guards enforce the same per-user serialization; contended raw updates in reverse order fail retryably rather than creating a deadlock. Different users use different profile rows and can progress concurrently.
+
+Rotation uses this profile/seed lock order. If the current seed hits its nonce/age boundary during an open request, the transaction may retire it and activate a pre-generated committed successor, but the successor commitment must be returned/visible before it is used. The simpler recommended behavior is `409 SEED_ROTATION_REQUIRED`, rotate, show the commitment, and require an explicit retry with the same client seed and a new idempotency key because no financial mutation committed.
 
 ## Failure and threat analysis
 
@@ -197,3 +200,25 @@ npm run check:rng-vectors
 The workspace-boundary gate also scans verifier and generator source imports, including deep, dynamic, undeclared-hoisted, and relative cross-workspace imports, so their independence is enforced in addition to being documented.
 
 Phase 6 adds no endpoint, seed persistence, nonce allocation, opening record, or database migration.
+
+## Phase 7 lifecycle implementation
+
+Phase 7 persists one canonical client-seed preference and at most one active encrypted server-seed set per user. The API requires an explicit client seed for initialization, publishes the active commitment before use, permits optimistic client-seed changes, performs idempotent user rotation, and exposes sanitized public seed history. It never returns active plaintext or encryption metadata.
+
+Active server seeds are generated with Node `randomBytes(32)`, committed with SHA-256, and encrypted directly using AES-256-GCM under an environment-supplied 32-byte master key, with a fresh 12-byte IV and 16-byte tag. This is authenticated encryption at rest, not envelope encryption: Phase 7 does not create a per-record data-encryption key or wrap one with KMS. Managed KMS/envelope encryption remains required production hardening.
+
+The exact UTF-8 additional-authenticated-data bytes are the following ASCII-compatible string, with no trailing delimiter, whitespace, or line ending:
+
+```text
+creatordrop:rng-seed:v1|<canonical-user-uuid>|<canonical-seed-set-uuid>|<rng-algorithm-version>|<encryption-key-version>
+```
+
+The AAD binds ciphertext to the user ID, seed-set ID, RNG algorithm version, and encryption key version. `RNG_MASTER_KEY` is exactly 64 lowercase hexadecimal characters and has no runtime default. `RNG_MASTER_KEY_VERSION` identifies the active write key; `RNG_HISTORICAL_MASTER_KEYS` is a strict, duplicate-free JSON array of versioned decrypt-only keys so retired history remains revealable across key rotation. The documented all-zero example key and local-development version sentinels are accepted only with an explicit development/test runtime and reject when production or `NODE_ENV` is omitted. The environment provider returns defensive key copies through a narrow version-aware interface; PostgreSQL stores no master key. Before a non-local key can protect a seed, an operator must register its version and non-secret SHA-256 key-material identity in `app.rng_encryption_key_versions`. The application can read but cannot create, alter, or delete this mapping.
+
+Owned in-process key, server-seed, plaintext, and temporary cryptographic buffers are overwritten on success and failure where practical. This is defense in depth only: JavaScript runtimes, native crypto implementations, database drivers, and garbage collectors cannot guarantee perfect memory erasure.
+
+`allocateNextNonce` is intentionally transaction-scoped: its opaque executor is valid only during a shared database transaction callback. Runtime state is checked before each query, caller transaction-control/multi-statement SQL is rejected, escaped executors are inactive after commit or rollback, and callback completion with outstanding executor work rolls the transaction back. It locks the fairness profile before the active seed row, lets PostgreSQL evaluate the stored count/age boundaries using database time, returns the current nonce, and increments exactly once. A rollback restores the counter. Phase 9 must call this primitive inside the larger atomic wallet/opening transaction; allocating and committing a nonce beforehand is prohibited. The future opening table must add unique `(rng_seed_set_id, nonce)` defense alongside the serialized counter.
+
+Normal rotation takes the same profile-then-seed locks, records an allowlisted user, operational, or policy-change reason, creates a separately encrypted commitment at nonce `0`, and records an operation-fingerprinted idempotent predecessor/successor relationship in one transaction. Compromise remediation first disables the active seed and may intentionally leave zero active seeds until safe replacement provisioning succeeds. Seed and rotation write guards acquire the same profile lock before the deferred cross-row checks, so a pending remediation and standalone active seed cannot both commit from separate `READ COMMITTED` snapshots. Every new seed row derives its non-secret SHA-256 key identity from the protected registry. A `key_compromise` successor must use both a different active key version and different registered key identity; remediation fails closed when a legacy predecessor identity cannot be established from a retained historical key. Deferred PostgreSQL checks on rotations and seed rows enforce the same predecessor, reason, lineage, zero-active pending state, active-successor, and registered-key invariants at commit.
+
+Reveal is an authenticated internal lifecycle primitive: it locks an eligible retired row, authenticates/decrypts it, timing-safely verifies the commitment, and stores plaintext only with `revealed` status. Missing or temporarily unavailable historical key material leaves the row retired and retryable. Only authenticated-decryption/integrity or commitment failure commits `compromised` and emits a secret-free security audit record. Automatic worker scheduling and outbox publication remain deferred; production incident alerting/remediation policy is still required.

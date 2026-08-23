@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 const runtimeModeSchema = z.enum(['development', 'test', 'production']);
+const maximumSignedBigint = 9_223_372_036_854_775_807n;
 
 const sharedNodeEnvironmentShape = {
   NODE_ENV: runtimeModeSchema.default('development'),
@@ -74,6 +75,112 @@ const migrationEnvironmentSchema = z.object({
   DATABASE_MIGRATION_URL: postgresConnectionStringSchema,
 });
 
+const rngKeyHexSchema = z.string().regex(/^[0-9a-f]{64}$/u);
+const reservedRngKeyVersions = new Set(['__proto__', 'constructor', 'prototype']);
+const rngKeyVersionSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u)
+  .refine((value) => !reservedRngKeyVersions.has(value.toLowerCase()));
+const localRngKeyVersionPattern = /^local[-_.]?dev(?:$|[-_.])/iu;
+const publicExampleRngKey = '0'.repeat(64);
+const rngHistoricalKeyEntrySchema = z
+  .object({ key: rngKeyHexSchema, version: rngKeyVersionSchema })
+  .strict();
+const rngHistoricalKeysSchema = z
+  .string()
+  .default('[]')
+  .transform((value, context): unknown => {
+    try {
+      return JSON.parse(value) as unknown;
+    } catch {
+      context.addIssue({
+        code: 'custom',
+        message: 'Expected a JSON array of historical RNG keys.',
+      });
+      return z.NEVER;
+    }
+  })
+  .pipe(z.array(rngHistoricalKeyEntrySchema).max(128))
+  .superRefine((entries, context) => {
+    const versions = entries.map(({ version }) => version);
+    if (new Set(versions).size !== versions.length) {
+      context.addIssue({ code: 'custom', message: 'Historical RNG key versions must be unique.' });
+    }
+    const keys = entries.map(({ key }) => key);
+    if (new Set(keys).size !== keys.length) {
+      context.addIssue({ code: 'custom', message: 'Historical RNG key material must be unique.' });
+    }
+  });
+
+const rngEnvironmentSchema = z
+  .object({
+    NODE_ENV: runtimeModeSchema.optional(),
+    RNG_FAIRNESS_MUTATION_RATE_LIMIT_MAX: z.coerce.number().int().min(1).max(10_000).default(20),
+    RNG_FAIRNESS_MUTATION_RATE_LIMIT_WINDOW_MS: z.coerce
+      .number()
+      .int()
+      .min(1_000)
+      .max(86_400_000)
+      .default(60_000),
+    RNG_HISTORICAL_MASTER_KEYS: rngHistoricalKeysSchema,
+    RNG_MASTER_KEY: rngKeyHexSchema,
+    RNG_MASTER_KEY_VERSION: rngKeyVersionSchema,
+    RNG_MAX_OPENINGS_PER_SEED: z
+      .string()
+      .regex(/^[1-9][0-9]*$/u)
+      .default('1000')
+      .transform((value) => BigInt(value))
+      .refine((value) => value <= maximumSignedBigint),
+    RNG_MAX_SEED_AGE_MS: z.coerce.number().int().min(60_000).max(2_592_000_000).default(86_400_000),
+  })
+  .superRefine((value, context) => {
+    if (
+      value.RNG_HISTORICAL_MASTER_KEYS.some(
+        ({ version }) => version === value.RNG_MASTER_KEY_VERSION,
+      )
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'The active RNG key version must not also be a historical key.',
+        path: ['RNG_HISTORICAL_MASTER_KEYS'],
+      });
+    }
+    const historicalKeyMaterials = value.RNG_HISTORICAL_MASTER_KEYS.map(({ key }) => key);
+    if (historicalKeyMaterials.includes(value.RNG_MASTER_KEY)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Every RNG key version must use distinct key material.',
+        path: ['RNG_HISTORICAL_MASTER_KEYS'],
+      });
+    }
+    if (value.NODE_ENV === 'development' || value.NODE_ENV === 'test') return;
+
+    if (value.RNG_MASTER_KEY === publicExampleRngKey) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Production RNG encryption cannot use the public example key.',
+        path: ['RNG_MASTER_KEY'],
+      });
+    }
+    if (localRngKeyVersionPattern.test(value.RNG_MASTER_KEY_VERSION)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Production RNG encryption cannot use a local-development key version.',
+        path: ['RNG_MASTER_KEY_VERSION'],
+      });
+    }
+    for (const { key, version } of value.RNG_HISTORICAL_MASTER_KEYS) {
+      if (key === publicExampleRngKey || localRngKeyVersionPattern.test(version)) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Production historical RNG keys cannot contain local example material.',
+          path: ['RNG_HISTORICAL_MASTER_KEYS'],
+        });
+        break;
+      }
+    }
+  });
+
 export type ApiEnvironment = Readonly<{
   authAudience: string;
   authIssuer: string;
@@ -105,6 +212,16 @@ export type DatabaseEnvironment = Readonly<{
 
 export type MigrationEnvironment = Readonly<{
   connectionString: string;
+}>;
+
+export type RngEnvironment = Readonly<{
+  fairnessMutationRateLimitMax: number;
+  fairnessMutationRateLimitWindowMs: number;
+  historicalMasterKeys: Readonly<Record<string, string>>;
+  masterKeyHex: string;
+  masterKeyVersion: string;
+  maxOpeningsPerSeed: bigint;
+  maxSeedAgeMs: number;
 }>;
 
 export const parseApiEnvironment = (input: NodeJS.ProcessEnv): ApiEnvironment => {
@@ -152,4 +269,20 @@ export const parseMigrationEnvironment = (input: NodeJS.ProcessEnv): MigrationEn
   const parsed = migrationEnvironmentSchema.parse(input);
 
   return { connectionString: parsed.DATABASE_MIGRATION_URL };
+};
+
+export const parseRngEnvironment = (input: NodeJS.ProcessEnv): RngEnvironment => {
+  const parsed = rngEnvironmentSchema.parse(input);
+
+  return {
+    fairnessMutationRateLimitMax: parsed.RNG_FAIRNESS_MUTATION_RATE_LIMIT_MAX,
+    fairnessMutationRateLimitWindowMs: parsed.RNG_FAIRNESS_MUTATION_RATE_LIMIT_WINDOW_MS,
+    historicalMasterKeys: Object.fromEntries(
+      parsed.RNG_HISTORICAL_MASTER_KEYS.map(({ key, version }) => [version, key]),
+    ),
+    masterKeyHex: parsed.RNG_MASTER_KEY,
+    masterKeyVersion: parsed.RNG_MASTER_KEY_VERSION,
+    maxOpeningsPerSeed: parsed.RNG_MAX_OPENINGS_PER_SEED,
+    maxSeedAgeMs: parsed.RNG_MAX_SEED_AGE_MS,
+  };
 };

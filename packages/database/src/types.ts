@@ -7,6 +7,12 @@ export interface QueryExecutor {
   ): Promise<QueryResult<Row>>;
 }
 
+declare const transactionExecutorBrand: unique symbol;
+
+export interface TransactionExecutor extends QueryExecutor {
+  readonly [transactionExecutorBrand]: true;
+}
+
 export type TransactionIsolationLevel = 'read-committed' | 'repeatable-read' | 'serializable';
 
 export interface TransactionOptions {
@@ -14,7 +20,7 @@ export interface TransactionOptions {
   readonly readOnly?: boolean;
 }
 
-export type TransactionCallback<Result> = (transaction: QueryExecutor) => Promise<Result>;
+export type TransactionCallback<Result> = (transaction: TransactionExecutor) => Promise<Result>;
 
 export interface Database extends QueryExecutor {
   close(): Promise<void>;

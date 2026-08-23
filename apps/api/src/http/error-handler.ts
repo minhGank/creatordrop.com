@@ -21,6 +21,19 @@ import {
   CreatorRevisionConflictError,
   CreatorTargetUserNotFoundError,
 } from '../modules/creators/creator.errors.js';
+import {
+  FairnessAlreadyInitializedError,
+  FairnessNotInitializedError,
+  FairnessRevisionConflictError,
+  SeedRevealNotAllowedError,
+  SeedEncryptionKeyUnavailableError,
+  SeedReplacementKeyUnsafeError,
+  SeedRotationRequiredError,
+  SeedRotationIdempotencyConflictError,
+  SeedSetCompromisedError,
+  SeedSetNotFoundError,
+  SeedSetUnavailableError,
+} from '../modules/fairness/fairness.errors.js';
 import { ApiError } from './errors.js';
 
 const hasErrorType = (value: unknown, expectedType: string): boolean =>
@@ -115,6 +128,76 @@ const normalizeError = (error: unknown): ApiError => {
 
   if (error instanceof CatalogImmutableError) {
     return new ApiError(409, 'CATALOG_IMMUTABLE', 'Published catalog configuration is immutable.');
+  }
+
+  if (error instanceof FairnessNotInitializedError) {
+    return new ApiError(
+      404,
+      'FAIRNESS_NOT_INITIALIZED',
+      'Fairness state has not been initialized.',
+    );
+  }
+
+  if (error instanceof FairnessAlreadyInitializedError) {
+    return new ApiError(
+      409,
+      'FAIRNESS_ALREADY_INITIALIZED',
+      'Fairness state is already initialized with a different client seed.',
+    );
+  }
+
+  if (error instanceof FairnessRevisionConflictError) {
+    return new ApiError(409, 'FAIRNESS_REVISION_CONFLICT', 'The fairness revision is stale.', {
+      currentRevision: error.currentRevision,
+    });
+  }
+
+  if (error instanceof SeedRotationRequiredError) {
+    return new ApiError(
+      409,
+      'SEED_ROTATION_REQUIRED',
+      'The active server seed must be rotated before it can be used again.',
+    );
+  }
+
+  if (error instanceof SeedSetUnavailableError) {
+    return new ApiError(409, 'SEED_SET_UNAVAILABLE', 'No active server seed is available.');
+  }
+
+  if (error instanceof SeedSetNotFoundError) {
+    return new ApiError(404, 'SEED_SET_NOT_FOUND', 'The seed set was not found.');
+  }
+
+  if (error instanceof SeedRevealNotAllowedError) {
+    return new ApiError(409, 'SEED_REVEAL_NOT_ALLOWED', 'The seed set is not eligible for reveal.');
+  }
+
+  if (error instanceof SeedEncryptionKeyUnavailableError) {
+    return new ApiError(
+      503,
+      'RNG_KEY_UNAVAILABLE',
+      'The required server-seed encryption key is temporarily unavailable.',
+    );
+  }
+
+  if (error instanceof SeedReplacementKeyUnsafeError) {
+    return new ApiError(
+      503,
+      'RNG_REPLACEMENT_KEY_UNSAFE',
+      'A trusted replacement server-seed key is required.',
+    );
+  }
+
+  if (error instanceof SeedRotationIdempotencyConflictError) {
+    return new ApiError(
+      409,
+      'RNG_ROTATION_IDEMPOTENCY_CONFLICT',
+      'The idempotency key was already used for a different seed transition.',
+    );
+  }
+
+  if (error instanceof SeedSetCompromisedError) {
+    return new ApiError(500, 'SEED_SET_COMPROMISED', 'Seed-set integrity verification failed.');
   }
 
   return new ApiError(500, 'INTERNAL_ERROR', 'An unexpected error occurred.');

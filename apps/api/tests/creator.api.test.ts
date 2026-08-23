@@ -134,6 +134,8 @@ describe('creator API', () => {
         authRateLimitWindowMs: 60_000,
         creatorMutationRateLimitMax: 1,
         creatorMutationRateLimitWindowMs: 60_000,
+        fairnessMutationRateLimitMax: 100,
+        fairnessMutationRateLimitWindowMs: 60_000,
         requestBodyLimitBytes: 32_768,
       },
     } as const;

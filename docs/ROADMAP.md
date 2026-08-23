@@ -48,7 +48,7 @@ Implement `hmac-sha256-rejection-v1` as pure domain code, publish language-neutr
 
 Depends on: Phases 2, 3, and 6; encryption/key-management decision.
 
-Implement protected per-user seed generation, commitments, client-seed preference, nonce allocation, rotate/retire/reveal worker, audit records, and compromise stop path. Tests cover ciphertext/log secrecy, one active seed, concurrent nonce allocation, rollback, rotate/open race, reveal prohibition, hash mismatch, and public lifecycle response.
+Implement protected per-user seed generation, commitments, client-seed preference, nonce allocation, rotate/retire/reveal lifecycle primitives, audit records, and compromise stop path. Automatic reveal scheduling/outbox delivery remains deferred to the worker/outbox phase. Tests cover ciphertext/log secrecy, one active seed, concurrent nonce allocation, rollback, rotate/allocation race, reveal prohibition, hash mismatch, and public lifecycle response.
 
 ## Phase 8 — Double-entry ledger core
 
