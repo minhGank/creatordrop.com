@@ -17,6 +17,7 @@ import { createUserBootstrapService } from '../src/modules/users/bootstrap-user.
 import {
   createUnhandledCatalogService,
   createUnhandledFairnessService,
+  createUnhandledWalletService,
 } from './support/test-app.js';
 
 const localApplicationUrl =
@@ -240,6 +241,7 @@ describe('creator tenancy and authorization', { concurrent: false }, () => {
       creatorService: createCreatorService({ database: applicationDatabase, logger }),
       fairnessService: createUnhandledFairnessService(),
       logger,
+      runtime: { testCreditsEnabled: false },
       security: {
         allowedOrigins: ['http://localhost:5173'],
         authRateLimitMax: 10_000,
@@ -249,7 +251,10 @@ describe('creator tenancy and authorization', { concurrent: false }, () => {
         fairnessMutationRateLimitMax: 10_000,
         fairnessMutationRateLimitWindowMs: 60_000,
         requestBodyLimitBytes: 32_768,
+        walletMutationRateLimitMax: 10_000,
+        walletMutationRateLimitWindowMs: 60_000,
       },
+      walletService: createUnhandledWalletService(),
     });
     await removeSyntheticState();
   });

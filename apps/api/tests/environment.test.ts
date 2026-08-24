@@ -29,6 +29,9 @@ describe('API environment adapter', () => {
       nodeEnvironment: 'test',
       port: 4321,
       requestBodyLimitBytes: 32_768,
+      testCreditsEnabled: false,
+      walletMutationRateLimitMax: 20,
+      walletMutationRateLimitWindowMs: 60_000,
     });
 
     vi.unstubAllEnvs();

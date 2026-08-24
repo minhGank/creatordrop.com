@@ -34,6 +34,15 @@ import {
   SeedSetNotFoundError,
   SeedSetUnavailableError,
 } from '../modules/fairness/fairness.errors.js';
+import {
+  IdempotencyKeyReusedError,
+  InsufficientBalanceError,
+  LedgerTransactionNotFoundError,
+  TestCreditsUnavailableError,
+  WalletAmountOverflowError,
+  WalletCurrencyNotEnabledError,
+  WalletNotFoundError,
+} from '../modules/wallet/wallet.errors.js';
 import { ApiError } from './errors.js';
 
 const hasErrorType = (value: unknown, expectedType: string): boolean =>
@@ -198,6 +207,50 @@ const normalizeError = (error: unknown): ApiError => {
 
   if (error instanceof SeedSetCompromisedError) {
     return new ApiError(500, 'SEED_SET_COMPROMISED', 'Seed-set integrity verification failed.');
+  }
+
+  if (error instanceof WalletNotFoundError) {
+    return new ApiError(404, 'WALLET_NOT_FOUND', 'The wallet was not found.');
+  }
+
+  if (error instanceof WalletCurrencyNotEnabledError) {
+    return new ApiError(
+      422,
+      'WALLET_CURRENCY_NOT_ENABLED',
+      'The requested wallet currency is not enabled.',
+    );
+  }
+
+  if (error instanceof TestCreditsUnavailableError) {
+    return new ApiError(404, 'TEST_CREDITS_UNAVAILABLE', 'Test credit grants are unavailable.');
+  }
+
+  if (error instanceof InsufficientBalanceError) {
+    return new ApiError(422, 'INSUFFICIENT_BALANCE', 'The wallet has insufficient settled funds.');
+  }
+
+  if (error instanceof WalletAmountOverflowError) {
+    return new ApiError(
+      422,
+      'WALLET_AMOUNT_OVERFLOW',
+      'The wallet amount exceeds supported storage.',
+    );
+  }
+
+  if (error instanceof IdempotencyKeyReusedError) {
+    return new ApiError(
+      409,
+      'IDEMPOTENCY_KEY_REUSED',
+      'The idempotency key was already used for a different request.',
+    );
+  }
+
+  if (error instanceof LedgerTransactionNotFoundError) {
+    return new ApiError(
+      404,
+      'LEDGER_TRANSACTION_NOT_FOUND',
+      'The ledger transaction was not found.',
+    );
   }
 
   return new ApiError(500, 'INTERNAL_ERROR', 'An unexpected error occurred.');

@@ -15,6 +15,7 @@ import {
   createUnhandledCatalogService,
   createUnhandledCreatorService,
   createUnhandledFairnessService,
+  createUnhandledWalletService,
 } from './support/test-app.js';
 
 const localApplicationUrl =
@@ -147,6 +148,7 @@ describe('local Supabase identity bootstrap', { concurrent: false }, () => {
       creatorService: createUnhandledCreatorService(),
       fairnessService: createUnhandledFairnessService(),
       logger,
+      runtime: { testCreditsEnabled: false },
       security: {
         allowedOrigins: ['http://localhost:5173'],
         authRateLimitMax: 100,
@@ -156,7 +158,10 @@ describe('local Supabase identity bootstrap', { concurrent: false }, () => {
         fairnessMutationRateLimitMax: 100,
         fairnessMutationRateLimitWindowMs: 60_000,
         requestBodyLimitBytes: 32_768,
+        walletMutationRateLimitMax: 100,
+        walletMutationRateLimitWindowMs: 60_000,
       },
+      walletService: createUnhandledWalletService(),
     });
   };
 

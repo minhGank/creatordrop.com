@@ -23,32 +23,54 @@ const browserOriginSchema = httpUrlSchema.refine(
   { message: 'Expected an origin without a path, query, or fragment.' },
 );
 
-const apiEnvironmentSchema = z.object({
-  ...sharedNodeEnvironmentShape,
-  AUTH_JWT_AUDIENCE: z.string().trim().min(1).max(255).default('authenticated'),
-  AUTH_JWT_ISSUER: httpUrlSchema,
-  AUTH_JWKS_URL: httpUrlSchema,
-  AUTH_PROVIDER: z.string().trim().min(1).max(64).default('supabase'),
-  AUTH_RATE_LIMIT_MAX: z.coerce.number().int().min(1).max(10_000).default(20),
-  AUTH_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().min(1_000).max(86_400_000).default(60_000),
-  CORS_ALLOWED_ORIGINS: z
-    .string()
-    .transform((value) => value.split(',').map((origin) => origin.trim()))
-    .pipe(z.array(browserOriginSchema).min(1))
-    .refine((origins) => new Set(origins).size === origins.length, {
-      message: 'CORS origins must be unique.',
-    }),
-  CREATOR_MUTATION_RATE_LIMIT_MAX: z.coerce.number().int().min(1).max(10_000).default(60),
-  CREATOR_MUTATION_RATE_LIMIT_WINDOW_MS: z.coerce
-    .number()
-    .int()
-    .min(1_000)
-    .max(86_400_000)
-    .default(60_000),
-  HOST: z.string().trim().min(1).default('127.0.0.1'),
-  PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
-  REQUEST_BODY_LIMIT_BYTES: z.coerce.number().int().min(1_024).max(1_048_576).default(32_768),
-});
+const apiEnvironmentSchema = z
+  .object({
+    NODE_ENV: runtimeModeSchema.optional(),
+    AUTH_JWT_AUDIENCE: z.string().trim().min(1).max(255).default('authenticated'),
+    AUTH_JWT_ISSUER: httpUrlSchema,
+    AUTH_JWKS_URL: httpUrlSchema,
+    AUTH_PROVIDER: z.string().trim().min(1).max(64).default('supabase'),
+    AUTH_RATE_LIMIT_MAX: z.coerce.number().int().min(1).max(10_000).default(20),
+    AUTH_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().min(1_000).max(86_400_000).default(60_000),
+    CORS_ALLOWED_ORIGINS: z
+      .string()
+      .transform((value) => value.split(',').map((origin) => origin.trim()))
+      .pipe(z.array(browserOriginSchema).min(1))
+      .refine((origins) => new Set(origins).size === origins.length, {
+        message: 'CORS origins must be unique.',
+      }),
+    CREATOR_MUTATION_RATE_LIMIT_MAX: z.coerce.number().int().min(1).max(10_000).default(60),
+    CREATOR_MUTATION_RATE_LIMIT_WINDOW_MS: z.coerce
+      .number()
+      .int()
+      .min(1_000)
+      .max(86_400_000)
+      .default(60_000),
+    HOST: z.string().trim().min(1).default('127.0.0.1'),
+    PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
+    REQUEST_BODY_LIMIT_BYTES: z.coerce.number().int().min(1_024).max(1_048_576).default(32_768),
+    WALLET_MUTATION_RATE_LIMIT_MAX: z.coerce.number().int().min(1).max(10_000).default(20),
+    WALLET_MUTATION_RATE_LIMIT_WINDOW_MS: z.coerce
+      .number()
+      .int()
+      .min(1_000)
+      .max(86_400_000)
+      .default(60_000),
+    WALLET_TEST_CREDITS_ENABLED: z.enum(['false', 'true']).default('false'),
+  })
+  .superRefine((environment, context) => {
+    if (
+      environment.WALLET_TEST_CREDITS_ENABLED === 'true' &&
+      environment.NODE_ENV !== 'development' &&
+      environment.NODE_ENV !== 'test'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Test credits require an explicit development or test runtime.',
+        path: ['WALLET_TEST_CREDITS_ENABLED'],
+      });
+    }
+  });
 
 const workerEnvironmentSchema = z.object({
   ...sharedNodeEnvironmentShape,
@@ -195,6 +217,9 @@ export type ApiEnvironment = Readonly<{
   nodeEnvironment: z.infer<typeof runtimeModeSchema>;
   port: number;
   requestBodyLimitBytes: number;
+  testCreditsEnabled: boolean;
+  walletMutationRateLimitMax: number;
+  walletMutationRateLimitWindowMs: number;
 }>;
 
 export type WorkerEnvironment = Readonly<{
@@ -238,9 +263,12 @@ export const parseApiEnvironment = (input: NodeJS.ProcessEnv): ApiEnvironment =>
     creatorMutationRateLimitMax: parsed.CREATOR_MUTATION_RATE_LIMIT_MAX,
     creatorMutationRateLimitWindowMs: parsed.CREATOR_MUTATION_RATE_LIMIT_WINDOW_MS,
     host: parsed.HOST,
-    nodeEnvironment: parsed.NODE_ENV,
+    nodeEnvironment: parsed.NODE_ENV ?? 'development',
     port: parsed.PORT,
     requestBodyLimitBytes: parsed.REQUEST_BODY_LIMIT_BYTES,
+    testCreditsEnabled: parsed.WALLET_TEST_CREDITS_ENABLED === 'true',
+    walletMutationRateLimitMax: parsed.WALLET_MUTATION_RATE_LIMIT_MAX,
+    walletMutationRateLimitWindowMs: parsed.WALLET_MUTATION_RATE_LIMIT_WINDOW_MS,
   };
 };
 

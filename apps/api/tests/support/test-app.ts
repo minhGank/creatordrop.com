@@ -6,6 +6,7 @@ import { createApp, type AppOptions } from '../../src/app.js';
 import type { CatalogService } from '../../src/modules/catalog/catalog.service.js';
 import type { CreatorService } from '../../src/modules/creators/creator.service.js';
 import type { FairnessService } from '../../src/modules/fairness/fairness.service.js';
+import type { WalletService } from '../../src/modules/wallet/wallet.service.js';
 
 export const createNoopLogger = (): Logger => ({
   error: () => undefined,
@@ -81,12 +82,19 @@ export const createUnhandledFairnessService = (): FairnessService => {
   };
 };
 
+export const createUnhandledWalletService = (): WalletService => {
+  const unhandled = (): Promise<never> =>
+    Promise.reject(new Error('The test did not configure the wallet service operation.'));
+  return { grantTestCredits: unhandled, listWallets: unhandled };
+};
+
 export const createTestAppOptions = (overrides: Partial<AppOptions> = {}): AppOptions => ({
   authenticate: createSuccessfulAuthentication(),
   catalogService: createUnhandledCatalogService(),
   creatorService: createUnhandledCreatorService(),
   fairnessService: createUnhandledFairnessService(),
   logger: createNoopLogger(),
+  runtime: { testCreditsEnabled: true },
   security: {
     allowedOrigins: ['http://localhost:5173'],
     authRateLimitMax: 100,
@@ -96,7 +104,10 @@ export const createTestAppOptions = (overrides: Partial<AppOptions> = {}): AppOp
     fairnessMutationRateLimitMax: 100,
     fairnessMutationRateLimitWindowMs: 60_000,
     requestBodyLimitBytes: 32_768,
+    walletMutationRateLimitMax: 100,
+    walletMutationRateLimitWindowMs: 60_000,
   },
+  walletService: createUnhandledWalletService(),
   ...overrides,
 });
 

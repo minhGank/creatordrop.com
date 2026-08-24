@@ -30,6 +30,9 @@ describe('environment configuration', () => {
       nodeEnvironment: 'development',
       port: 3000,
       requestBodyLimitBytes: 32_768,
+      testCreditsEnabled: false,
+      walletMutationRateLimitMax: 20,
+      walletMutationRateLimitWindowMs: 60_000,
     });
     expect(parseWorkerEnvironment({})).toEqual({
       nodeEnvironment: 'development',
@@ -51,6 +54,9 @@ describe('environment configuration', () => {
         NODE_ENV: 'test',
         PORT: '4100',
         REQUEST_BODY_LIMIT_BYTES: '4096',
+        WALLET_MUTATION_RATE_LIMIT_MAX: '11',
+        WALLET_MUTATION_RATE_LIMIT_WINDOW_MS: '9000',
+        WALLET_TEST_CREDITS_ENABLED: 'true',
       }),
     ).toEqual({
       authAudience: 'creator-fans',
@@ -66,7 +72,38 @@ describe('environment configuration', () => {
       nodeEnvironment: 'test',
       port: 4100,
       requestBodyLimitBytes: 4096,
+      testCreditsEnabled: true,
+      walletMutationRateLimitMax: 11,
+      walletMutationRateLimitWindowMs: 9000,
     });
+  });
+
+  it.each(['development', 'test'] as const)(
+    'enables test credits only with an explicit %s runtime',
+    (nodeEnvironment) => {
+      expect(
+        parseApiEnvironment({
+          ...requiredApiEnvironment,
+          NODE_ENV: nodeEnvironment,
+          WALLET_TEST_CREDITS_ENABLED: 'true',
+        }).testCreditsEnabled,
+      ).toBe(true);
+    },
+  );
+
+  it.each([
+    { environment: {}, label: 'omitted' },
+    { environment: { NODE_ENV: '' }, label: 'empty' },
+    { environment: { NODE_ENV: 'production' }, label: 'production' },
+    { environment: { NODE_ENV: 'staging' }, label: 'unsupported' },
+  ])('rejects test credits when NODE_ENV is $label', ({ environment }) => {
+    expect(() =>
+      parseApiEnvironment({
+        ...requiredApiEnvironment,
+        ...environment,
+        WALLET_TEST_CREDITS_ENABLED: 'true',
+      }),
+    ).toThrow();
   });
 
   it.each([

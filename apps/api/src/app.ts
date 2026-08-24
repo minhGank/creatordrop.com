@@ -16,6 +16,8 @@ import { createCreatorRouter } from './modules/creators/creator.route.js';
 import type { CreatorService } from './modules/creators/creator.service.js';
 import { createFairnessRouter } from './modules/fairness/fairness.route.js';
 import type { FairnessService } from './modules/fairness/fairness.service.js';
+import { createWalletRouter } from './modules/wallet/wallet.route.js';
+import type { WalletService } from './modules/wallet/wallet.service.js';
 
 const sendStatus =
   (status: ServiceStatusResponse['status']) =>
@@ -29,6 +31,9 @@ export interface AppOptions {
   readonly creatorService: CreatorService;
   readonly fairnessService: FairnessService;
   readonly logger: Logger;
+  readonly runtime: {
+    readonly testCreditsEnabled: boolean;
+  };
   readonly security: {
     readonly allowedOrigins: readonly string[];
     readonly authRateLimitMax: number;
@@ -38,7 +43,10 @@ export interface AppOptions {
     readonly fairnessMutationRateLimitMax: number;
     readonly fairnessMutationRateLimitWindowMs: number;
     readonly requestBodyLimitBytes: number;
+    readonly walletMutationRateLimitMax: number;
+    readonly walletMutationRateLimitWindowMs: number;
   };
+  readonly walletService: WalletService;
 }
 
 export const createApp = ({
@@ -47,7 +55,9 @@ export const createApp = ({
   creatorService,
   fairnessService,
   logger,
+  runtime,
   security,
+  walletService,
 }: AppOptions): Express => {
   const app = express();
 
@@ -83,6 +93,16 @@ export const createApp = ({
       mutationRateLimitMax: security.fairnessMutationRateLimitMax,
       mutationRateLimitWindowMs: security.fairnessMutationRateLimitWindowMs,
       service: fairnessService,
+    }),
+  );
+  app.use(
+    '/v1',
+    createWalletRouter({
+      authenticate,
+      mutationRateLimitMax: security.walletMutationRateLimitMax,
+      mutationRateLimitWindowMs: security.walletMutationRateLimitWindowMs,
+      service: walletService,
+      testCreditsEnabled: runtime.testCreditsEnabled,
     }),
   );
   app.use(

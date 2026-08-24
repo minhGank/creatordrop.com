@@ -14,6 +14,7 @@ import { createUserBootstrapService } from './modules/users/bootstrap-user.servi
 import { createCreatorService } from './modules/creators/creator.service.js';
 import { createEnvironmentSeedEncryptionKeyProvider } from './modules/fairness/fairness.key-provider.js';
 import { createFairnessService } from './modules/fairness/fairness.service.js';
+import { createWalletService } from './modules/wallet/wallet.service.js';
 
 const environment = getApiEnvironment();
 const databaseEnvironment = getDatabaseEnvironment();
@@ -50,12 +51,19 @@ const fairnessService = createFairnessService({
     maxOpenings: rngEnvironment.maxOpeningsPerSeed,
   },
 });
+const testCreditsEnabled = environment.testCreditsEnabled;
+const walletService = createWalletService({
+  database,
+  logger,
+  testCreditsEnabled,
+});
 const app = createApp({
   authenticate,
   catalogService,
   creatorService,
   fairnessService,
   logger,
+  runtime: { testCreditsEnabled },
   security: {
     allowedOrigins: environment.corsAllowedOrigins,
     authRateLimitMax: environment.authRateLimitMax,
@@ -65,7 +73,10 @@ const app = createApp({
     fairnessMutationRateLimitMax: rngEnvironment.fairnessMutationRateLimitMax,
     fairnessMutationRateLimitWindowMs: rngEnvironment.fairnessMutationRateLimitWindowMs,
     requestBodyLimitBytes: environment.requestBodyLimitBytes,
+    walletMutationRateLimitMax: environment.walletMutationRateLimitMax,
+    walletMutationRateLimitWindowMs: environment.walletMutationRateLimitWindowMs,
   },
+  walletService,
 });
 
 const server = app.listen(environment.port, environment.host, () => {

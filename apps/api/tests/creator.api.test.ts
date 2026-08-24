@@ -137,6 +137,8 @@ describe('creator API', () => {
         fairnessMutationRateLimitMax: 100,
         fairnessMutationRateLimitWindowMs: 60_000,
         requestBodyLimitBytes: 32_768,
+        walletMutationRateLimitMax: 100,
+        walletMutationRateLimitWindowMs: 60_000,
       },
     } as const;
     const app = createTestApp(options);

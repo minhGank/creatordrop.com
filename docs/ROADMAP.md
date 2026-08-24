@@ -54,7 +54,7 @@ Implement protected per-user seed generation, commitments, client-seed preferenc
 
 Depends on: Phases 2 and 3; currency policy.
 
-Implement ledger accounts/transactions/entries, the narrow posting repository/database enforcement, wallet projection, and reconciliation. Do not add provider funding yet. Tests prove per-currency zero sum, immutability, unique business references, non-negative wallet, integer/overflow behavior, concurrency, rollback, permission restrictions, and reconciliation mismatch alerts.
+Completed: multi-currency-capable ledger accounts/transactions/entries, one user wallet per currency, cached balance projection, reusable transaction-owned credit/debit/reversal primitives, actor/operation-scoped idempotency, and a development/test-only USD credit grant. PostgreSQL deferred checks enforce per-currency zero sum, minimum non-zero entries, immutable history, exact reversals, and wallet reconciliation. Real-database tests cover unique business references, non-negative and overflow behavior, same-wallet serialization, different-wallet concurrency, concurrent replay, rollback, role permissions, and Phase 7 upgrade compatibility. Provider funding and currency conversion remain absent.
 
 ## Phase 9 — Idempotent atomic box opening
 

@@ -250,3 +250,18 @@ export interface RngSeedRotationResponse {
   readonly previousSeedSetId: string;
   readonly replayed: boolean;
 }
+
+export interface WalletContract {
+  readonly balanceMinor: string;
+  readonly currency: string;
+  readonly id: string;
+  readonly revision: string;
+}
+
+export interface WalletsResponse {
+  readonly wallets: readonly WalletContract[];
+}
+
+export interface WalletTestCreditResponse {
+  readonly wallet: WalletContract;
+}

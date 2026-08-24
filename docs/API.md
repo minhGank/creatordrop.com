@@ -217,17 +217,20 @@ Phase 7 implements the public seed-set lifecycle route below. Opening proof and 
 
 ## Wallet, funding, and ledger receipts
 
-| Method | Path                                           | Auth               | Purpose                                                    |
-| ------ | ---------------------------------------------- | ------------------ | ---------------------------------------------------------- |
-| `GET`  | `/v1/me/wallets`                               | user               | Settled balances by currency                               |
-| `GET`  | `/v1/me/wallets/:currency/transactions`        | user               | Paginated user-facing ledger receipts                      |
-| `POST` | `/v1/me/wallets/:currency/funding-intents`     | user + idempotency | Create provider funding intent after policy/provider phase |
-| `GET`  | `/v1/me/wallets/:currency/funding-intents/:id` | owner              | Provider-independent funding status                        |
-| `POST` | `/v1/payments/webhooks/:provider`              | signed provider    | Idempotent provider event ingestion; no user bearer token  |
+Phase 8 implements only:
 
-The client cannot credit a wallet or mark an intent settled. Webhook acknowledgment occurs only after durable event recording; processing can be asynchronous. Ledger APIs expose safe receipt descriptions and signed amounts, not internal balancing accounts.
+| Method | Path                                    | Auth               | Purpose                                                     |
+| ------ | --------------------------------------- | ------------------ | ----------------------------------------------------------- |
+| `GET`  | `/v1/me/wallets`                        | active user        | Actor-owned settled wallet projections, ordered by currency |
+| `POST` | `/v1/me/wallets/:currency/test-credits` | user + idempotency | Synthetic credit grant; route absent in production          |
 
-Refunds, withdrawals, creator payouts, promo credit, and administrator adjustments are omitted until policies are approved. They must be explicit commands with independent permissions/idempotency, not generic “set balance” endpoints.
+`GET` returns `{ "wallets": [{ "id", "currency", "balanceMinor", "revision" }] }`. Decimal strings preserve bigint precision. It never creates wallets and never exposes the linked ledger account, system accounts, entries, or idempotency metadata.
+
+The test-credit command accepts exactly `{ "amountMinor": "2000" }` plus an 8–128 character `Idempotency-Key`. Only `USD` is enabled in Phase 8. The deterministic fingerprint covers its version, operation, actor, currency, and canonical amount. Same-key/same-request replay returns the original `201` body; material reuse returns `409 IDEMPOTENCY_KEY_REUSED`. `WALLET_CURRENCY_NOT_ENABLED`, `WALLET_AMOUNT_OVERFLOW`, and validation errors fail without a committed claim or movement. Both route registration and the service require the explicit `WALLET_TEST_CREDITS_ENABLED=true` opt-in, and configuration rejects that opt-in in production.
+
+Future transaction receipts, provider funding intents, and webhooks are not implemented. The client cannot credit another user, credit a wallet directly, or mark any funding settled. Ledger access remains internal in Phase 8.
+
+Refunds, withdrawals, creator payouts, real funding, promo credit, and administrator adjustments are omitted until policies are approved. They must be explicit commands with independent permissions/idempotency, not generic “set balance” endpoints.
 
 ## Creator dashboard
 

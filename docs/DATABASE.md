@@ -116,9 +116,9 @@ Partial unique index `(user_id) WHERE status = 'active'`; unique `commitment`, p
 
 ### `idempotency_records`
 
-`id`, `actor_user_id`, `scope` (for example `box.open`), `key`, `request_fingerprint bytea`, `status` (`completed`; a row is transaction-local while processing), `http_status`, `response_body jsonb`, `resource_type`, `resource_id`, `created_at`, `expires_at`.
+`id`, `actor_user_id`, `operation` (for example `wallet.test_credit`), `idempotency_key`, `request_fingerprint bytea`, `status` (`processing`, `completed`), `http_status`, `response_body jsonb`, `resource_type`, `resource_id`, `created_at`, `completed_at`.
 
-Unique `(actor_user_id, scope, key)`. Index `expires_at` for cleanup. Financial records retain the key/reference even after replay bodies expire; deletion must not remove the unique business reference on the ledger/opening. Keys are opaque, 8–255 characters, and never logged in full.
+Unique `(actor_user_id, operation, idempotency_key)`. Keys are opaque allowlisted 8–128 character values and never logged. The fingerprint is exactly 32 SHA-256 bytes over canonical operation fields. Processing rows are transaction-local: a deferred trigger rejects commit until the row and matching posting are complete. Completed rows and replay bodies are immutable. Same key/same fingerprint returns the stored status/body; different fingerprints return `IDEMPOTENCY_KEY_REUSED`.
 
 ### `box_opens`
 
@@ -143,23 +143,25 @@ Phase 5 stores finite inventory only as immutable published configuration. The c
 
 ### `wallets`
 
-`id`, `user_id`, `currency`, `ledger_account_id` unique FK, `available_balance_minor bigint CHECK (available_balance_minor >= 0)`, `version bigint`, timestamps. Unique `(user_id, currency)`. The linked account must be the matching user's `user_wallet` ledger account in the same currency. The row is locked on debit. Balance is a transactionally maintained projection, not a substitute for the ledger.
+`id`, `user_id`, `currency char(3)`, `ledger_account_id` unique FK, `available_balance_minor bigint CHECK (available_balance_minor >= 0)`, `revision bigint`, timestamps. Unique `(user_id, currency)`. A composite FK proves that the linked account is the matching user's `user_wallet` account in the same currency. Inserts begin at zero/revision one; revisions advance by exactly one with each non-zero balance movement. The application role locks rows and updates balances only through narrow explicitly granted functions. Balance is a transactionally maintained projection, not a substitute for the ledger.
 
 ### `ledger_accounts`
 
-`id`, `account_type` (`user_wallet`, `platform_cash`, `creator_payable`, `platform_revenue`, `provider_clearing`, `refund_reserve`), `owner_user_id` nullable, `owner_creator_id` nullable, `currency`, `status`, timestamps. Constraints enforce the owner shape for each type. Unique user-wallet account `(owner_user_id, currency) WHERE account_type='user_wallet'`; corresponding controlled-account uniqueness is defined by type/currency/owner.
+`id`, `account_type` (`user_wallet`, `system_test_funding`), `owner_user_id` nullable, `currency char(3)`, `status`, timestamps. Phase 8 requires an owner only for `user_wallet` and prohibits one for `system_test_funding`. Unique partial indexes provide one user-wallet per `(owner_user_id, currency)` and one test-funding account per currency. Accounts are immutable. Additional controlled account kinds belong to the phase that defines their accounting semantics.
 
 ### `ledger_transactions`
 
-Immutable header: `id`, `kind` (`wallet_funding`, `box_open`, `refund`, `chargeback`, `creator_accrual`, `payout`, `adjustment`), `business_reference_type`, `business_reference_id`, `idempotency_key`, `status='posted'`, `description`, `metadata jsonb` (non-secret), `created_by_type`, `created_by_id`, `created_at`.
+Immutable header: `id`, `kind` (`test_credit_grant`, `wallet_credit`, `wallet_debit`, `reversal`), `actor_user_id`, `currency`, `business_reference_type`, `business_reference_id`, optional unique `idempotency_record_id`, optional unique `reverses_ledger_transaction_id`, `status`, `description`, `created_at`, `posted_at`.
 
-Unique `(kind, business_reference_type, business_reference_id)` is the final duplicate-posting defense. Adjustments require a distinct reference to the transaction they compensate and an audit reason; posted rows are never updated/deleted.
+Unique `(business_reference_type, business_reference_id)` is the final duplicate-posting defense. A header exists as `pending` only inside its caller-owned transaction, transitions once to `posted`, and cannot commit pending. Posted rows are never updated/deleted. A reversal is a new unique transaction linked to its original; PostgreSQL verifies that its account/amount set is the exact opposite.
 
 ### `ledger_entries`
 
-`id`, `ledger_transaction_id`, `account_id`, `amount_minor bigint CHECK (amount_minor <> 0)`, `currency`, `sequence smallint`, `created_at`; unique `(ledger_transaction_id, sequence)`. Index `(account_id, created_at, id)`.
+`id`, `ledger_transaction_id`, `ledger_account_id`, `amount_minor bigint CHECK (amount_minor <> 0)`, `currency char(3)`, `sequence smallint`, `created_at`; unique `(ledger_transaction_id, sequence)` and `(ledger_transaction_id, ledger_account_id)`. Index `(ledger_account_id, created_at, id)`.
 
-Use one sign convention: positive increases the account's balance, negative decreases it. Every transaction must sum to zero separately per currency. A deferred constraint trigger verifies balance and currency agreement at commit. The application role can post only through a narrow database function/repository transaction that inserts the header/entries and updates the applicable wallet projection. Direct `UPDATE wallets` and direct ledger mutation are revoked.
+Use one sign convention: positive increases the account's balance, negative decreases it. Every committed transaction has at least two non-zero entries and sums to zero using `numeric` during validation so the check itself cannot overflow. Deferred triggers verify balance, same-currency header/entry/account agreement, movement shape, test-credit idempotency, and exact reversals at commit. Separate deferred reconciliation triggers require each wallet projection to equal the sum of all entries for its account. Direct wallet updates and ledger/idempotency history mutation are revoked from the application role; narrow security-definer functions lock/update/finalize while the caller still owns the surrounding transaction.
+
+The tables and API are multi-currency capable. Phase 8 application policy enables only USD synthetic credits, creates no exchange-rate/conversion records, and never nets balances across currencies.
 
 Example box open in USD:
 

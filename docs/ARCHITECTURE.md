@@ -26,6 +26,8 @@ PostgreSQL owns users, configuration versions, openings, balances, ledger entrie
 
 All monetary amounts are signed 64-bit integer minor units plus an ISO 4217 currency code. No floating point is permitted. A wallet is unique by owner and currency. The ledger uses balanced postings, and the wallet balance is an atomically maintained projection guarded by a non-negative constraint.
 
+Phase 8 makes the schema currency-independent but enables only `USD` for synthetic MVP credit grants. Currency is explicit on wallets, ledger accounts, transaction headers, and entries; a posting cannot mix currencies, and no conversion exists. Adding an enabled currency later requires policy/configuration and matching controlled accounts, not a wallet/ledger redesign.
+
 ## System context
 
 ```text
@@ -105,6 +107,8 @@ update that arrives in reverse order fails retryably instead of waiting while ho
 row. Different users lock different profile rows and remain independent.
 
 The wallet update is conditional (`balance >= cost`) and checked by affected-row count. A unique idempotency record and unique `box_opens.idempotency_record_id` prevent double charge. Deadlocks and serialization failures may be retried a small bounded number of times using the same idempotency key.
+
+Phase 8 establishes the first two locks and the financial composition boundary. A command first claims `(actor, operation, idempotency key)`, then locks the actor's currency wallet through a narrow security-definer lock function. `creditWallet`, `debitWallet`, and reversal posting require the branded caller-owned `TransactionExecutor`; they never commit internally. The authoritative global order remains idempotency claim → wallet → `fairness_profiles` → `rng_seed_sets` → `rng_seed_rotations` → future inventory rows → financial/business inserts. Different wallets do not share a row lock.
 
 Detailed flow:
 

@@ -32,6 +32,7 @@ describe('console logger', () => {
       ciphertext: 'synthetic-ciphertext-that-must-not-appear',
       encryptionAuthTag: 'synthetic-auth-tag-that-must-not-appear',
       encryption_iv: 'synthetic-iv-that-must-not-appear',
+      idempotencyKey: 'synthetic-idempotency-key-that-must-not-appear',
       password: 'synthetic-password-that-must-not-appear',
       requestId: 'request-123',
       RNG_MASTER_KEY: 'synthetic-master-key-that-must-not-appear',
@@ -50,6 +51,7 @@ describe('console logger', () => {
     expect(lines[0]).not.toContain('synthetic-active-seed-that-must-not-appear');
     expect(lines[0]).not.toContain('synthetic-auth-tag-that-must-not-appear');
     expect(lines[0]).not.toContain('synthetic-iv-that-must-not-appear');
+    expect(lines[0]).not.toContain('synthetic-idempotency-key-that-must-not-appear');
     expect(lines[0]).not.toContain('synthetic-prefixed-ciphertext-that-must-not-appear');
     expect(lines[0]).not.toContain('synthetic-db-ciphertext-that-must-not-appear');
     expect(JSON.parse(lines[0] ?? '')).toEqual({
@@ -58,6 +60,7 @@ describe('console logger', () => {
       ciphertext: '[REDACTED]',
       encryptionAuthTag: '[REDACTED]',
       encryption_iv: '[REDACTED]',
+      idempotencyKey: '[REDACTED]',
       level: 'error',
       message: 'request.failed',
       password: '[REDACTED]',

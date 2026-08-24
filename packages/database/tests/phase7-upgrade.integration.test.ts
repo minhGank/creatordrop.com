@@ -21,12 +21,14 @@ const migrationFiles = [
   '20260823192330_phase7_rng_key_identity_semantics.sql',
   '20260823220000_phase7_rng_key_registry.sql',
   '20260823230000_phase7_rng_lifecycle_user_lock.sql',
+  '20260824154215_phase8_wallet_ledger_idempotency.sql',
 ] as const;
 const originalPhase7Index = migrationFiles.indexOf('20260822150000_rng_seed_lifecycle.sql');
 const firstHardeningFile = '20260823093143_phase7_rng_lifecycle_hardening.sql';
 const keyIdentityHardeningFile = '20260823192330_phase7_rng_key_identity_semantics.sql';
 const keyRegistryHardeningFile = '20260823220000_phase7_rng_key_registry.sql';
 const lifecycleUserLockFile = '20260823230000_phase7_rng_lifecycle_user_lock.sql';
+const phase8WalletFile = '20260824154215_phase8_wallet_ledger_idempotency.sql';
 
 const migrationSql = async (fileName: (typeof migrationFiles)[number]): Promise<string> =>
   readFile(new URL(`../../../infra/supabase/migrations/${fileName}`, import.meta.url), 'utf8');
@@ -151,7 +153,7 @@ describe('Phase 7 forward-migration compatibility', { concurrent: false }, () =>
 
   const dropTemporaryDatabase = async (name: string, database: Database): Promise<void> => {
     await database.close();
-    await adminDatabase.query(`drop database "${name}" with (force)`);
+    await adminDatabase.query(`drop database "${name}"`);
     databasesToDrop.delete(name);
   };
 
@@ -367,6 +369,38 @@ describe('Phase 7 forward-migration compatibility', { concurrent: false }, () =>
             reason: 'key_compromise',
           },
         ]);
+
+        await database.query(await migrationSql(phase8WalletFile));
+        const phase8Upgrade = await database.query<{
+          readonly idempotencyCount: string;
+          readonly ledgerAccountCount: string;
+          readonly ledgerEntryCount: string;
+          readonly ledgerTransactionCount: string;
+          readonly walletCount: string;
+        }>(
+          `select
+             (select count(*)::text from app.idempotency_records) as "idempotencyCount",
+             (select count(*)::text from app.ledger_accounts) as "ledgerAccountCount",
+             (select count(*)::text from app.ledger_entries) as "ledgerEntryCount",
+             (select count(*)::text from app.ledger_transactions) as "ledgerTransactionCount",
+             (select count(*)::text from app.wallets) as "walletCount"`,
+        );
+        expect(phase8Upgrade.rows).toEqual([
+          {
+            idempotencyCount: '0',
+            ledgerAccountCount: '0',
+            ledgerEntryCount: '0',
+            ledgerTransactionCount: '0',
+            walletCount: '0',
+          },
+        ]);
+        expect(
+          (
+            await database.query<{ readonly phase7SeedCount: string }>(
+              `select count(*)::text as "phase7SeedCount" from app.rng_seed_sets`,
+            )
+          ).rows,
+        ).toEqual([{ phase7SeedCount: '8' }]);
       } finally {
         await dropTemporaryDatabase(name, database);
       }

@@ -14,7 +14,10 @@ import { createJwtVerifier } from '../src/modules/auth/jwt-verifier.js';
 import { createCatalogService } from '../src/modules/catalog/catalog.service.js';
 import { createCreatorService } from '../src/modules/creators/creator.service.js';
 import { createUserBootstrapService } from '../src/modules/users/bootstrap-user.service.js';
-import { createUnhandledFairnessService } from './support/test-app.js';
+import {
+  createUnhandledFairnessService,
+  createUnhandledWalletService,
+} from './support/test-app.js';
 
 const localApplicationUrl =
   'postgresql://postgres:postgres@127.0.0.1:54322/postgres?options=-c%20role%3Dcreatordrop_app';
@@ -342,6 +345,7 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
       creatorService: createCreatorService({ database: applicationDatabase, logger }),
       fairnessService: createUnhandledFairnessService(),
       logger,
+      runtime: { testCreditsEnabled: false },
       security: {
         allowedOrigins: ['http://localhost:5173'],
         authRateLimitMax: 10_000,
@@ -351,7 +355,10 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
         fairnessMutationRateLimitMax: 10_000,
         fairnessMutationRateLimitWindowMs: 60_000,
         requestBodyLimitBytes: 262_144,
+        walletMutationRateLimitMax: 10_000,
+        walletMutationRateLimitWindowMs: 60_000,
       },
+      walletService: createUnhandledWalletService(),
     });
     await removeSyntheticState();
   });

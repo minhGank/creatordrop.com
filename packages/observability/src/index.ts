@@ -13,7 +13,7 @@ export interface ConsoleLoggerOptions {
 }
 
 const sensitiveAttributeName =
-  /authorization|cookie|credential|password|secret|token|api[-_]?key/iu;
+  /authorization|cookie|credential|password|secret|token|api[-_]?key|idempotency[-_]?key/iu;
 const normalizedAttributeName = (name: string): string =>
   name.replaceAll(/[^a-z0-9]/giu, '').toLowerCase();
 const rngSensitiveAttributeName = (name: string): boolean => {

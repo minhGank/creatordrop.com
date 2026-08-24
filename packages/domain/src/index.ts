@@ -1,3 +1,17 @@
+export {
+  addMoneyMinor,
+  maximumMoneyMinor,
+  minimumMoneyMinor,
+  MoneyValueError,
+  moneyMinorToDecimal,
+  negateMoneyMinor,
+  parseCurrency,
+  parsePositiveMoneyMinor,
+  toMoneyMinor,
+  type Currency,
+  type MoneyMinor,
+  type PositiveMoneyMinor,
+} from './money.js';
 export { maximumSignedBigint, rngAlgorithmVersion, unsigned256Range } from './rng/constants.js';
 export {
   buildHmacMessage,
