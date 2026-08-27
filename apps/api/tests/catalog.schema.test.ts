@@ -90,18 +90,48 @@ describe('catalog request validation', () => {
     for (const weight of ['0', '-1', '1.5', 1]) {
       expect(() =>
         parseDraftRewardConfiguration({
-          entries: [{ rewardVersionId: '019c0000-0000-7000-8000-000000000040', weight }],
+          entries: [
+            {
+              isBaseReward: true,
+              rewardVersionId: '019c0000-0000-7000-8000-000000000040',
+              weight,
+            },
+          ],
         }),
       ).toThrow();
     }
     expect(() =>
       parseDraftRewardConfiguration({
         entries: [
-          { rewardVersionId: '019c0000-0000-7000-8000-000000000040', weight: '1' },
-          { rewardVersionId: '019c0000-0000-7000-8000-000000000040', weight: '2' },
+          {
+            isBaseReward: false,
+            rewardVersionId: '019c0000-0000-7000-8000-000000000040',
+            weight: '1',
+          },
+          {
+            isBaseReward: false,
+            rewardVersionId: '019c0000-0000-7000-8000-000000000040',
+            weight: '2',
+          },
         ],
       }),
     ).toThrow();
+  });
+
+  it('requires an explicit boolean base-reward designation on every draft entry', () => {
+    for (const isBaseReward of [undefined, 'true', 1, null]) {
+      expect(() =>
+        parseDraftRewardConfiguration({
+          entries: [
+            {
+              isBaseReward,
+              rewardVersionId: '019c0000-0000-7000-8000-000000000040',
+              weight: '1',
+            },
+          ],
+        }),
+      ).toThrow();
+    }
   });
 
   it('requires quoted optimistic revisions', () => {

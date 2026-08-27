@@ -19,7 +19,19 @@ export type LedgerTransactionId = string & {
 export type WalletId = string & { readonly [walletIdBrand]: 'WalletId' };
 
 export type LedgerTransactionKind =
-  'reversal' | 'test_credit_grant' | 'wallet_credit' | 'wallet_debit';
+  | 'box_open_allocation'
+  | 'box_open_sale'
+  | 'reversal'
+  | 'test_credit_grant'
+  | 'wallet_credit'
+  | 'wallet_debit';
+
+export type LedgerAccountType =
+  | 'box_sales_clearing'
+  | 'creator_pending_earnings'
+  | 'platform_fee'
+  | 'system_test_funding'
+  | 'user_wallet';
 
 export interface Wallet {
   readonly availableBalanceMinor: MoneyMinor;
@@ -33,9 +45,10 @@ export interface Wallet {
 }
 
 export interface LedgerAccount {
-  readonly accountType: 'system_test_funding' | 'user_wallet';
+  readonly accountType: LedgerAccountType;
   readonly currency: Currency;
   readonly id: LedgerAccountId;
+  readonly ownerCreatorId: string | null;
   readonly ownerUserId: UserId | null;
 }
 

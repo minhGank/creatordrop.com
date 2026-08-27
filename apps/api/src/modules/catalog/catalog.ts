@@ -2,6 +2,7 @@ import {
   boxStatuses,
   boxVersionStates,
   inventoryModes,
+  inventoryStockoutPolicies,
   rewardStatuses,
   rewardTypes,
   rewardVersionStates,
@@ -10,6 +11,7 @@ import type {
   BoxStatus,
   BoxVersionState,
   InventoryMode,
+  InventoryStockoutPolicy,
   RewardStatus,
   RewardType,
   RewardVersionState,
@@ -21,6 +23,7 @@ export {
   boxStatuses,
   boxVersionStates,
   inventoryModes,
+  inventoryStockoutPolicies,
   rewardStatuses,
   rewardTypes,
   rewardVersionStates,
@@ -29,6 +32,7 @@ export type {
   BoxStatus,
   BoxVersionState,
   InventoryMode,
+  InventoryStockoutPolicy,
   RewardStatus,
   RewardType,
   RewardVersionState,
@@ -37,6 +41,7 @@ export type {
 declare const boxIdBrand: unique symbol;
 declare const boxVersionIdBrand: unique symbol;
 declare const boxVersionRewardIdBrand: unique symbol;
+declare const inventoryPoolIdBrand: unique symbol;
 declare const rewardIdBrand: unique symbol;
 declare const rewardVersionIdBrand: unique symbol;
 
@@ -45,6 +50,7 @@ export type BoxVersionId = string & { readonly [boxVersionIdBrand]: 'BoxVersionI
 export type BoxVersionRewardId = string & {
   readonly [boxVersionRewardIdBrand]: 'BoxVersionRewardId';
 };
+export type InventoryPoolId = string & { readonly [inventoryPoolIdBrand]: 'InventoryPoolId' };
 export type RewardId = string & { readonly [rewardIdBrand]: 'RewardId' };
 export type RewardVersionId = string & { readonly [rewardVersionIdBrand]: 'RewardVersionId' };
 export type MoneyMinor = bigint & { readonly __brand: 'MoneyMinor' };
@@ -64,6 +70,7 @@ export interface BoxVersion {
   readonly id: BoxVersionId;
   readonly imageUrl: string | null;
   readonly name: string;
+  readonly openingCompatibilityVersion: 'opening-v1' | null;
   readonly priceMinor: string;
   readonly publishedAt: string | null;
   readonly rngAlgorithmVersion: string | null;
@@ -94,6 +101,7 @@ export interface RewardVersion {
   readonly imageUrl: string | null;
   readonly inventoryMode: InventoryMode;
   readonly inventoryQuantity: string | null;
+  readonly inventoryStockoutPolicy: InventoryStockoutPolicy | null;
   readonly name: string;
   readonly publishedAt: string | null;
   readonly rewardType: RewardType;
@@ -115,6 +123,7 @@ export interface Reward {
 
 export interface DraftRewardEntry {
   readonly id: BoxVersionRewardId;
+  readonly isBaseReward: boolean;
   readonly position: number;
   readonly rewardVersion: RewardVersion;
   readonly weight: string;

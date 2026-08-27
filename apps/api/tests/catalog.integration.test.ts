@@ -313,7 +313,9 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
       .put(`/v1/creators/${creatorId}/boxes/${box.id}/draft/rewards`)
       .set(authorization(actor))
       .set('If-Match', `"${revision.toString()}"`)
-      .send({ entries });
+      .send({
+        entries: entries.map((entry, index) => ({ ...entry, isBaseReward: index === 0 })),
+      });
 
   beforeAll(async () => {
     applicationDatabase = createDatabasePool({
@@ -413,7 +415,25 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
 
     const unlimited = await createReward(owner, creator.id, rewardBody());
     await createReward(manager, creator.id, rewardBody());
-    await createReward(editor, creator.id, rewardBody('Finite zero draft', 'finite', '0'));
+    const finiteDraft = await createReward(
+      editor,
+      creator.id,
+      rewardBody('Finite zero draft', 'finite', '0'),
+    );
+    const changedToUnlimited = await request(app)
+      .patch(`/v1/creators/${creator.id}/rewards/${finiteDraft.id}/draft`)
+      .set(authorization(editor))
+      .set('If-Match', '"1"')
+      .send(rewardBody('Changed to unlimited'));
+    expect(changedToUnlimited.status).toBe(200);
+    expect(
+      (
+        await applicationDatabase.query<{ readonly count: string }>(
+          `select count(*)::text as count from app.inventory_pools where id = $1`,
+          [finiteDraft.draftId],
+        )
+      ).rows,
+    ).toEqual([{ count: '0' }]);
     const viewerReward = await request(app)
       .post(`/v1/creators/${creator.id}/rewards`)
       .set(authorization(viewer))
@@ -563,6 +583,56 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
       [emptyBox.id],
     );
     expect(emptyState.rows).toEqual([{ currentVersion: null, draftCount: '1' }]);
+
+    const zeroBaseBox = await createBox(owner, creator.id, boxBody('Zero base'));
+    const zeroBaseReward = await createReward(owner, creator.id, rewardBody('Zero base reward'));
+    expect(
+      (
+        await request(app)
+          .put(`/v1/creators/${creator.id}/boxes/${zeroBaseBox.id}/draft/rewards`)
+          .set(authorization(owner))
+          .set('If-Match', '"1"')
+          .send({
+            entries: [
+              { isBaseReward: false, rewardVersionId: zeroBaseReward.draftId, weight: '1' },
+            ],
+          })
+      ).status,
+    ).toBe(200);
+    const zeroBasePublish = await request(app)
+      .post(`/v1/creators/${creator.id}/boxes/${zeroBaseBox.id}/publish`)
+      .set(authorization(owner))
+      .set('If-Match', '"2"');
+    expect(zeroBasePublish.status).toBe(422);
+    expect(zeroBasePublish.body).toMatchObject({
+      error: { code: 'CATALOG_PUBLICATION_BASE_REWARD_INVALID' },
+    });
+
+    const multipleBaseBox = await createBox(owner, creator.id, boxBody('Multiple bases'));
+    const multipleBaseFirst = await createReward(owner, creator.id, rewardBody('Base one'));
+    const multipleBaseSecond = await createReward(owner, creator.id, rewardBody('Base two'));
+    expect(
+      (
+        await request(app)
+          .put(`/v1/creators/${creator.id}/boxes/${multipleBaseBox.id}/draft/rewards`)
+          .set(authorization(owner))
+          .set('If-Match', '"1"')
+          .send({
+            entries: [
+              { isBaseReward: true, rewardVersionId: multipleBaseFirst.draftId, weight: '1' },
+              { isBaseReward: true, rewardVersionId: multipleBaseSecond.draftId, weight: '1' },
+            ],
+          })
+      ).status,
+    ).toBe(200);
+    const multipleBasePublish = await request(app)
+      .post(`/v1/creators/${creator.id}/boxes/${multipleBaseBox.id}/publish`)
+      .set(authorization(owner))
+      .set('If-Match', '"2"');
+    expect(multipleBasePublish.status).toBe(422);
+    expect(multipleBasePublish.body).toMatchObject({
+      error: { code: 'CATALOG_PUBLICATION_BASE_REWARD_INVALID' },
+    });
 
     const finite = await createReward(owner, creator.id, rewardBody('Finite zero', 'finite', '0'));
     expect(

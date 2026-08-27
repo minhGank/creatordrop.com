@@ -15,14 +15,15 @@ import {
   parseCurrency,
   toMoneyMinor,
 } from '@creatordrop/domain';
-import type { Currency, PositiveMoneyMinor } from '@creatordrop/domain';
+import type { Currency, MoneyMinor, PositiveMoneyMinor } from '@creatordrop/domain';
 import type { Logger } from '@creatordrop/observability';
 
-import type { UserId } from '../creators/creator.js';
+import type { CreatorId, UserId } from '../creators/creator.js';
 import {
   IdempotencyKeyReusedError,
   InsufficientBalanceError,
   LedgerTransactionNotFoundError,
+  LedgerTransactionNotReversibleError,
   TestCreditsUnavailableError,
   WalletAmountOverflowError,
   WalletCurrencyNotEnabledError,
@@ -31,8 +32,10 @@ import {
 import {
   applyWalletDelta,
   claimIdempotencyRecord,
+  completeBoxOpeningIdempotencyRecord,
   completeIdempotencyRecord,
   ensureSystemTestFundingAccount,
+  ensureOpeningLedgerAccount,
   ensureUserWallet,
   finalizeLedgerTransaction,
   findLedgerTransactionWithEntries,
@@ -98,6 +101,23 @@ export interface WalletServiceOptions {
   readonly enabledTestCreditCurrencies?: readonly Currency[];
   readonly logger: Logger;
   readonly testCreditsEnabled: boolean;
+}
+
+export interface BoxOpeningFinancialInput {
+  readonly actorUserId: UserId;
+  readonly creatorId: CreatorId;
+  readonly creatorShareMinor: MoneyMinor;
+  readonly currency: Currency;
+  readonly grossPriceMinor: PositiveMoneyMinor;
+  readonly openingId: string;
+  readonly platformFeeMinor: MoneyMinor;
+  readonly wallet: Wallet;
+}
+
+export interface BoxOpeningFinancialResult {
+  readonly allocationLedgerTransactionId: LedgerTransactionId;
+  readonly saleLedgerTransactionId: LedgerTransactionId;
+  readonly wallet: Wallet;
 }
 
 interface WalletMovementInput {
@@ -311,6 +331,170 @@ export const debitWallet = async (
     postWalletMovement(transaction, { ...input, kind: 'wallet_debit' }, createId),
   );
 
+export const claimBoxOpeningIdempotency = (
+  transaction: TransactionExecutor,
+  input: {
+    readonly actorUserId: UserId;
+    readonly fingerprint: string;
+    readonly id: IdempotencyRecordId;
+    readonly idempotencyKey: string;
+  },
+): ReturnType<typeof claimIdempotencyRecord> =>
+  claimIdempotencyRecord(transaction, { ...input, operation: 'box.open' });
+
+export const completeBoxOpeningIdempotency = (
+  transaction: TransactionExecutor,
+  input: {
+    readonly openingId: string;
+    readonly recordId: IdempotencyRecordId;
+    readonly responseBody: Readonly<object>;
+  },
+): Promise<void> =>
+  completeBoxOpeningIdempotencyRecord(transaction, {
+    httpStatus: 201,
+    openingId: input.openingId,
+    recordId: input.recordId,
+    responseBody: input.responseBody,
+  });
+
+export const lockBoxOpeningWallet = async (
+  transaction: TransactionExecutor,
+  userId: UserId,
+  currency: Currency,
+  requiredDebitMinor: MoneyMinor,
+): Promise<Wallet> => {
+  const wallet = await lockWalletForUpdate(transaction, userId, currency);
+  if (wallet === undefined) throw new WalletNotFoundError();
+  if (requiredDebitMinor <= 0n) throw new WalletAmountOverflowError();
+  if (wallet.availableBalanceMinor < requiredDebitMinor) throw new InsufficientBalanceError();
+  return wallet;
+};
+
+export const postBoxOpeningFinancials = async (
+  transaction: TransactionExecutor,
+  input: BoxOpeningFinancialInput,
+  createId: CreateId = uuidv7,
+): Promise<BoxOpeningFinancialResult> => {
+  assertTransactionExecutor(transaction);
+  if (
+    input.wallet.userId !== input.actorUserId ||
+    input.wallet.currency !== input.currency ||
+    input.grossPriceMinor <= 0n ||
+    input.creatorShareMinor <= 0n ||
+    input.platformFeeMinor < 0n ||
+    input.creatorShareMinor + input.platformFeeMinor !== input.grossPriceMinor
+  ) {
+    throw new WalletAmountOverflowError();
+  }
+  if (input.wallet.availableBalanceMinor < input.grossPriceMinor) {
+    throw new InsufficientBalanceError();
+  }
+
+  const clearing = await ensureOpeningLedgerAccount(transaction, {
+    accountId: generatedId(createId, 'Clearing ledger account ID', 'ledgerAccount'),
+    accountType: 'box_sales_clearing',
+    creatorId: null,
+    currency: input.currency,
+  });
+  const creatorEarnings = await ensureOpeningLedgerAccount(transaction, {
+    accountId: generatedId(createId, 'Creator earnings account ID', 'ledgerAccount'),
+    accountType: 'creator_pending_earnings',
+    creatorId: input.creatorId,
+    currency: input.currency,
+  });
+  const platformFee = await ensureOpeningLedgerAccount(transaction, {
+    accountId: generatedId(createId, 'Platform fee account ID', 'ledgerAccount'),
+    accountType: 'platform_fee',
+    creatorId: null,
+    currency: input.currency,
+  });
+
+  const saleLedgerTransactionId = generatedId(
+    createId,
+    'Opening sale ledger transaction ID',
+    'ledgerTransaction',
+  );
+  await insertLedgerTransaction(transaction, {
+    actorUserId: input.actorUserId,
+    businessReferenceId: input.openingId,
+    businessReferenceType: 'box_open_sale',
+    currency: input.currency,
+    description: 'Box opening wallet sale',
+    id: saleLedgerTransactionId,
+    idempotencyRecordId: null,
+    kind: 'box_open_sale',
+    reversesLedgerTransactionId: null,
+  });
+  await insertLedgerEntries(transaction, saleLedgerTransactionId, [
+    {
+      amountMinor: toMoneyMinor(0n - input.grossPriceMinor),
+      currency: input.currency,
+      id: generatedId(createId, 'Opening sale ledger entry ID', 'ledgerEntry'),
+      ledgerAccountId: input.wallet.ledgerAccountId,
+      sequence: 0,
+    },
+    {
+      amountMinor: toMoneyMinor(input.grossPriceMinor),
+      currency: input.currency,
+      id: generatedId(createId, 'Opening clearing ledger entry ID', 'ledgerEntry'),
+      ledgerAccountId: clearing.id,
+      sequence: 1,
+    },
+  ]);
+  const wallet = await applyWalletDelta(
+    transaction,
+    input.wallet.id,
+    toMoneyMinor(0n - input.grossPriceMinor),
+  );
+  if (wallet === undefined) throw new InsufficientBalanceError();
+  await finalizeLedgerTransaction(transaction, saleLedgerTransactionId);
+
+  const allocationLedgerTransactionId = generatedId(
+    createId,
+    'Opening allocation ledger transaction ID',
+    'ledgerTransaction',
+  );
+  await insertLedgerTransaction(transaction, {
+    actorUserId: input.actorUserId,
+    businessReferenceId: input.openingId,
+    businessReferenceType: 'box_open_allocation',
+    currency: input.currency,
+    description: 'Box opening creator and platform allocation',
+    id: allocationLedgerTransactionId,
+    idempotencyRecordId: null,
+    kind: 'box_open_allocation',
+    reversesLedgerTransactionId: null,
+  });
+  const allocationEntries: LedgerEntry[] = [
+    {
+      amountMinor: toMoneyMinor(0n - input.grossPriceMinor),
+      currency: input.currency,
+      id: generatedId(createId, 'Allocation clearing ledger entry ID', 'ledgerEntry'),
+      ledgerAccountId: clearing.id,
+      sequence: 0,
+    },
+    {
+      amountMinor: toMoneyMinor(input.creatorShareMinor),
+      currency: input.currency,
+      id: generatedId(createId, 'Creator earnings ledger entry ID', 'ledgerEntry'),
+      ledgerAccountId: creatorEarnings.id,
+      sequence: 1,
+    },
+  ];
+  if (input.platformFeeMinor > 0n) {
+    allocationEntries.push({
+      amountMinor: toMoneyMinor(input.platformFeeMinor),
+      currency: input.currency,
+      id: generatedId(createId, 'Platform fee ledger entry ID', 'ledgerEntry'),
+      ledgerAccountId: platformFee.id,
+      sequence: 2,
+    });
+  }
+  await insertLedgerEntries(transaction, allocationLedgerTransactionId, allocationEntries);
+  await finalizeLedgerTransaction(transaction, allocationLedgerTransactionId);
+  return { allocationLedgerTransactionId, saleLedgerTransactionId, wallet };
+};
+
 export const reverseLedgerTransaction = async (
   transaction: TransactionExecutor,
   input: ReverseLedgerTransactionInput,
@@ -325,6 +509,12 @@ export const reverseLedgerTransaction = async (
   );
   if (original?.transaction.status !== 'posted') {
     throw new LedgerTransactionNotFoundError();
+  }
+  if (
+    original.transaction.kind === 'box_open_sale' ||
+    original.transaction.kind === 'box_open_allocation'
+  ) {
+    throw new LedgerTransactionNotReversibleError();
   }
 
   const lockedWallets = await lockWalletsForLedgerAccounts(

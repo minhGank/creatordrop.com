@@ -93,6 +93,9 @@ export type RewardType = (typeof rewardTypes)[number];
 export const inventoryModes = ['unlimited', 'finite'] as const;
 export type InventoryMode = (typeof inventoryModes)[number];
 
+export const inventoryStockoutPolicies = ['pause_box', 'backorder'] as const;
+export type InventoryStockoutPolicy = (typeof inventoryStockoutPolicies)[number];
+
 export interface BoxVersionContract {
   readonly configurationHash: string | null;
   readonly createdAt: string;
@@ -101,6 +104,7 @@ export interface BoxVersionContract {
   readonly id: string;
   readonly imageUrl: string | null;
   readonly name: string;
+  readonly openingCompatibilityVersion: 'opening-v1' | null;
   readonly priceMinor: string;
   readonly publishedAt: string | null;
   readonly rngAlgorithmVersion: string | null;
@@ -131,6 +135,7 @@ export interface RewardVersionContract {
   readonly imageUrl: string | null;
   readonly inventoryMode: InventoryMode;
   readonly inventoryQuantity: string | null;
+  readonly inventoryStockoutPolicy: InventoryStockoutPolicy | null;
   readonly name: string;
   readonly publishedAt: string | null;
   readonly rewardType: RewardType;
@@ -180,6 +185,7 @@ export interface RewardVersionsResponse {
 
 export interface BoxDraftRewardContract {
   readonly id: string;
+  readonly isBaseReward: boolean;
   readonly position: number;
   readonly rewardVersion: RewardVersionContract;
   readonly weight: string;
@@ -264,4 +270,32 @@ export interface WalletsResponse {
 
 export interface WalletTestCreditResponse {
   readonly wallet: WalletContract;
+}
+
+export interface BoxOpeningResponse {
+  readonly opening: {
+    readonly boxId: string;
+    readonly boxVersionId: string;
+    readonly cost: {
+      readonly currency: string;
+      readonly priceMinor: string;
+    };
+    readonly fairness: {
+      readonly clientSeed: string;
+      readonly commitment: string;
+      readonly configurationHash: string;
+      readonly nonce: string;
+      readonly seedSetId: string;
+    };
+    readonly fulfillmentStatus: 'awaiting_restock' | 'pending_fulfillment';
+    readonly id: string;
+    readonly pointsAwarded: 5 | 20;
+    readonly reward: {
+      readonly id: string;
+      readonly imageUrl: string | null;
+      readonly name: string;
+      readonly rewardVersionId: string;
+    };
+    readonly wallet: WalletContract;
+  };
 }

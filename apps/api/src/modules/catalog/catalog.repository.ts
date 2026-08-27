@@ -1,4 +1,5 @@
-import type { QueryExecutor } from '@creatordrop/database';
+import { assertTransactionExecutor } from '@creatordrop/database';
+import type { QueryExecutor, TransactionExecutor } from '@creatordrop/database';
 
 import type { CreatorId, CreatorRole, UserId } from '../creators/creator.js';
 import {
@@ -14,6 +15,7 @@ import {
   type BoxVersionId,
   type BoxVersionRewardId,
   type DraftRewardEntry,
+  type InventoryPoolId,
   type ProbabilityWeight,
   type Reward,
   type RewardId,
@@ -35,6 +37,7 @@ interface BoxRow {
   readonly draftId: unknown;
   readonly draftImageUrl: unknown;
   readonly draftName: unknown;
+  readonly draftOpeningCompatibilityVersion: unknown;
   readonly draftPriceMinor: unknown;
   readonly draftPublishedAt: unknown;
   readonly draftRngAlgorithmVersion: unknown;
@@ -58,6 +61,7 @@ interface RewardRow {
   readonly draftImageUrl: unknown;
   readonly draftInventoryMode: unknown;
   readonly draftInventoryQuantity: unknown;
+  readonly draftInventoryStockoutPolicy: unknown;
   readonly draftName: unknown;
   readonly draftPublishedAt: unknown;
   readonly draftRewardType: unknown;
@@ -80,6 +84,7 @@ interface BoxVersionRow {
   readonly id: unknown;
   readonly imageUrl: unknown;
   readonly name: unknown;
+  readonly openingCompatibilityVersion: unknown;
   readonly priceMinor: unknown;
   readonly publishedAt: unknown;
   readonly rngAlgorithmVersion: unknown;
@@ -102,6 +107,7 @@ interface RewardVersionRow {
   readonly imageUrl: unknown;
   readonly inventoryMode: unknown;
   readonly inventoryQuantity: unknown;
+  readonly inventoryStockoutPolicy: unknown;
   readonly name: unknown;
   readonly publishedAt: unknown;
   readonly rewardType: unknown;
@@ -112,6 +118,7 @@ interface RewardVersionRow {
 
 interface ConfigurationRow extends RewardVersionRow {
   readonly entryId: unknown;
+  readonly isBaseReward: unknown;
   readonly position: unknown;
   readonly rewardId: unknown;
   readonly rewardStatus: unknown;
@@ -133,6 +140,13 @@ export interface RewardVersionRecord {
 export interface PublicBoxVersionRecord {
   readonly boxId: BoxId;
   readonly version: BoxVersion;
+}
+
+export interface LockedPublicationInventoryPool {
+  readonly availableQuantity: bigint;
+  readonly creatorId: CreatorId;
+  readonly id: InventoryPoolId;
+  readonly stockoutPolicy: 'pause_box';
 }
 
 const isOneOf = <T extends string>(value: unknown, values: readonly T[]): value is T =>
@@ -185,6 +199,14 @@ const parseBoxVersion = (row: BoxVersionRow): BoxVersion => {
     id: requiredString(row.id, 'box version ID') as BoxVersionId,
     imageUrl: nullableString(row.imageUrl, 'box image URL'),
     name: requiredString(row.name, 'box name'),
+    openingCompatibilityVersion:
+      row.openingCompatibilityVersion === null
+        ? null
+        : row.openingCompatibilityVersion === 'opening-v1'
+          ? 'opening-v1'
+          : (() => {
+              throw new Error('Database returned invalid opening compatibility version.');
+            })(),
     priceMinor: requiredString(row.priceMinor, 'box price'),
     publishedAt: nullableTimestamp(row.publishedAt, 'box publication timestamp'),
     rngAlgorithmVersion: nullableString(row.rngAlgorithmVersion, 'RNG algorithm version'),
@@ -210,6 +232,7 @@ const boxVersionFromJoinedRow = (row: BoxRow): BoxVersion | null => {
     id: row.draftId,
     imageUrl: row.draftImageUrl,
     name: row.draftName,
+    openingCompatibilityVersion: row.draftOpeningCompatibilityVersion,
     priceMinor: row.draftPriceMinor,
     publishedAt: row.draftPublishedAt,
     rngAlgorithmVersion: row.draftRngAlgorithmVersion,
@@ -245,6 +268,12 @@ const parseRewardVersion = (row: RewardVersionRow): RewardVersion => {
   if (!isOneOf(row.inventoryMode, inventoryModes)) {
     throw new Error('Database returned invalid inventory mode.');
   }
+  if (
+    row.inventoryStockoutPolicy !== null &&
+    !isOneOf(row.inventoryStockoutPolicy, ['pause_box', 'backorder'] as const)
+  ) {
+    throw new Error('Database returned invalid inventory stockout policy.');
+  }
   if (!isOneOf(row.rewardType, rewardTypes)) {
     throw new Error('Database returned invalid reward type.');
   }
@@ -257,6 +286,7 @@ const parseRewardVersion = (row: RewardVersionRow): RewardVersion => {
     imageUrl: nullableString(row.imageUrl, 'reward image URL'),
     inventoryMode: row.inventoryMode,
     inventoryQuantity: nullableString(row.inventoryQuantity, 'inventory quantity'),
+    inventoryStockoutPolicy: row.inventoryStockoutPolicy,
     name: requiredString(row.name, 'reward name'),
     publishedAt: nullableTimestamp(row.publishedAt, 'reward publication timestamp'),
     rewardType: row.rewardType,
@@ -277,6 +307,7 @@ const rewardVersionFromJoinedRow = (row: RewardRow): RewardVersion | null => {
     imageUrl: row.draftImageUrl,
     inventoryMode: row.draftInventoryMode,
     inventoryQuantity: row.draftInventoryQuantity,
+    inventoryStockoutPolicy: row.draftInventoryStockoutPolicy,
     name: row.draftName,
     publishedAt: row.draftPublishedAt,
     rewardType: row.draftRewardType,
@@ -315,6 +346,7 @@ const boxColumns = `
   draft.version_number as "draftVersionNumber",
   draft.state as "draftState",
   draft.name as "draftName",
+  draft.opening_compatibility_version as "draftOpeningCompatibilityVersion",
   draft.description as "draftDescription",
   draft.image_url as "draftImageUrl",
   draft.price_minor::text as "draftPriceMinor",
@@ -343,6 +375,7 @@ const rewardColumns = `
   draft.reward_type as "draftRewardType",
   draft.inventory_mode as "draftInventoryMode",
   draft.inventory_quantity::text as "draftInventoryQuantity",
+  draft.inventory_stockout_policy as "draftInventoryStockoutPolicy",
   draft.declared_value_minor::text as "draftDeclaredValueMinor",
   draft.declared_value_currency as "draftDeclaredValueCurrency",
   draft.published_at as "draftPublishedAt",
@@ -354,6 +387,7 @@ const boxVersionColumns = `
   bv.version_number as "versionNumber",
   bv.state,
   bv.name,
+  bv.opening_compatibility_version as "openingCompatibilityVersion",
   bv.description,
   bv.image_url as "imageUrl",
   bv.price_minor::text as "priceMinor",
@@ -375,6 +409,7 @@ const rewardVersionColumns = `
   rv.reward_type as "rewardType",
   rv.inventory_mode as "inventoryMode",
   rv.inventory_quantity::text as "inventoryQuantity",
+  rv.inventory_stockout_policy as "inventoryStockoutPolicy",
   rv.declared_value_minor::text as "declaredValueMinor",
   rv.declared_value_currency as "declaredValueCurrency",
   rv.published_at as "publishedAt",
@@ -443,8 +478,8 @@ export const insertRewardAndDraft = async (
     `insert into app.reward_versions (
        id, reward_id, version_number, name, description, image_url, reward_type,
        inventory_mode, inventory_quantity, declared_value_minor, declared_value_currency,
-       created_by_user_id
-     ) values ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+       inventory_stockout_policy, created_by_user_id
+     ) values ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
     [
       identifiers.versionId,
       identifiers.rewardId,
@@ -456,6 +491,7 @@ export const insertRewardAndDraft = async (
       input.inventoryQuantity?.toString() ?? null,
       input.declaredValueMinor?.toString() ?? null,
       input.declaredValueCurrency,
+      input.inventoryStockoutPolicy,
       actorUserId,
     ],
   );
@@ -574,6 +610,7 @@ export const updateRewardDraft = async (
         set name = $3, description = $4, image_url = $5, reward_type = $6,
             inventory_mode = $7, inventory_quantity = $8,
             declared_value_minor = $9, declared_value_currency = $10,
+            inventory_stockout_policy = $11,
             updated_at = statement_timestamp()
        from app.rewards r
       where rv.reward_id = r.id and rv.state = 'draft'
@@ -589,6 +626,7 @@ export const updateRewardDraft = async (
       input.inventoryQuantity?.toString() ?? null,
       input.declaredValueMinor?.toString() ?? null,
       input.declaredValueCurrency,
+      input.inventoryStockoutPolicy,
     ],
   );
   if (result.rowCount !== 1) throw new Error('Expected one scoped reward draft update.');
@@ -668,11 +706,14 @@ export const listDraftConfiguration = async (
   const result = await executor.query<ConfigurationRow>(
     `select
        bvr.id::text as "entryId", bvr.position, bvr.weight::text as weight,
+       (base.id is not null) as "isBaseReward",
        r.id::text as "rewardId", r.status as "rewardStatus",
        ${rewardVersionColumns}
        from app.boxes b
        join app.box_versions bv on bv.box_id = b.id and bv.state = 'draft'
        join app.box_version_rewards bvr on bvr.box_version_id = bv.id
+       left join app.box_version_base_rewards base
+         on base.box_version_id = bv.id and base.box_version_reward_id = bvr.id
        join app.reward_versions rv on rv.id = bvr.reward_version_id
        join app.rewards r on r.id = rv.reward_id
       where b.creator_id = $1 and b.id = $2
@@ -686,6 +727,7 @@ export const listDraftConfiguration = async (
     return {
       entry: {
         id: requiredString(row.entryId, 'configuration entry ID') as BoxVersionRewardId,
+        isBaseReward: row.isBaseReward === true,
         position: requiredNumber(row.position, 'configuration position'),
         rewardVersion: parseRewardVersion(row),
         weight: requiredString(row.weight, 'configuration weight'),
@@ -730,6 +772,7 @@ export const replaceDraftConfiguration = async (
   boxId: BoxId,
   entries: readonly {
     readonly id: BoxVersionRewardId;
+    readonly isBaseReward: boolean;
     readonly rewardVersionId: RewardVersionId;
     readonly weight: ProbabilityWeight;
   }[],
@@ -743,6 +786,9 @@ export const replaceDraftConfiguration = async (
   );
   const draftId = draft.rows[0]?.id;
   if (draftId === undefined) throw new Error('Expected a scoped box draft.');
+  await executor.query(`delete from app.box_version_base_rewards where box_version_id = $1`, [
+    draftId,
+  ]);
   await executor.query(`delete from app.box_version_rewards where box_version_id = $1`, [draftId]);
   for (const [position, entry] of entries.entries()) {
     await executor.query(
@@ -751,7 +797,22 @@ export const replaceDraftConfiguration = async (
        ) values ($1, $2, $3, $4, $5)`,
       [entry.id, draftId, entry.rewardVersionId, position, entry.weight.toString()],
     );
+    if (entry.isBaseReward) {
+      await executor.query(
+        `insert into app.box_version_base_rewards (
+           id, box_version_id, box_version_reward_id
+         ) values ($1, $2, $1)`,
+        [entry.id, draftId],
+      );
+    }
   }
+  await executor.query(
+    `update app.box_versions
+        set opening_compatibility_version = 'opening-v1',
+            updated_at = statement_timestamp()
+      where id = $1 and state = 'draft'`,
+    [draftId],
+  );
 };
 
 export const insertBoxDraftClone = async (
@@ -763,10 +824,11 @@ export const insertBoxDraftClone = async (
   const result = await executor.query(
     `insert into app.box_versions (
        id, box_id, version_number, name, description, image_url,
-       price_minor, currency, created_by_user_id
+       price_minor, currency, opening_compatibility_version, created_by_user_id
      )
      select $2, b.id, source.version_number + 1, source.name, source.description,
-            source.image_url, source.price_minor, source.currency, $3
+            source.image_url, source.price_minor, source.currency,
+            source.opening_compatibility_version, $3
        from app.boxes b
        join app.box_versions source on source.id = b.current_published_version_id
       where b.id = $1 and source.state = 'published'`,
@@ -782,22 +844,36 @@ export const cloneBoxConfiguration = async (
   createEntryId: () => BoxVersionRewardId,
 ): Promise<void> => {
   const source = await executor.query<{
+    readonly isBaseReward: boolean;
     readonly rewardVersionId: string;
     readonly weight: string;
   }>(
-    `select reward_version_id::text as "rewardVersionId", weight::text as weight
-       from app.box_version_rewards
-      where box_version_id = $1
-      order by position asc`,
+    `select entry.reward_version_id::text as "rewardVersionId", entry.weight::text as weight,
+            (base.id is not null) as "isBaseReward"
+       from app.box_version_rewards entry
+       left join app.box_version_base_rewards base
+         on base.box_version_id = entry.box_version_id
+        and base.box_version_reward_id = entry.id
+      where entry.box_version_id = $1
+      order by entry.position asc`,
     [sourceVersionId],
   );
   for (const [position, entry] of source.rows.entries()) {
+    const targetEntryId = createEntryId();
     await executor.query(
       `insert into app.box_version_rewards (
          id, box_version_id, reward_version_id, position, weight
        ) values ($1, $2, $3, $4, $5)`,
-      [createEntryId(), targetVersionId, entry.rewardVersionId, position, entry.weight],
+      [targetEntryId, targetVersionId, entry.rewardVersionId, position, entry.weight],
     );
+    if (entry.isBaseReward) {
+      await executor.query(
+        `insert into app.box_version_base_rewards (
+           id, box_version_id, box_version_reward_id
+         ) values ($1, $2, $1)`,
+        [targetEntryId, targetVersionId],
+      );
+    }
   }
 };
 
@@ -811,12 +887,13 @@ export const insertRewardDraftClone = async (
     `insert into app.reward_versions (
        id, reward_id, version_number, name, description, image_url, reward_type,
        inventory_mode, inventory_quantity, declared_value_minor, declared_value_currency,
-       fulfillment_definition, created_by_user_id
+       inventory_stockout_policy, inventory_pool_id, fulfillment_definition, created_by_user_id
      )
      select $2, r.id, source.version_number + 1, source.name, source.description,
             source.image_url, source.reward_type, source.inventory_mode,
             source.inventory_quantity, source.declared_value_minor,
-            source.declared_value_currency, source.fulfillment_definition, $3
+            source.declared_value_currency, source.inventory_stockout_policy,
+            source.inventory_pool_id, source.fulfillment_definition, $3
        from app.rewards r
        join app.reward_versions source on source.reward_id = r.id
       where r.id = $1 and source.state = 'published'
@@ -825,6 +902,39 @@ export const insertRewardDraftClone = async (
     [rewardId, versionId, actorUserId],
   );
   if (result.rowCount !== 1) throw new Error('Expected one published reward version to clone.');
+};
+
+export const lockBoxPublicationInventoryPools = async (
+  transaction: TransactionExecutor,
+  boxVersionId: BoxVersionId,
+  creatorId: CreatorId,
+): Promise<readonly LockedPublicationInventoryPool[]> => {
+  assertTransactionExecutor(transaction);
+  const result = await transaction.query<{
+    readonly availableQuantity: unknown;
+    readonly creatorId: unknown;
+    readonly id: unknown;
+    readonly stockoutPolicy: unknown;
+  }>(
+    `select id::text as id, creator_id::text as "creatorId",
+            stockout_policy as "stockoutPolicy",
+            available_quantity::text as "availableQuantity"
+       from app.lock_box_publication_inventory_pools($1, $2)`,
+    [boxVersionId, creatorId],
+  );
+  return result.rows.map((row) => {
+    const stockoutPolicy = requiredString(row.stockoutPolicy, 'inventory stockout policy');
+    const availableQuantity = BigInt(requiredString(row.availableQuantity, 'available inventory'));
+    if (stockoutPolicy !== 'pause_box' || availableQuantity < 0n) {
+      throw new Error('Database returned invalid publication inventory.');
+    }
+    return {
+      availableQuantity,
+      creatorId: requiredString(row.creatorId, 'inventory creator ID') as CreatorId,
+      id: requiredString(row.id, 'inventory pool ID') as InventoryPoolId,
+      stockoutPolicy,
+    };
+  });
 };
 
 export const markConfigurationRewardsPublished = async (
@@ -938,11 +1048,14 @@ export const listPublishedConfiguration = async (
   const result = await executor.query<ConfigurationRow>(
     `select
        bvr.id::text as "entryId", bvr.position, bvr.weight::text as weight,
+       (base.id is not null) as "isBaseReward",
        r.id::text as "rewardId", r.status as "rewardStatus",
        ${rewardVersionColumns}
        from app.box_version_rewards bvr
        join app.reward_versions rv on rv.id = bvr.reward_version_id
        join app.rewards r on r.id = rv.reward_id
+       left join app.box_version_base_rewards base
+         on base.box_version_id = bvr.box_version_id and base.box_version_reward_id = bvr.id
       where bvr.box_version_id = $1
       order by bvr.position asc`,
     [boxVersionId],
@@ -950,6 +1063,7 @@ export const listPublishedConfiguration = async (
   return result.rows.map((row) => ({
     entry: {
       id: requiredString(row.entryId, 'configuration entry ID') as BoxVersionRewardId,
+      isBaseReward: row.isBaseReward === true,
       position: requiredNumber(row.position, 'configuration position'),
       rewardVersion: parseRewardVersion(row),
       weight: requiredString(row.weight, 'configuration weight'),

@@ -22,6 +22,13 @@ export class FairnessRevisionConflictError extends Error {
   }
 }
 
+export class FairnessClientSeedMismatchError extends Error {
+  constructor() {
+    super('The supplied client seed does not match the current fairness profile.');
+    this.name = 'FairnessClientSeedMismatchError';
+  }
+}
+
 export class SeedRotationRequiredError extends Error {
   constructor() {
     super('The active RNG seed set must be rotated before another nonce can be allocated.');

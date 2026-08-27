@@ -40,6 +40,7 @@ import {
   listPublishedConfiguration,
   listRewardsScoped,
   listRewardVersionsScoped,
+  lockBoxPublicationInventoryPools,
   markConfigurationRewardsPublished,
   publishBoxVersion,
   replaceDraftConfiguration,
@@ -94,6 +95,7 @@ export interface UpdateRewardCommand extends RewardCommand, RewardDraftInput {
 
 export interface ReplaceConfigurationCommand extends BoxCommand {
   readonly entries: readonly {
+    readonly isBaseReward: boolean;
     readonly rewardVersionId: RewardVersionId;
     readonly weight: ProbabilityWeight;
   }[];
@@ -296,6 +298,12 @@ const validatePublicationEntries = (records: readonly ConfigurationEntryRecord[]
     throw new CatalogPublicationError(
       'EMPTY_CONFIGURATION',
       'A box draft requires at least one reward before publication.',
+    );
+  }
+  if (records.filter(({ entry }) => entry.isBaseReward).length !== 1) {
+    throw new CatalogPublicationError(
+      'BASE_REWARD_INVALID',
+      'An opening-v1 box draft requires exactly one explicitly designated base reward.',
     );
   }
   for (const { entry, rewardStatus } of records) {
@@ -555,24 +563,61 @@ export const createCatalogService = ({
         'catalog.publish',
         true,
       );
+      const preflightBox = await requireBox(
+        transaction,
+        command,
+        command.boxId,
+        'catalog.publish',
+        false,
+      );
+      requireRevision(preflightBox.revision, command.expectedRevision);
+      ensureEditableBox(preflightBox);
+      if (preflightBox.draft === null)
+        throw new CatalogDraftConflictError('The box has no draft to publish.');
+      const preflightRecords = await listDraftConfiguration(
+        transaction,
+        command.creatorId,
+        command.boxId,
+      );
+      validatePublicationEntries(preflightRecords);
+      const lockedInventory = await lockBoxPublicationInventoryPools(
+        transaction,
+        preflightBox.draft.id,
+        command.creatorId,
+      );
+      if (lockedInventory.some(({ availableQuantity }) => availableQuantity <= 0n)) {
+        throw new CatalogPublicationError(
+          'INVALID_INVENTORY',
+          'Finite pause-box inventory must be currently available before publication.',
+        );
+      }
+
       const box = await requireBox(transaction, command, command.boxId, 'catalog.publish', true);
       requireRevision(box.revision, command.expectedRevision);
       ensureEditableBox(box);
-      if (box.draft === null)
-        throw new CatalogDraftConflictError('The box has no draft to publish.');
+      const lockedDraft = box.draft;
+      if (lockedDraft?.id !== preflightBox.draft.id) {
+        throw new CatalogRevisionConflictError(box.revision);
+      }
       const records = await listDraftConfiguration(transaction, command.creatorId, command.boxId);
       validatePublicationEntries(records);
+      if (lockedDraft.openingCompatibilityVersion !== 'opening-v1') {
+        throw new CatalogPublicationError(
+          'BASE_REWARD_INVALID',
+          'Legacy drafts must be explicitly reconfigured before they can be published for opening.',
+        );
+      }
       const manifest = createPublishedManifest({
         boxId: box.id,
-        boxVersionId: box.draft.id,
-        currency: box.draft.currency,
+        boxVersionId: lockedDraft.id,
+        currency: lockedDraft.currency,
         entries: records.map(({ entry }) => ({
           id: entry.id,
           position: entry.position,
           rewardVersionId: entry.rewardVersion.id,
           weight: asWeight(entry.weight),
         })),
-        priceMinor: asMoney(box.draft.priceMinor),
+        priceMinor: asMoney(lockedDraft.priceMinor),
       });
       const totalWeight = totalProbabilityWeight(
         records.map(({ entry }) => ({
@@ -583,17 +628,17 @@ export const createCatalogService = ({
         })),
       );
       const configurationHash = hashPublishedManifest(manifest);
-      await markConfigurationRewardsPublished(transaction, box.draft.id);
+      await markConfigurationRewardsPublished(transaction, lockedDraft.id);
       await publishBoxVersion(
         transaction,
         command.creatorId,
         command.boxId,
-        box.draft.id,
+        lockedDraft.id,
         totalWeight,
         configurationHash,
         rngAlgorithmVersion,
       );
-      return box.draft;
+      return lockedDraft;
     });
 
     const published = await findPublicPublishedVersion(

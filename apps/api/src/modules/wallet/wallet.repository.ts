@@ -37,6 +37,7 @@ interface LedgerAccountRow {
   readonly currency: unknown;
   readonly id: unknown;
   readonly ownerUserId: unknown;
+  readonly ownerCreatorId: unknown;
 }
 
 interface LedgerTransactionRow {
@@ -86,6 +87,7 @@ const ledgerAccountColumns = `
   id::text as id,
   account_type as "accountType",
   owner_user_id::text as "ownerUserId",
+  owner_creator_id::text as "ownerCreatorId",
   currency::text as currency
 `;
 
@@ -165,13 +167,25 @@ const parseWallet = (row: WalletRow): Wallet => ({
 
 const parseLedgerAccount = (row: LedgerAccountRow): LedgerAccount => {
   const accountType = requiredString(row.accountType, 'ledger account type');
-  if (accountType !== 'system_test_funding' && accountType !== 'user_wallet') {
+  if (
+    ![
+      'box_sales_clearing',
+      'creator_pending_earnings',
+      'platform_fee',
+      'system_test_funding',
+      'user_wallet',
+    ].includes(accountType)
+  ) {
     throw new Error('Database returned an invalid ledger account type.');
   }
   return {
-    accountType,
+    accountType: accountType as LedgerAccount['accountType'],
     currency: parseCurrency(row.currency),
     id: requiredUuid(row.id, 'ledger account ID') as LedgerAccountId,
+    ownerCreatorId:
+      row.ownerCreatorId === null
+        ? null
+        : requiredUuid(row.ownerCreatorId, 'ledger account creator ID'),
     ownerUserId:
       row.ownerUserId === null
         ? null
@@ -181,7 +195,16 @@ const parseLedgerAccount = (row: LedgerAccountRow): LedgerAccount => {
 
 const parseLedgerTransaction = (row: LedgerTransactionRow): LedgerTransaction => {
   const kind = requiredString(row.kind, 'ledger transaction kind');
-  if (!['reversal', 'test_credit_grant', 'wallet_credit', 'wallet_debit'].includes(kind)) {
+  if (
+    ![
+      'box_open_allocation',
+      'box_open_sale',
+      'reversal',
+      'test_credit_grant',
+      'wallet_credit',
+      'wallet_debit',
+    ].includes(kind)
+  ) {
     throw new Error('Database returned an invalid ledger transaction kind.');
   }
   const status = requiredString(row.status, 'ledger transaction status');
@@ -350,6 +373,36 @@ export const ensureSystemTestFundingAccount = async (
   return parseLedgerAccount(row);
 };
 
+export const ensureOpeningLedgerAccount = async (
+  transaction: TransactionExecutor,
+  input: {
+    readonly accountId: LedgerAccountId;
+    readonly accountType: 'box_sales_clearing' | 'creator_pending_earnings' | 'platform_fee';
+    readonly creatorId: string | null;
+    readonly currency: Currency;
+  },
+): Promise<LedgerAccount> => {
+  assertTransactionExecutor(transaction);
+  await transaction.query(
+    `insert into app.ledger_accounts (
+       id, account_type, owner_user_id, owner_creator_id, currency
+     ) values ($1, $2, null, $3, $4)
+     on conflict do nothing`,
+    [input.accountId, input.accountType, input.creatorId, input.currency],
+  );
+  const result = await transaction.query<LedgerAccountRow>(
+    `select ${ledgerAccountColumns}
+       from app.ledger_accounts
+      where account_type = $1
+        and currency = $2
+        and owner_creator_id is not distinct from $3::uuid`,
+    [input.accountType, input.currency, input.creatorId],
+  );
+  const row = result.rows[0];
+  if (row === undefined) throw new Error('The opening ledger account could not be established.');
+  return parseLedgerAccount(row);
+};
+
 export const claimIdempotencyRecord = async (
   transaction: TransactionExecutor,
   input: {
@@ -401,6 +454,22 @@ export const completeIdempotencyRecord = async (
   await transaction.query(
     `select app.complete_idempotency_record($1, $2, $3::jsonb, 'ledger_transaction', $4)`,
     [input.recordId, input.httpStatus, JSON.stringify(input.responseBody), input.resourceId],
+  );
+};
+
+export const completeBoxOpeningIdempotencyRecord = async (
+  transaction: TransactionExecutor,
+  input: {
+    readonly httpStatus: number;
+    readonly openingId: string;
+    readonly recordId: IdempotencyRecordId;
+    readonly responseBody: Readonly<object>;
+  },
+): Promise<void> => {
+  assertTransactionExecutor(transaction);
+  await transaction.query(
+    `select app.complete_idempotency_record($1, $2, $3::jsonb, 'box_open', $4)`,
+    [input.recordId, input.httpStatus, JSON.stringify(input.responseBody), input.openingId],
   );
 };
 

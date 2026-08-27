@@ -60,7 +60,9 @@ Completed: multi-currency-capable ledger accounts/transactions/entries, one user
 
 Depends on: Phases 5, 7, and 8; opening eligibility/limit and inventory policy.
 
-Implement only the application service and REST command for a complete atomic open: validation, idempotency, lock order, server price/version, RNG selection, debit, opening, win, pending fulfillment, and response. Store outbox rows but do not publish yet. Tests cover success, exact response replay, key/fingerprint conflict, lost-response retry, insufficient balance, inactive box, unauthorized/suspended actor, duplicate/concurrent requests, multiple concurrent opens near balance limit, transaction rollback at every insertion point, deadlock retry, and no nonce/charge on failure.
+Completed: the application service and REST command perform one atomic open across idempotency, sufficient-funds validation, nonce/RNG, stable shared inventory, balanced financial postings, immutable opening/win/obligation/earnings/points history, and two durable outbox rows. Database retries stop at the RNG boundary, so a post-selection deadlock rolls back and returns a retryable failure without rerolling. Deferred PostgreSQL checks enforce opening-linked inventory movements and bidirectional non-reversible sale/allocation linkage. Phase 10 delivery remains absent.
+
+Compatibility decision: Phase 5–8 published versions are grandfathered immutable history and are never guessed/backfilled. Only a newly published `opening-v1` version with exactly one explicit base reward is openable. Phase 9 adds stable creator-owned finite pools shared across reward versions/boxes, live `pause_box` publication checks, `pause_box`/`backorder`, immutable opening-linked consumption, two-posting sale allocation, 20% default fee, 14-day pending creator earnings, immutable 5/20 point snapshots, and two transactional outbox records; no delivery worker or projection is included.
 
 ## Phase 10 — Durable outbox and realtime delivery
 

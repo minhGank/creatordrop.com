@@ -20,7 +20,7 @@ PostgreSQL owns users, configuration versions, openings, balances, ledger entrie
 
 ### Immutable published configuration
 
-`boxes` and `rewards` are stable identities. Every publish creates immutable `box_versions`, `reward_versions`, and ordered weighted entries. An opening references exactly one published box version. Edits create drafts/new versions and cannot rewrite history.
+`boxes` and `rewards` are stable identities. Every publish creates immutable `box_versions`, `reward_versions`, and ordered weighted entries. Phase 9 adds an explicit `opening-v1` compatibility marker and exactly one explicit base-reward designation to newly published openable versions. Earlier published versions are grandfathered unchanged with a null marker: they remain readable fairness history but cannot be opened. Republishing always creates a new version; no base reward is inferred or backfilled. An opening references exactly one compatible published box version. Edits create drafts/new versions and cannot rewrite history.
 
 ### One currency per wallet and integer amounts
 
@@ -95,8 +95,8 @@ The opening endpoint is a short PostgreSQL transaction at `READ COMMITTED` with 
 2. wallet row;
 3. fairness-profile row;
 4. active RNG seed-set row (allocates nonce);
-5. any inventory/reservation rows, in UUID order;
-6. immutable box version reads;
+5. the selected shared inventory pool, if finite;
+6. affected box identity rows in UUID order (shared availability check, upgraded for atomic pause);
 7. ledger/open/fulfillment/outbox inserts.
 
 The `fairness_profiles` row is the authoritative per-user RNG-lifecycle lock. Every transaction
@@ -106,9 +106,9 @@ Database guards apply the same serialization to restricted-role seed/rotation wr
 update that arrives in reverse order fails retryably instead of waiting while holding its target
 row. Different users lock different profile rows and remain independent.
 
-The wallet update is conditional (`balance >= cost`) and checked by affected-row count. A unique idempotency record and unique `box_opens.idempotency_record_id` prevent double charge. Deadlocks and serialization failures may be retried a small bounded number of times using the same idempotency key.
+The wallet is locked and sufficient funds are checked before nonce allocation or RNG, then the debit update remains conditional (`balance >= cost`) and checked by affected-row count. A unique idempotency record and unique `box_opens.idempotency_record_id` prevent double charge. Deadlocks and serialization failures may be retried a small bounded number of times only before the selector boundary. Once nonce allocation/RNG may have run, the whole transaction rolls back and a retryable error is returned without invoking the selector again; a client retry uses the same idempotency key.
 
-Phase 8 establishes the first two locks and the financial composition boundary. A command first claims `(actor, operation, idempotency key)`, then locks the actor's currency wallet through a narrow security-definer lock function. `creditWallet`, `debitWallet`, and reversal posting require the branded caller-owned `TransactionExecutor`; they never commit internally. The authoritative global order remains idempotency claim → wallet → `fairness_profiles` → `rng_seed_sets` → `rng_seed_rotations` → future inventory rows → financial/business inserts. Different wallets do not share a row lock.
+Phase 8 establishes the first two locks and the financial composition boundary. A command first claims `(actor, operation, idempotency key)`, then locks the actor's currency wallet through a narrow security-definer lock function. `creditWallet`, `debitWallet`, reversal posting, and Phase 9 opening postings require the branded caller-owned `TransactionExecutor`; they never commit internally. The authoritative opening order is idempotency claim → wallet → `fairness_profiles` → active `rng_seed_sets` → selected `inventory_pools` row → affected `boxes` rows in UUID order → financial/business/outbox inserts. Different wallets and different selected inventory pools do not share row locks.
 
 Detailed flow:
 
@@ -118,13 +118,13 @@ Detailed flow:
 4. Lock the user's currency wallet. Reject insufficient funds without consuming a nonce or leaving an idempotency record committed.
 5. Lock the user's active RNG seed-set, validate the client seed, allocate its next nonce, and increment the counter.
 6. Read the immutable ordered reward table, verify its stored total weight/checksum, compute HMAC-SHA256, and select the reward deterministically. The client never supplies or influences authoritative weights beyond choosing its client seed before the opening.
-7. If finite inventory is enabled by a later product decision, reserve it here with a conditional update. No external fulfillment call occurs here.
-8. Insert the opening with price, currency, version, seed-set, commitment, client seed, nonce, algorithm version, HMAC digest, selection value, and winning reward-version entry.
-9. Post one balanced ledger transaction, atomically update the wallet balance projection, and link it to the opening. The unique business reference prevents a second debit.
-10. Insert the reward win and a pending fulfillment record.
-11. Insert outbox events for the private opening result and sanitized public live drop. Do not expose unrevealed server seed material.
+7. For a finite winner, lock only its stable creator-owned inventory pool after RNG. Multiple immutable reward versions and boxes may reference that same physical stock. Consume one unit with an immutable opening-linked consumption row if available. `pause_box` rejects at zero and atomically pauses all active boxes using the exhausted pool after the last winner; `backorder` preserves the exact winner at zero with an `awaiting_restock` obligation and no consumption row. Never reroll or substitute.
+8. Revalidate the same current compatible version under the box availability lock. Insert the immutable opening with price/fee/points snapshots, version, seed-set, commitment, client seed, nonce, algorithm version, HMAC digest, selection value, and winning reward-version entry.
+9. Post two balanced ledger transactions: fan wallet to box-sales clearing, then clearing to creator pending earnings plus the platform fee. Atomically update the wallet projection. Unique business references prevent duplicate postings.
+10. Insert the immutable reward win, fulfillment obligation, and creator earning held for 14 days.
+11. Insert `opening.completed.v1` private and sanitized `drop.created.v1` public outbox rows in the same transaction. Phase 9 stores but does not deliver them and never exposes unrevealed server seed material.
 12. Store the exact successful response in the idempotency row and commit.
-13. Return the decided outcome. Best-effort cache invalidation may be signaled; the durable worker consumes the outbox, updates Redis projections, and then emits Socket.io events. The reel animates the returned result only.
+13. Return the decided outcome. The Phase 10 worker will later consume the outbox, update projections, and emit events. The reel animates the returned result only.
 
 Failures before commit leave no charge, nonce, opening, fulfillment, or event. If commit succeeds but the HTTP response is lost, retry returns the stored result.
 

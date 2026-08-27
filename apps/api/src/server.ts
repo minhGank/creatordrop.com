@@ -14,6 +14,7 @@ import { createUserBootstrapService } from './modules/users/bootstrap-user.servi
 import { createCreatorService } from './modules/creators/creator.service.js';
 import { createEnvironmentSeedEncryptionKeyProvider } from './modules/fairness/fairness.key-provider.js';
 import { createFairnessService } from './modules/fairness/fairness.service.js';
+import { createOpeningService } from './modules/openings/opening.service.js';
 import { createWalletService } from './modules/wallet/wallet.service.js';
 
 const environment = getApiEnvironment();
@@ -57,12 +58,14 @@ const walletService = createWalletService({
   logger,
   testCreditsEnabled,
 });
+const openingService = createOpeningService({ database, fairnessService, logger });
 const app = createApp({
   authenticate,
   catalogService,
   creatorService,
   fairnessService,
   logger,
+  openingService,
   runtime: { testCreditsEnabled },
   security: {
     allowedOrigins: environment.corsAllowedOrigins,

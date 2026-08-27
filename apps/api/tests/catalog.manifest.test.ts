@@ -27,6 +27,7 @@ describe('published catalog manifest', () => {
     const weight = parseDraftRewardConfiguration({
       entries: [
         {
+          isBaseReward: true,
           rewardVersionId: '019c0000-0000-7000-8000-000000000040',
           weight: '5',
         },
@@ -60,10 +61,12 @@ describe('published catalog manifest', () => {
     const input = parseDraftRewardConfiguration({
       entries: [
         {
+          isBaseReward: true,
           rewardVersionId: '019c0000-0000-7000-8000-000000000040',
           weight: '9223372036854775807',
         },
         {
+          isBaseReward: false,
           rewardVersionId: '019c0000-0000-7000-8000-000000000041',
           weight: '1',
         },

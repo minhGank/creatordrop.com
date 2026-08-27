@@ -16,6 +16,8 @@ import { createCreatorRouter } from './modules/creators/creator.route.js';
 import type { CreatorService } from './modules/creators/creator.service.js';
 import { createFairnessRouter } from './modules/fairness/fairness.route.js';
 import type { FairnessService } from './modules/fairness/fairness.service.js';
+import { createOpeningRouter } from './modules/openings/opening.route.js';
+import type { OpeningService } from './modules/openings/opening.service.js';
 import { createWalletRouter } from './modules/wallet/wallet.route.js';
 import type { WalletService } from './modules/wallet/wallet.service.js';
 
@@ -31,6 +33,7 @@ export interface AppOptions {
   readonly creatorService: CreatorService;
   readonly fairnessService: FairnessService;
   readonly logger: Logger;
+  readonly openingService?: OpeningService;
   readonly runtime: {
     readonly testCreditsEnabled: boolean;
   };
@@ -55,6 +58,7 @@ export const createApp = ({
   creatorService,
   fairnessService,
   logger,
+  openingService,
   runtime,
   security,
   walletService,
@@ -77,6 +81,17 @@ export const createApp = ({
       rateLimitWindowMs: security.authRateLimitWindowMs,
     }),
   );
+  if (openingService !== undefined) {
+    app.use(
+      '/v1',
+      createOpeningRouter({
+        authenticate,
+        mutationRateLimitMax: security.walletMutationRateLimitMax,
+        mutationRateLimitWindowMs: security.walletMutationRateLimitWindowMs,
+        service: openingService,
+      }),
+    );
+  }
   app.use(
     '/v1',
     createCatalogRouter({

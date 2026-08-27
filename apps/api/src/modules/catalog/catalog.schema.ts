@@ -1,6 +1,6 @@
 import { validate as isUuid } from 'uuid';
 
-import { inventoryModes, rewardTypes } from '@creatordrop/contracts';
+import { inventoryModes, inventoryStockoutPolicies, rewardTypes } from '@creatordrop/contracts';
 
 import { ApiError } from '../../http/errors.js';
 import type { CreatorId } from '../creators/creator.js';
@@ -10,6 +10,7 @@ import type {
   BoxVersionId,
   BoxVersionRewardId,
   InventoryMode,
+  InventoryStockoutPolicy,
   InventoryQuantity,
   MoneyMinor,
   ProbabilityWeight,
@@ -33,6 +34,7 @@ export interface RewardDraftInput {
   readonly imageUrl: string | null;
   readonly inventoryMode: InventoryMode;
   readonly inventoryQuantity: InventoryQuantity | null;
+  readonly inventoryStockoutPolicy: InventoryStockoutPolicy | null;
   readonly name: string;
   readonly rewardType: RewardType;
 }
@@ -40,6 +42,7 @@ export interface RewardDraftInput {
 export interface DraftRewardConfigurationInput {
   readonly entries: readonly {
     readonly rewardVersionId: RewardVersionId;
+    readonly isBaseReward: boolean;
     readonly weight: ProbabilityWeight;
   }[];
 }
@@ -167,6 +170,7 @@ export const parseRewardDraftInput = (body: unknown): RewardDraftInput => {
     'imageUrl',
     'inventoryMode',
     'inventoryQuantity',
+    'inventoryStockoutPolicy',
     'name',
     'rewardType',
   ]);
@@ -199,6 +203,22 @@ export const parseRewardDraftInput = (body: unknown): RewardDraftInput => {
       field: 'inventoryQuantity',
     });
   }
+  const rawStockoutPolicy = record.inventoryStockoutPolicy;
+  if (
+    rawStockoutPolicy !== undefined &&
+    rawStockoutPolicy !== null &&
+    (typeof rawStockoutPolicy !== 'string' ||
+      !inventoryStockoutPolicies.includes(rawStockoutPolicy as InventoryStockoutPolicy))
+  ) {
+    throw validationError('inventoryStockoutPolicy must be pause_box or backorder.', {
+      field: 'inventoryStockoutPolicy',
+    });
+  }
+  if (inventoryMode === 'unlimited' && rawStockoutPolicy != null) {
+    throw validationError('Unlimited rewards must not specify inventoryStockoutPolicy.', {
+      field: 'inventoryStockoutPolicy',
+    });
+  }
 
   const declaredValueMinor =
     record.declaredValueMinor == null
@@ -226,6 +246,10 @@ export const parseRewardDraftInput = (body: unknown): RewardDraftInput => {
     imageUrl: optionalHttpsUrl(record),
     inventoryMode: inventoryMode as InventoryMode,
     inventoryQuantity,
+    inventoryStockoutPolicy:
+      inventoryMode === 'finite'
+        ? ((rawStockoutPolicy ?? 'pause_box') as InventoryStockoutPolicy)
+        : null,
     name: limitedString(record, 'name', 1, 120),
     rewardType: rewardType as RewardType,
   };
@@ -242,7 +266,7 @@ export const parseDraftRewardConfiguration = (body: unknown): DraftRewardConfigu
   const seen = new Set<string>();
   const entries = record.entries.map((value, position) => {
     const entry = requireRecord(value);
-    rejectUnknownFields(entry, ['rewardVersionId', 'weight']);
+    rejectUnknownFields(entry, ['isBaseReward', 'rewardVersionId', 'weight']);
     const rewardVersionId = parseRewardVersionId(
       typeof entry.rewardVersionId === 'string' ? entry.rewardVersionId : undefined,
     );
@@ -251,8 +275,14 @@ export const parseDraftRewardConfiguration = (body: unknown): DraftRewardConfigu
         field: `entries[${position.toString()}].rewardVersionId`,
       });
     }
+    if (typeof entry.isBaseReward !== 'boolean') {
+      throw validationError('isBaseReward must be a boolean.', {
+        field: `entries[${position.toString()}].isBaseReward`,
+      });
+    }
     seen.add(rewardVersionId);
     return {
+      isBaseReward: entry.isBaseReward,
       rewardVersionId,
       weight: parseBigint(entry.weight, 'weight', positiveDecimalPattern) as ProbabilityWeight,
     };

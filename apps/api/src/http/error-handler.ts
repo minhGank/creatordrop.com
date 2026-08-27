@@ -23,6 +23,7 @@ import {
 } from '../modules/creators/creator.errors.js';
 import {
   FairnessAlreadyInitializedError,
+  FairnessClientSeedMismatchError,
   FairnessNotInitializedError,
   FairnessRevisionConflictError,
   SeedRevealNotAllowedError,
@@ -35,9 +36,16 @@ import {
   SeedSetUnavailableError,
 } from '../modules/fairness/fairness.errors.js';
 import {
+  BoxNotOpenableError,
+  InventoryUnavailableError,
+  OpeningCurrencyUnavailableError,
+  OpeningRetryableError,
+} from '../modules/openings/opening.errors.js';
+import {
   IdempotencyKeyReusedError,
   InsufficientBalanceError,
   LedgerTransactionNotFoundError,
+  LedgerTransactionNotReversibleError,
   TestCreditsUnavailableError,
   WalletAmountOverflowError,
   WalletCurrencyNotEnabledError,
@@ -161,6 +169,30 @@ const normalizeError = (error: unknown): ApiError => {
     });
   }
 
+  if (error instanceof FairnessClientSeedMismatchError) {
+    return new ApiError(409, 'CLIENT_SEED_MISMATCH', 'The client seed is no longer current.');
+  }
+
+  if (error instanceof BoxNotOpenableError) {
+    return new ApiError(409, 'BOX_NOT_OPENABLE', 'The box is not currently available to open.');
+  }
+
+  if (error instanceof InventoryUnavailableError) {
+    return new ApiError(409, 'INVENTORY_UNAVAILABLE', 'The selected reward is out of stock.');
+  }
+
+  if (error instanceof OpeningCurrencyUnavailableError) {
+    return new ApiError(422, 'OPENING_CURRENCY_NOT_ENABLED', 'The box currency is not enabled.');
+  }
+
+  if (error instanceof OpeningRetryableError) {
+    return new ApiError(
+      503,
+      'OPENING_RETRY_REQUIRED',
+      'The opening attempt rolled back and may be retried with the same idempotency key.',
+    );
+  }
+
   if (error instanceof SeedRotationRequiredError) {
     return new ApiError(
       409,
@@ -250,6 +282,14 @@ const normalizeError = (error: unknown): ApiError => {
       404,
       'LEDGER_TRANSACTION_NOT_FOUND',
       'The ledger transaction was not found.',
+    );
+  }
+
+  if (error instanceof LedgerTransactionNotReversibleError) {
+    return new ApiError(
+      409,
+      'LEDGER_TRANSACTION_NOT_REVERSIBLE',
+      'The ledger transaction cannot be reversed independently.',
     );
   }
 

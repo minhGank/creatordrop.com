@@ -146,9 +146,9 @@ Phase 5 implements:
 
 All Phase 5 draft configuration, publication, and archive commands require a quoted positive revision in `If-Match`; missing preconditions return `428 PRECONDITION_REQUIRED`, and stale revisions return `409 CATALOG_REVISION_CONFLICT`. Creation derives ownership from the authenticated creator membership and accepts no creator ID in the body. The API rejects unknown fields and accepts monetary amounts, inventory quantities, and weights only as canonical decimal strings within signed 64-bit storage.
 
-`PUT .../draft/rewards` accepts `{ "entries": [{ "rewardVersionId": "uuid", "weight": "5" }] }`. Array order is the canonical position. An empty array is a valid draft, but publication rejects it. A version may occur only once and every referenced reward must belong to the authenticated creator.
+`PUT .../draft/rewards` accepts `{ "entries": [{ "rewardVersionId": "uuid", "weight": "5", "isBaseReward": true }] }`. Array order is the canonical position. An empty array and zero/multiple base designations are valid intermediate drafts, but every new publication rejects them unless exactly one entry is explicitly designated. A version may occur only once and every referenced reward must belong to the authenticated creator. Saving this configuration marks the draft `opening-v1`; grandfathered published versions retain a null compatibility marker and no inferred base reward.
 
-The publish response returns the immutable version, reward snapshots, exact ordered weights, calculated `totalWeight`, canonical manifest, and `configurationHash`. The server calculates totals/hashes; client totals are never authoritative. Publication failures use stable codes including `CATALOG_PUBLICATION_EMPTY_CONFIGURATION`, `CATALOG_PUBLICATION_INELIGIBLE_REWARD`, `CATALOG_PUBLICATION_INVALID_INVENTORY`, and `CATALOG_PUBLICATION_WEIGHT_OVERFLOW`. Pause behavior and durable command idempotency are not introduced in Phase 5; optimistic revision and row locking serialize publication against edits.
+The publish response returns the immutable version, reward snapshots, exact ordered weights, calculated `totalWeight`, canonical manifest, and `configurationHash`. The server calculates totals/hashes; client totals are never authoritative. Publication failures use stable codes including `CATALOG_PUBLICATION_EMPTY_CONFIGURATION`, `CATALOG_PUBLICATION_BASE_REWARD_INVALID`, `CATALOG_PUBLICATION_INELIGIBLE_REWARD`, `CATALOG_PUBLICATION_INVALID_INVENTORY`, and `CATALOG_PUBLICATION_WEIGHT_OVERFLOW`. Pause behavior and durable command idempotency are not introduced in Phase 5; optimistic revision and row locking serialize publication against edits.
 
 The shared creator policy—not controllers—allows owner/manager/editor draft writes, owner/manager publication and archival actions, and viewer reads. Same-creator insufficient roles receive `403`; nonmembers, cross-creator actors, or mismatched resources receive concealed `404`. Catalog mutations emit allowlisted `catalog.audit` records for creation, publication, and archival without tokens, headers, secrets, or profile data.
 
@@ -174,34 +174,35 @@ Successful `201` (or replayed original response):
     "id": "public-opening-id",
     "boxId": "uuid",
     "boxVersionId": "uuid",
-    "cost": { "minor": "1000", "currency": "USD" },
+    "cost": { "priceMinor": "1000", "currency": "USD" },
     "reward": {
-      "rewardId": "uuid",
+      "id": "uuid",
       "rewardVersionId": "uuid",
       "name": "Signed poster",
       "imageUrl": "https://..."
     },
     "fairness": {
-      "algorithmVersion": "hmac-sha256-rejection-v1",
       "seedSetId": "uuid",
-      "serverSeedCommitment": "64-hex",
+      "commitment": "64-hex",
       "clientSeed": "64-hex",
       "nonce": "7",
-      "configurationHash": "64-hex",
-      "revealStatus": "pending_reveal"
+      "configurationHash": "64-hex"
     },
-    "createdAt": "2026-01-01T00:00:00Z"
-  },
-  "wallet": {
-    "availableBalance": { "minor": "2400", "currency": "USD" },
-    "version": "18"
+    "fulfillmentStatus": "pending_fulfillment",
+    "pointsAwarded": 20,
+    "wallet": {
+      "id": "uuid",
+      "balanceMinor": "2400",
+      "currency": "USD",
+      "revision": "18"
+    }
   }
 }
 ```
 
-The server has already decided and committed the reward when this response is generated. The frontend reel must land on that reward. Expected domain errors include `BOX_NOT_ACTIVE`, `BOX_VERSION_CHANGED` (if a future expected-version option is added), `INSUFFICIENT_BALANCE`, `ELIGIBILITY_DENIED`, `OPEN_LIMIT_REACHED`, `SEED_ROTATION_REQUIRED`, and `IDEMPOTENCY_KEY_REUSED`.
+The server has already decided and committed the reward when this response is generated. The frontend reel must land on that reward. Grandfathered versions without `opening-v1` and exactly one base designation return `BOX_NOT_OPENABLE`. Other stable errors include `CLIENT_SEED_MISMATCH`, `INVENTORY_UNAVAILABLE`, `INSUFFICIENT_BALANCE`, `OPENING_CURRENCY_NOT_ENABLED`, `SEED_ROTATION_REQUIRED`, `OPENING_RETRY_REQUIRED`, and `IDEMPOTENCY_KEY_REUSED`. `OPENING_RETRY_REQUIRED` means PostgreSQL aborted the transaction after RNG may have run; all state rolled back and the client may retry with the same idempotency key.
 
-`GET /v1/openings/:publicOpeningId` returns a sanitized public receipt. Owners receive private fulfillment state through `/v1/me/rewards`; public routes never expose wallet balance or delivery data.
+Opening-receipt reads and private fulfillment-list endpoints remain deferred. Phase 9 adds only the authenticated opening command; it does not add public wallet, fulfillment, or delivery-data reads.
 
 ## Fairness verification
 

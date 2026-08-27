@@ -55,9 +55,12 @@ Versioned publication record, immutable once published:
 - `price_minor bigint CHECK (price_minor > 0)`, `currency char(3)`;
 - `total_weight bigint CHECK (total_weight > 0)`;
 - `configuration_hash bytea` (SHA-256 of canonical selection manifest), `rng_algorithm_version text`;
+- nullable `opening_compatibility_version`; only `opening-v1` is currently supported;
 - `state` (`draft`, `published`, `retired`), `published_at`, `created_by_user_id`, timestamps.
 
 Only drafts may be changed. Phase 5 enforces one draft per box with a partial unique index. Publishing locks the box, validates the complete graph, computes the canonical manifest/hash and total, changes the draft to `published`, marks referenced reward versions published, and atomically switches `boxes.current_published_version_id` while incrementing its revision. The box identity becomes `active` on its first publication. Later edits lazily clone the latest version into a new numbered draft; history is never overwritten.
+
+Phase 9 grandfathering is explicit. Published versions that predate its migration retain a null compatibility marker and receive no inferred `box_version_base_rewards` row. They remain immutable/readable but are not eligible for `POST /v1/boxes/:boxId/open`. Reconfiguration marks a draft `opening-v1`; every subsequent publication requires exactly one designation that points to an association in that version. A legacy box becomes openable only by publishing a normal new compatible version.
 
 The manifest is a fixed-schema RFC 8785-compatible canonical JSON object containing algorithm version, box/version IDs, currency, price, total weight, and the ordered association ID/reward-version ID/position/weight entries. Integer values that can exceed JavaScript's safe range are decimal strings. `configuration_hash` is SHA-256 over those exact UTF-8 canonical bytes. Phase 5 records `hmac-sha256-rejection-v1` as the future selection algorithm identifier but does not implement selection or RNG.
 
@@ -69,13 +72,23 @@ Phase 5 creates the stable identity with `id`, `creator_id`, `status` (`active`,
 
 Versioned content snapshot: `id`, `reward_id`, `version_number`, `state` (`draft`, `published`, `retired`), `name`, `description`, `image_url`, `reward_type` (`digital`, `physical`, `experience`), inventory configuration, optional declared value, an empty Phase 5 `fulfillment_definition` object, timestamps, and `created_by_user_id`. Unique `(reward_id, version_number)` with one draft per reward. Drafts may change. A reward version becomes published when a box publication first references it; a trigger then prevents updates/deletes, including through another box draft. Later edits lazily create a new reward version.
 
-Inventory configuration is either `unlimited` with a null quantity or `finite` with a nonnegative `bigint` quantity. A zero finite quantity is allowed while drafting but cannot be included in a published box. Phase 5 does not decrement, reserve, claim, or fulfill inventory.
+Inventory configuration is either `unlimited` with a null quantity/policy/pool or `finite` with a nonnegative `bigint` quantity, `pause_box` (default) or `backorder`, and an immutable `inventory_pool_id` reference. A zero finite quantity is allowed while drafting but cannot be newly published. Inventory-pool identity is independent of reward-version identity: a new finite reward creates a distinct pool, while a later immutable metadata/catalog version retains the same pool and cannot replenish consumed stock. Multiple versions and boxes can therefore reference one physical stock resource without rewriting historical snapshots. Openings lock and consume only the selected pool after RNG. Existing finite versions are mapped to their original Phase 9 pool during the forward migration, while legacy box versions remain non-openable.
+
+### `inventory_pools` and `inventory_consumptions`
+
+`inventory_pools` stores a stable UUID, immutable creator owner, stockout policy and initial quantity, plus mutable nonnegative available quantity. Reward-version references must stay within the same creator. Publication locks every referenced finite `pause_box` pool in UUID order and verifies its live `available_quantity > 0` before locking/activating the box; immutable configured quantity is not an availability signal.
+
+Each successful in-stock finite opening has exactly one immutable `inventory_consumptions` row keyed by `opening_id`, with its pool, quantity one, and timestamp. Pool decrement and movement insertion occur through one transaction-owned function. Deferred checks require the movement to match the selected reward version, opening pool, and `pending_fulfillment` obligation, and reconcile `initial_quantity - available_quantity` to total immutable consumption. Unlimited and zero-stock `backorder` openings have no consumption row.
 
 ### `box_version_rewards`
 
 The exact ordered probability table: `id`, `box_version_id`, `reward_version_id`, `position integer CHECK (position >= 0)`, `weight bigint CHECK (weight > 0)`, optional immutable public label metadata. Unique `(box_version_id, position)` and `(box_version_id, reward_version_id)`. Index `(box_version_id, position)`. The canonical selection order is `position`, then ID as a corruption-detection tie breaker.
 
 The Phase 5 publish transaction verifies at least one association, positive weights, a nonoverflowing total, contiguous positions, same-creator ownership, active reward identities, and valid publication inventory. Database triggers repeat the cross-row ownership/publication checks and require `sum(weight) = box_versions.total_weight`. Triggers also prevent inserting, updating, or deleting associations after publication and prevent mutation of any referenced published reward version. The application reconstructs public output and verifies the stored total and canonical hash before returning it.
+
+### `box_version_base_rewards`
+
+Draft-only mutable designations link a generated ID, box version, and one of that version's reward associations. Multiple/zero designations may exist during editing, but the forward publication trigger requires exactly one for `opening-v1`. Designations become immutable with the published version and are deliberately absent for grandfathered history.
 
 ## Fairness state
 
@@ -122,22 +135,17 @@ Unique `(actor_user_id, operation, idempotency_key)`. Keys are opaque allowliste
 
 ### `box_opens`
 
-- identity: `id`, `public_id` unique, `user_id`, `box_id`, `box_version_id`, `box_version_reward_id`;
-- money snapshot: `cost_minor bigint CHECK (cost_minor > 0)`, `currency`;
-- fairness proof: `rng_seed_set_id`, `server_seed_commitment bytea`, `client_seed text`, `nonce bigint CHECK (nonce >= 0)`, `rng_algorithm_version`, `rng_digest bytea`, `selection_value numeric(78,0)`, `selection_round integer`, `configuration_hash bytea`;
-- references: `idempotency_record_id` unique, `ledger_transaction_id` unique, `created_at`.
+- identity: `id`, `public_id` unique, `user_id`, `creator_id`, `box_id`, `box_version_id`, selected association/reward version, optional selected inventory pool;
+- money snapshot: gross price/currency, platform fee basis points/amount, creator share, and earnings availability timestamp;
+- points snapshot: `leaderboard-v1`, base 5, bonus 0/15, total 5/20, and creator scope;
+- fairness proof: `rng_seed_set_id`, commitment, client seed, nonce, algorithm version, HMAC digest, unbiased `numeric(78,0)` selection, rejection round, and configuration hash;
+- references: unique idempotency record and unique sale/allocation ledger transactions, immutable completed status and timestamp.
 
 Unique `(rng_seed_set_id, nonce)` guarantees no nonce reuse. Indexes `(user_id, created_at desc, id)`, `(box_id, created_at desc, id)`, `(box_version_id)`, and `(box_version_reward_id)`. The proof columns and all references are immutable. `selection_value` is the unbiased integer in `[0,total_weight)`, not a floating-point roll.
 
-### `reward_wins`
+### `reward_wins`, `fulfillment_obligations`, and `creator_earnings`
 
-`id`, `box_open_id` unique FK, `user_id`, `reward_version_id`, `status` (`awarded`, `voided` only through an audited compensating process), `awarded_at`, presentation snapshot if required for legally durable receipts. Index `(user_id, awarded_at desc)`.
-
-### `fulfillments`
-
-`id`, `reward_win_id` unique FK, `type`, `status` (`pending`, `action_required`, `processing`, `fulfilled`, `failed`, `cancelled`), encrypted/tokenized `delivery_details`, `provider`, `provider_reference`, `attempt_count`, `last_error_code`, `next_attempt_at`, timestamps. Unique `(provider, provider_reference)` when not null. Index `(status, next_attempt_at)` for workers. Status changes are recorded in `fulfillment_events(id, fulfillment_id, from_status, to_status, actor_type, actor_id, reason, created_at)`.
-
-Phase 5 stores finite inventory only as immutable published configuration. The consumption/reservation policy is deliberately not finalized. If approved, add transactional inventory state in the opening phase without mutating historical reward versions; see the open decision in `ARCHITECTURE.md`.
+Every opening has exactly one immutable awarded win and one immutable Phase 9 obligation. An in-stock/unlimited winner records `pending_fulfillment`; a zero-stock explicit backorder records `awaiting_restock`. Shipping transitions are not implemented. A matching creator earning snapshots the creator share/currency, allocation posting, `pending` state, and 14-day `available_at`; no release or payout exists yet.
 
 ## Wallet and double-entry ledger
 
@@ -147,13 +155,13 @@ Phase 5 stores finite inventory only as immutable published configuration. The c
 
 ### `ledger_accounts`
 
-`id`, `account_type` (`user_wallet`, `system_test_funding`), `owner_user_id` nullable, `currency char(3)`, `status`, timestamps. Phase 8 requires an owner only for `user_wallet` and prohibits one for `system_test_funding`. Unique partial indexes provide one user-wallet per `(owner_user_id, currency)` and one test-funding account per currency. Accounts are immutable. Additional controlled account kinds belong to the phase that defines their accounting semantics.
+`id`, `account_type`, nullable `owner_user_id`/`owner_creator_id`, `currency char(3)`, status, timestamps. In addition to Phase 8 `user_wallet` and `system_test_funding`, Phase 9 adds per-currency `box_sales_clearing` and `platform_fee` accounts plus one `creator_pending_earnings` account per creator/currency. Owner-shape checks and partial unique indexes enforce those scopes. Accounts are immutable.
 
 ### `ledger_transactions`
 
-Immutable header: `id`, `kind` (`test_credit_grant`, `wallet_credit`, `wallet_debit`, `reversal`), `actor_user_id`, `currency`, `business_reference_type`, `business_reference_id`, optional unique `idempotency_record_id`, optional unique `reverses_ledger_transaction_id`, `status`, `description`, `created_at`, `posted_at`.
+Immutable header: `id`, `kind` (`test_credit_grant`, `wallet_credit`, `wallet_debit`, `reversal`, `box_open_sale`, `box_open_allocation`), actor/currency/business reference, optional unique idempotency/reversal references, status, description, and timestamps.
 
-Unique `(business_reference_type, business_reference_id)` is the final duplicate-posting defense. A header exists as `pending` only inside its caller-owned transaction, transitions once to `posted`, and cannot commit pending. Posted rows are never updated/deleted. A reversal is a new unique transaction linked to its original; PostgreSQL verifies that its account/amount set is the exact opposite.
+Unique `(business_reference_type, business_reference_id)` is the final duplicate-posting defense. A header exists as `pending` only inside its caller-owned transaction, transitions once to `posted`, and cannot commit pending. Posted rows are never updated/deleted. Deferred checks enforce both directions of the Phase 9 relationship: every opening references exactly one sale and allocation posting, and every `box_open_sale`/`box_open_allocation` posting references exactly one matching opening. Those two opening legs cannot be reversed independently until a future atomic refund/compensation design exists. Other permitted reversals are new unique transactions linked to their original, and PostgreSQL verifies that their account/amount set is the exact opposite.
 
 ### `ledger_entries`
 
@@ -163,15 +171,15 @@ Use one sign convention: positive increases the account's balance, negative decr
 
 The tables and API are multi-currency capable. Phase 8 application policy enables only USD synthetic credits, creates no exchange-rate/conversion records, and never nets balances across currencies.
 
-Example box open in USD:
+Phase 9 box open in USD:
 
 ```text
-user wallet liability/account   -1000
-platform escrow/payable account +1000
-sum                                 0
+sale:       user wallet             -1000
+            box-sales clearing      +1000
+allocation: box-sales clearing      -1000
+            creator pending earning  +800
+            platform fee             +200
 ```
-
-Creator allocation/platform fee can be a separate balanced transaction once policy is defined, or additional entries in the same transaction if immutable at purchase time.
 
 ### Payment tables
 
@@ -181,7 +189,7 @@ Creator allocation/platform fee can be a separate balanced transaction once poli
 
 ### `event_outbox`
 
-`id` (also event ID), `aggregate_type`, `aggregate_id`, `event_type`, `schema_version`, `payload jsonb`, `occurred_at`, `available_at`, `attempt_count`, `claimed_at`, `delivered_at`, `last_error_code`. Index `(delivered_at, available_at, occurred_at)` with a partial index for undelivered rows. Payloads are explicit allowlisted DTOs, not serialized database rows.
+Phase 9 stores immutable `id`, opening aggregate identity, allowlisted type/audience, JSON payload, and occurrence/creation timestamps. Every successful opening has private `opening.completed.v1` and sanitized public `drop.created.v1` rows in the same transaction; rollback removes both. Payload checks prohibit seed/encryption fields. Claim/delivery/retry columns and the worker are added only in Phase 10.
 
 ### `audit_log`
 
@@ -197,12 +205,15 @@ Append-only `id`, actor type/ID, action, resource type/ID, creator scope, reason
 6. Box version reward ownership matches the box creator and summed weights equal the recorded total.
 7. `boxes.current_published_version_id` belongs to that box and is published.
 8. Creator resources cannot be reassigned across creators after publication.
+9. Every newly published `opening-v1` version has exactly one explicit base reward; grandfathered null-marker versions stay valid history but cannot be opened.
+10. Every successful opening has matching balanced sale/allocation postings, one win/obligation/creator earning, one completed idempotency record, and both required outbox events at commit; every opening-kind posting links back to exactly one opening and cannot be reversed independently.
+11. Every in-stock finite opening has exactly one immutable one-unit consumption linked to its stable creator-owned pool, and each pool reconciles initial minus available quantity to those movements. Unlimited and zero-stock backorder openings have none.
 
 Cross-row rules require deferred constraint triggers or narrowly permissioned database functions plus integration tests. Application checks alone are insufficient.
 
 ## Transaction isolation and lock policy
 
-Use `READ COMMITTED` plus explicit `SELECT ... FOR UPDATE`/conditional updates for opening and payment posting. Keep transactions free of HTTP, Redis, Socket.io, and file operations. Maintain the global lock order documented in `ARCHITECTURE.md`; within fairness lifecycle work it is the per-user `fairness_profiles` row, relevant seed-set rows, then a rotation row. Retry PostgreSQL deadlocks/serialization failures with bounded jitter using the same command/idempotency identity. Use advisory locks only for singleton maintenance jobs, not wallet correctness.
+Use `READ COMMITTED` plus explicit `SELECT ... FOR UPDATE`/conditional updates for opening and payment posting. Keep transactions free of HTTP, Redis, Socket.io, and file operations. Maintain the global lock order documented in `ARCHITECTURE.md`; within fairness lifecycle work it is the per-user `fairness_profiles` row, relevant seed-set rows, then a rotation row. Publication locks all finite `pause_box` pools in UUID order before the box row. Opening transaction retries are bounded to failures known to occur before nonce/RNG selection; a deadlock or serialization failure after that boundary rolls back and is returned as retryable without rerunning RNG. Use advisory locks only for singleton maintenance jobs, not wallet correctness.
 
 ## Retention and deletion
 

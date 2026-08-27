@@ -46,3 +46,10 @@ export class LedgerTransactionNotFoundError extends Error {
     this.name = 'LedgerTransactionNotFoundError';
   }
 }
+
+export class LedgerTransactionNotReversibleError extends Error {
+  constructor() {
+    super('The ledger transaction cannot be reversed independently.');
+    this.name = 'LedgerTransactionNotReversibleError';
+  }
+}

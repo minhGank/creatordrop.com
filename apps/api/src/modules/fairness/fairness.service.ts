@@ -8,7 +8,8 @@ import {
   type QueryExecutor,
   type TransactionExecutor,
 } from '@creatordrop/database';
-import { rngAlgorithmVersion } from '@creatordrop/domain';
+import { rngAlgorithmVersion, selectReward } from '@creatordrop/domain';
+import type { PublishedManifest } from '@creatordrop/domain';
 import type { Logger } from '@creatordrop/observability';
 
 import type { UserId } from '../creators/creator.js';
@@ -28,6 +29,7 @@ import {
 } from './fairness.key-provider.js';
 import {
   FairnessAlreadyInitializedError,
+  FairnessClientSeedMismatchError,
   FairnessNotInitializedError,
   FairnessRevisionConflictError,
   SeedCryptographyError,
@@ -140,7 +142,25 @@ export interface FairnessService {
   replaceCompromisedActiveSeed(command: ReplaceCompromisedSeedCommand): Promise<SeedRotationResult>;
   revealRetiredSeedSet(command: RevealSeedCommand): Promise<PublicSeedSet>;
   rotate(command: RotateSeedCommand): Promise<SeedRotationResult>;
+  selectForOpening(
+    transaction: TransactionExecutor,
+    input: {
+      readonly clientSeed: ClientSeed;
+      readonly expectedManifestHash: string;
+      readonly manifest: PublishedManifest;
+      readonly userId: UserId;
+    },
+  ): Promise<OpeningFairnessSelection>;
   updateClientSeed(command: UpdateClientSeedCommand): Promise<CurrentFairnessState>;
+}
+
+export interface OpeningFairnessSelection extends NonceAllocation {
+  readonly acceptedDigestHex: string;
+  readonly acceptedRound: bigint;
+  readonly boxVersionRewardId: string;
+  readonly manifestHash: string;
+  readonly rewardVersionId: string;
+  readonly selectionValue: bigint;
 }
 
 export interface FairnessServiceOptions {
@@ -886,6 +906,75 @@ export const createFairnessService = ({
     },
 
     rotate: (command) => rotate(command, command.reason ?? 'user_request'),
+
+    selectForOpening: async (transaction, input) => {
+      assertTransactionExecutor(transaction);
+      const allocation = await allocateNextNonce(transaction, { userId: input.userId });
+      if (allocation.clientSeed !== input.clientSeed) throw new FairnessClientSeedMismatchError();
+      const seedSet = await findSeedSetForUser(
+        transaction,
+        input.userId,
+        allocation.seedSetId,
+        true,
+      );
+      if (seedSet?.status !== 'active') throw new SeedSetUnavailableError();
+
+      let registeredKey: { readonly identity: string; readonly key: SeedEncryptionKey } | undefined;
+      let decrypted: Uint8Array | undefined;
+      try {
+        registeredKey = await requireRegisteredProviderKey(
+          transaction,
+          () => keyProvider.getEncryptionKey(seedSet.encryptionKeyVersion),
+          seedSet.encryptionKeyVersion,
+        );
+        if (
+          seedSet.encryptionKeyIdentity === null ||
+          !keyIdentitiesMatch(seedSet.encryptionKeyIdentity, registeredKey.identity)
+        ) {
+          throw new SeedEncryptionKeyUnavailableError();
+        }
+        decrypted = decryptServerSeed({
+          aad: buildSeedEncryptionAad({
+            algorithmVersion: seedSet.algorithmVersion,
+            keyVersion: seedSet.encryptionKeyVersion,
+            seedSetId: seedSet.id,
+            userId: seedSet.userId,
+          }),
+          authenticationTag: seedSet.authenticationTag,
+          ciphertext: seedSet.ciphertext,
+          iv: seedSet.encryptionIv,
+          key: registeredKey.key.key,
+        });
+        if (!serverSeedMatchesCommitment(decrypted, seedSet.commitment)) {
+          throw new SeedCryptographyError();
+        }
+        const selection = selectReward({
+          algorithmVersion: seedSet.algorithmVersion,
+          clientSeed: allocation.clientSeed,
+          expectedManifestHash: input.expectedManifestHash,
+          manifest: input.manifest,
+          nonce: allocation.nonce.toString(),
+          seedSetId: seedSet.id,
+          serverSeed: decrypted,
+        });
+        return {
+          acceptedDigestHex: selection.acceptedDigestHex,
+          acceptedRound: selection.acceptedRound,
+          algorithmVersion: allocation.algorithmVersion,
+          boxVersionRewardId: selection.boxVersionRewardId,
+          clientSeed: allocation.clientSeed,
+          manifestHash: selection.manifestHash,
+          nonce: allocation.nonce,
+          rewardVersionId: selection.rewardVersionId,
+          seedSetId: seedSet.id,
+          selectionValue: selection.selectionValue,
+          serverSeedCommitment: allocation.serverSeedCommitment,
+        };
+      } finally {
+        decrypted?.fill(0);
+        wipeKey(registeredKey?.key);
+      }
+    },
 
     updateClientSeed: async (command) => {
       const result = await database.transaction(async (transaction) => {

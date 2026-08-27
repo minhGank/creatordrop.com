@@ -78,6 +78,7 @@ export const createUnhandledFairnessService = (): FairnessService => {
     replaceCompromisedActiveSeed: unhandled,
     revealRetiredSeedSet: unhandled,
     rotate: unhandled,
+    selectForOpening: unhandled,
     updateClientSeed: unhandled,
   };
 };

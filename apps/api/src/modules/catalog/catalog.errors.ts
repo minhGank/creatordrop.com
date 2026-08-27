@@ -31,7 +31,11 @@ export class CatalogDraftConflictError extends Error {
 
 export class CatalogPublicationError extends Error {
   readonly reason:
-    'EMPTY_CONFIGURATION' | 'INELIGIBLE_REWARD' | 'INVALID_INVENTORY' | 'WEIGHT_OVERFLOW';
+    | 'BASE_REWARD_INVALID'
+    | 'EMPTY_CONFIGURATION'
+    | 'INELIGIBLE_REWARD'
+    | 'INVALID_INVENTORY'
+    | 'WEIGHT_OVERFLOW';
 
   constructor(reason: CatalogPublicationError['reason'], message: string) {
     super(message);
