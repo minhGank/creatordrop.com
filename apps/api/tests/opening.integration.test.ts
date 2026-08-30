@@ -64,6 +64,9 @@ import type {
 
 const localApplicationUrl =
   'postgresql://postgres:postgres@127.0.0.1:54322/postgres?options=-c%20role%3Dcreatordrop_app';
+const localMigrationUrl = 'postgresql://postgres:postgres@127.0.0.1:54322/postgres';
+const localWorkerUrl =
+  'postgresql://postgres:postgres@127.0.0.1:54322/postgres?options=-c%20role%3Dcreatordrop_worker';
 const applicationEnvironment = parseDatabaseEnvironment({
   DATABASE_APPLICATION_NAME: 'creatordrop-opening-integration',
   DATABASE_CONNECTION_TIMEOUT_MS: '5000',
@@ -158,6 +161,7 @@ interface TestCatalog {
 
 describe('atomic box opening', { concurrent: false }, () => {
   let catalog: CatalogService;
+  let adminDatabase: Database;
   let database: Database;
   let blockerDatabase: Database;
   let fairness: FairnessService;
@@ -166,8 +170,18 @@ describe('atomic box opening', { concurrent: false }, () => {
   let openings: OpeningService;
   let secondConcurrencyDatabase: Database;
   let wallets: WalletService;
+  let workerDatabase: Database;
 
   beforeAll(() => {
+    adminDatabase = createDatabasePool({
+      ...applicationEnvironment,
+      applicationName: 'creatordrop-opening-admin',
+      connectionString: process.env.DATABASE_MIGRATION_URL ?? localMigrationUrl,
+      maxConnections: 2,
+      onUnexpectedPoolError: (error) => {
+        throw error;
+      },
+    });
     database = createDatabasePool({
       ...applicationEnvironment,
       onUnexpectedPoolError: (error) => {
@@ -198,6 +212,15 @@ describe('atomic box opening', { concurrent: false }, () => {
         throw error;
       },
     });
+    workerDatabase = createDatabasePool({
+      ...applicationEnvironment,
+      applicationName: 'creatordrop-opening-worker',
+      connectionString: process.env.WORKER_DATABASE_URL ?? localWorkerUrl,
+      maxConnections: 4,
+      onUnexpectedPoolError: (error) => {
+        throw error;
+      },
+    });
     catalog = createCatalogService({ database, logger });
     fairness = createFairnessService({
       database,
@@ -222,9 +245,11 @@ describe('atomic box opening', { concurrent: false }, () => {
   afterAll(async () => {
     await Promise.all([
       blockerDatabase.close(),
+      adminDatabase.close(),
       database.close(),
       firstConcurrencyDatabase.close(),
       secondConcurrencyDatabase.close(),
+      workerDatabase.close(),
     ]);
   });
 
@@ -425,6 +450,44 @@ describe('atomic box opening', { concurrent: false }, () => {
       requestId: randomUUID(),
       userId: user.id,
     });
+
+  interface ClaimedEventRow {
+    readonly attemptCount: number;
+    readonly claimToken: string;
+    readonly id: string;
+  }
+
+  const claimOutbox = async (
+    workerId: string,
+    batchSize = 100,
+    leaseMs = 30_000,
+    maxAttempts = 3,
+    executor: QueryExecutor = workerDatabase,
+  ): Promise<readonly ClaimedEventRow[]> =>
+    (
+      await executor.query<ClaimedEventRow>(
+        `select id::text as id,
+                attempt_count as "attemptCount",
+                claim_token::text as "claimToken"
+           from app.claim_outbox_events($1, $2, $3, $4)`,
+        [workerId, batchSize, leaseMs, maxAttempts],
+      )
+    ).rows;
+
+  const completeClaim = async (event: ClaimedEventRow): Promise<void> => {
+    await workerDatabase.query(`select app.complete_outbox_event($1, $2)`, [
+      event.id,
+      event.claimToken,
+    ]);
+  };
+
+  const drainOutbox = async (): Promise<void> => {
+    for (;;) {
+      const events = await claimOutbox('worker:test-drain');
+      if (events.length === 0) return;
+      await Promise.all(events.map(completeClaim));
+    }
+  };
 
   it('commits one balanced opening, fee/earnings/points/outbox, and exact replay', async () => {
     const creatorId = await createCreator();
@@ -1506,5 +1569,158 @@ describe('atomic box opening', { concurrent: false }, () => {
         )
       ).rows,
     ).toEqual([{ pools: '0' }]);
+  });
+
+  it('claims committed events once across two workers and protects completion by claim token', async () => {
+    await drainOutbox();
+    const creatorId = await createCreator();
+    const rewardVersionId = await createReward(creatorId, { mode: 'unlimited' });
+    const box = await createBox(creatorId, rewardVersionId);
+    await open(await createUser('999'), box.boxId);
+
+    const firstClaimed = createDeferred<ClaimedEventRow>();
+    const releaseFirst = createDeferred<undefined>();
+    const firstTransaction = workerDatabase.transaction(async (transaction) => {
+      const events = await claimOutbox('worker:concurrent-a', 1, 30_000, 3, transaction);
+      const event = events[0];
+      if (event === undefined) throw new Error('The first worker did not claim an event.');
+      firstClaimed.resolve(event);
+      await releaseFirst.promise;
+      return events;
+    });
+    const heldEvent = await firstClaimed.promise;
+    const second = await claimOutbox('worker:concurrent-b', 1);
+    releaseFirst.resolve(undefined);
+    const first = await firstTransaction;
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+    expect(first[0]).toEqual(heldEvent);
+    expect(new Set([...first, ...second].map(({ id }) => id)).size).toBe(2);
+    await Promise.all([...first, ...second].map(completeClaim));
+    const completedEvent = first[0];
+    if (completedEvent === undefined) throw new Error('The first worker did not claim an event.');
+    await expect(completeClaim(completedEvent)).rejects.toMatchObject({
+      constraint: 'event_outbox_claim_not_owned',
+    });
+    expect(
+      (
+        await database.query<{ readonly count: string }>(
+          `select count(*)::text as count
+             from app.event_outbox
+            where status = 'delivered' and id = any($1::uuid[])`,
+          [[...first, ...second].map(({ id }) => id)],
+        )
+      ).rows,
+    ).toEqual([{ count: '2' }]);
+  });
+
+  it('recovers an expired worker lease without allowing the stale worker to acknowledge it', async () => {
+    await drainOutbox();
+    const creatorId = await createCreator();
+    const rewardVersionId = await createReward(creatorId, { mode: 'unlimited' });
+    const box = await createBox(creatorId, rewardVersionId);
+    await open(await createUser('999'), box.boxId);
+
+    const original = (await claimOutbox('worker:crashed', 1, 1000))[0];
+    if (original === undefined) throw new Error('The crash test did not claim an event.');
+    await adminDatabase.query(
+      `update app.event_outbox
+          set claimed_at = clock_timestamp() - interval '2 seconds',
+              lease_expires_at = clock_timestamp() - interval '1 millisecond'
+        where id = $1`,
+      [original.id],
+    );
+    const recovered = (await claimOutbox('worker:recovery', 1, 1000))[0];
+    if (recovered === undefined) throw new Error('The expired event was not recovered.');
+    expect(recovered).toMatchObject({ attemptCount: 2, id: original.id });
+    expect(recovered.claimToken).not.toBe(original.claimToken);
+    await expect(completeClaim(original)).rejects.toMatchObject({
+      constraint: 'event_outbox_claim_not_owned',
+    });
+    await expect(completeClaim(recovered)).resolves.toBeUndefined();
+
+    const exhausted = (await claimOutbox('worker:crashed-final', 1, 1000, 1))[0];
+    if (exhausted === undefined) throw new Error('The final-attempt crash event was not claimed.');
+    await adminDatabase.query(
+      `update app.event_outbox
+          set claimed_at = clock_timestamp() - interval '2 seconds',
+              lease_expires_at = clock_timestamp() - interval '1 millisecond'
+        where id = $1`,
+      [exhausted.id],
+    );
+    expect(await claimOutbox('worker:after-final-crash', 1, 1000, 1)).toHaveLength(0);
+    expect(
+      (
+        await database.query<{ readonly errorCode: string; readonly status: string }>(
+          `select status, last_error_code as "errorCode"
+             from app.event_outbox where id = $1`,
+          [exhausted.id],
+        )
+      ).rows,
+    ).toEqual([{ errorCode: 'MAX_ATTEMPTS_EXCEEDED', status: 'dead' }]);
+  });
+
+  it('honors retry availability, retains terminal history, reports lag, and denies app claims', async () => {
+    await drainOutbox();
+    const creatorId = await createCreator();
+    const rewardVersionId = await createReward(creatorId, { mode: 'unlimited' });
+    const box = await createBox(creatorId, rewardVersionId);
+    await open(await createUser('999'), box.boxId);
+    const event = (await claimOutbox('worker:retry', 1))[0];
+    if (event === undefined) throw new Error('The retry test did not claim an event.');
+    await workerDatabase.query(`select app.fail_outbox_event($1, $2, $3, $4, false)`, [
+      event.id,
+      event.claimToken,
+      'REALTIME_UNAVAILABLE',
+      new Date(Date.now() + 60_000),
+    ]);
+    const earlyClaims = await claimOutbox('worker:too-early');
+    expect(earlyClaims.map(({ id }) => id)).not.toContain(event.id);
+    await Promise.all(earlyClaims.map(completeClaim));
+    await adminDatabase.query(
+      `update app.event_outbox
+          set available_at = clock_timestamp() - interval '1 millisecond'
+        where id = $1`,
+      [event.id],
+    );
+    const retry = (await claimOutbox('worker:retry', 1))[0];
+    if (retry === undefined) throw new Error('The retry did not become available.');
+    await workerDatabase.query(`select app.fail_outbox_event($1, $2, $3, $4, true)`, [
+      retry.id,
+      retry.claimToken,
+      'INVALID_EVENT',
+      new Date(Date.now() + 60_000),
+    ]);
+    const state = await database.query<{
+      readonly attemptCount: number;
+      readonly lastErrorCode: string;
+      readonly status: string;
+    }>(
+      `select status, attempt_count as "attemptCount", last_error_code as "lastErrorCode"
+         from app.event_outbox where id = $1`,
+      [event.id],
+    );
+    expect(state.rows).toEqual([
+      { attemptCount: 2, lastErrorCode: 'INVALID_EVENT', status: 'dead' },
+    ]);
+    await expect(
+      database.query(`select * from app.claim_outbox_events($1, 1, 30000, 3)`, [
+        'worker:forbidden',
+      ]),
+    ).rejects.toThrow(/permission denied/iu);
+    await expect(workerDatabase.query(`select id from app.event_outbox limit 1`)).rejects.toThrow(
+      /permission denied/iu,
+    );
+    const lag = await workerDatabase.query<{
+      readonly deadCount: string;
+      readonly pendingCount: string;
+    }>(
+      `select dead_count::text as "deadCount", pending_count::text as "pendingCount"
+         from app.read_outbox_lag()`,
+    );
+    const lagRow = lag.rows[0];
+    expect(lagRow).toBeDefined();
+    expect(BigInt(lagRow?.deadCount ?? '0')).toBeGreaterThanOrEqual(1n);
+    expect(BigInt(lagRow?.pendingCount ?? '-1')).toBeGreaterThanOrEqual(0n);
   });
 });

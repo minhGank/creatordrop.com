@@ -189,7 +189,26 @@ allocation: box-sales clearing      -1000
 
 ### `event_outbox`
 
-Phase 9 stores immutable `id`, opening aggregate identity, allowlisted type/audience, JSON payload, and occurrence/creation timestamps. Every successful opening has private `opening.completed.v1` and sanitized public `drop.created.v1` rows in the same transaction; rollback removes both. Payload checks prohibit seed/encryption fields. Claim/delivery/retry columns and the worker are added only in Phase 10.
+Phase 9 stores immutable `id`, opening aggregate identity, allowlisted type/audience, JSON
+payload, and occurrence/creation timestamps. Every successful opening has private
+`opening.completed.v1` and sanitized public `drop.created.v1` rows in the same transaction;
+rollback removes both. Payload checks prohibit seed/encryption fields.
+
+Phase 10 adds mutable delivery metadata only: `status`, `attempt_count`, `available_at`,
+claim/lease/token fields, `processed_at`, and an allowlisted `last_error_code`. Event identity,
+aggregate, type, audience, payload, and occurrence timestamps remain immutable. New rows must
+start `pending`; the application role can insert but cannot claim or update delivery state. The
+separate `creatordrop_worker` role has no table-write grant and can execute only the
+`claim_outbox_events`, `complete_outbox_event`, `fail_outbox_event`, and `read_outbox_lag`
+interfaces.
+
+Claims are committed short statements using ordered `FOR UPDATE SKIP LOCKED`. A fresh UUID
+claim token prevents a worker whose lease was replaced from completing/failing the new claim.
+Expired leases are reclaimable; an expired final attempt becomes retained `dead` history.
+Delivery success is recorded only after the Socket.io gateway acknowledgement. Retry scheduling
+uses `available_at`; no external network call occurs while a row lock or database transaction is
+held. The lag function reports pending/processing/dead counts and the age of the oldest ready or
+expired event without exposing event payloads.
 
 ### `audit_log`
 

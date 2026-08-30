@@ -1,3 +1,5 @@
+import { createServer } from 'node:http';
+
 import { createConsoleLogger } from '@creatordrop/observability';
 import { createDatabasePool } from '@creatordrop/database';
 
@@ -7,7 +9,10 @@ import {
   getDatabaseEnvironment,
   getRngEnvironment,
 } from './config/environment.js';
-import { createAuthenticationMiddleware } from './modules/auth/authentication.middleware.js';
+import {
+  createAccessTokenAuthenticator,
+  createAuthenticationMiddleware,
+} from './modules/auth/authentication.middleware.js';
 import { createJwtVerifier } from './modules/auth/jwt-verifier.js';
 import { createCatalogService } from './modules/catalog/catalog.service.js';
 import { createUserBootstrapService } from './modules/users/bootstrap-user.service.js';
@@ -16,6 +21,7 @@ import { createEnvironmentSeedEncryptionKeyProvider } from './modules/fairness/f
 import { createFairnessService } from './modules/fairness/fairness.service.js';
 import { createOpeningService } from './modules/openings/opening.service.js';
 import { createWalletService } from './modules/wallet/wallet.service.js';
+import { createRealtimeServer } from './platform/realtime/realtime.server.js';
 
 const environment = getApiEnvironment();
 const databaseEnvironment = getDatabaseEnvironment();
@@ -33,10 +39,13 @@ const verifyAccessToken = createJwtVerifier({
   jwksUrl: environment.authJwksUrl,
   provider: environment.authProvider,
 });
-const authenticate = createAuthenticationMiddleware({
-  bootstrapUsers: createUserBootstrapService({ database }),
+const bootstrapUsers = createUserBootstrapService({ database });
+const authenticationOptions = {
+  bootstrapUsers,
   verifyAccessToken,
-});
+};
+const authenticate = createAuthenticationMiddleware(authenticationOptions);
+const authenticateAccessToken = createAccessTokenAuthenticator(authenticationOptions);
 const creatorService = createCreatorService({ database, logger });
 const catalogService = createCatalogService({ database, logger });
 const fairnessService = createFairnessService({
@@ -82,25 +91,29 @@ const app = createApp({
   walletService,
 });
 
-const server = app.listen(environment.port, environment.host, () => {
+const server = createServer(app);
+const realtime = createRealtimeServer({
+  allowedOrigins: environment.corsAllowedOrigins,
+  authenticateAccessToken,
+  httpServer: server,
+  logger,
+  workerToken: environment.realtimeWorkerToken,
+});
+server.listen(environment.port, environment.host, () => {
   logger.info('api.listening', { host: environment.host, port: environment.port });
 });
 
 const shutdown = (signal: NodeJS.Signals): void => {
   logger.info('api.shutdown.started', { signal });
-  server.close((error) => {
-    if (error !== undefined) {
-      logger.error('api.shutdown.failed', { errorName: error.name });
-      process.exitCode = 1;
-    }
-
-    void database.close().catch((databaseError: unknown) => {
+  void realtime
+    .close()
+    .then(() => database.close())
+    .catch((databaseError: unknown) => {
       logger.error('database.shutdown.failed', {
         errorName: databaseError instanceof Error ? databaseError.name : 'UnknownError',
       });
       process.exitCode = 1;
     });
-  });
 };
 
 process.once('SIGINT', shutdown);

@@ -14,6 +14,7 @@ describe('API environment adapter', () => {
     vi.stubEnv('CORS_ALLOWED_ORIGINS', 'http://localhost:5173');
     vi.stubEnv('HOST', '127.0.0.1');
     vi.stubEnv('PORT', '4321');
+    vi.stubEnv('REALTIME_WORKER_TOKEN', 'synthetic-realtime-worker-token-00000001');
 
     expect(getApiEnvironment()).toEqual({
       authAudience: 'authenticated',
@@ -28,6 +29,7 @@ describe('API environment adapter', () => {
       host: '127.0.0.1',
       nodeEnvironment: 'test',
       port: 4321,
+      realtimeWorkerToken: 'synthetic-realtime-worker-token-00000001',
       requestBodyLimitBytes: 32_768,
       testCreditsEnabled: false,
       walletMutationRateLimitMax: 20,

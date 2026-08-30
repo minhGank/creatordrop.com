@@ -248,15 +248,31 @@ Metrics must define timezone, currency, settled/voided behavior, and freshness. 
 
 ## Realtime contract
 
-Socket.io authenticates at connection and reauthorizes private subscriptions. Initial server events:
+Socket.io authenticates at connection with the same verified access-token and active-local-user
+rules as HTTP. The server derives and joins `user:{userId}`; a client cannot request another
+user's room. Authenticated clients may make only validated, read-only `drops.subscribe.v1` /
+`drops.unsubscribe.v1` requests for `{ "scope": "global" }` or
+`{ "scope": "creator", "creatorId": "<canonical UUID>" }`. Initial Phase 10 server events:
 
 - `drop.created.v1`: sanitized committed public opening for creator/global rooms;
 - `opening.completed.v1`: private result notification, deduplicated by `eventId`/`openingId`;
-- `wallet.updated.v1`: private balance projection after a committed ledger operation;
-- `fulfillment.updated.v1`: private or creator-scoped allowlisted status;
-- `leaderboard.updated.v1`: disposable projection with `asOf`.
+- `realtime.ready.v1`: connection control event with `delivery: "at-least-once"` and
+  `refetchRequired: true` on every connect/reconnect.
 
-Every event has `{ eventId, type, version, occurredAt, data }`. Delivery is at least once; clients deduplicate and refetch authoritative HTTP state after reconnect. The server never accepts client Socket.io events to perform openings, wallet mutations, odds changes, or fulfillment transitions.
+Every event has `{ eventId, type, version, occurredAt, data }`. Durable events retain the
+PostgreSQL outbox UUID as `eventId` across retries. `opening.completed.v1` is sent only to the
+event user's room and contains public opening/catalog identifiers, not its routing `userId`.
+`drop.created.v1` contains only public opening, creator, box, and immutable reward-display data;
+it excludes user identity, balance, price/ledger/earnings data, fulfillment data, and all RNG
+seed/encryption material. Delivery is at least once; clients deduplicate and refetch
+authoritative HTTP state after reconnect (or replay the original idempotent opening command if
+its response was lost). Socket delivery is never proof of a financial or opening commit.
+
+The separate `/worker` namespace accepts only an exact `outbox.publish.v1` envelope from the
+token-authenticated outbox worker. It is not a browser API. The server never accepts client
+Socket.io events to perform openings, wallet mutations, odds changes, or fulfillment
+transitions. `wallet.updated.v1`, fulfillment realtime, leaderboard events/projections, and live
+feed UI remain later phases.
 
 ## API security and evolution
 

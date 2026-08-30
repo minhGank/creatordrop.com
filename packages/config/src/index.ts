@@ -3,10 +3,6 @@ import { z } from 'zod';
 const runtimeModeSchema = z.enum(['development', 'test', 'production']);
 const maximumSignedBigint = 9_223_372_036_854_775_807n;
 
-const sharedNodeEnvironmentShape = {
-  NODE_ENV: runtimeModeSchema.default('development'),
-} as const;
-
 const httpUrlSchema = z.url().refine(
   (value) => {
     const protocol = new URL(value).protocol;
@@ -22,6 +18,9 @@ const browserOriginSchema = httpUrlSchema.refine(
   },
   { message: 'Expected an origin without a path, query, or fragment.' },
 );
+
+const realtimeWorkerTokenSchema = z.string().regex(/^[A-Za-z0-9._~-]{32,512}$/u);
+const localRealtimeWorkerToken = 'local-development-realtime-worker-token-00000001';
 
 const apiEnvironmentSchema = z
   .object({
@@ -49,6 +48,7 @@ const apiEnvironmentSchema = z
     HOST: z.string().trim().min(1).default('127.0.0.1'),
     PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
     REQUEST_BODY_LIMIT_BYTES: z.coerce.number().int().min(1_024).max(1_048_576).default(32_768),
+    REALTIME_WORKER_TOKEN: realtimeWorkerTokenSchema,
     WALLET_MUTATION_RATE_LIMIT_MAX: z.coerce.number().int().min(1).max(10_000).default(20),
     WALLET_MUTATION_RATE_LIMIT_WINDOW_MS: z.coerce
       .number()
@@ -70,12 +70,19 @@ const apiEnvironmentSchema = z
         path: ['WALLET_TEST_CREDITS_ENABLED'],
       });
     }
+    if (
+      environment.REALTIME_WORKER_TOKEN === localRealtimeWorkerToken &&
+      environment.NODE_ENV !== 'development' &&
+      environment.NODE_ENV !== 'test'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'The local realtime worker token requires an explicit development or test runtime.',
+        path: ['REALTIME_WORKER_TOKEN'],
+      });
+    }
   });
-
-const workerEnvironmentSchema = z.object({
-  ...sharedNodeEnvironmentShape,
-  WORKER_POLL_INTERVAL_MS: z.coerce.number().int().min(100).max(60_000).default(1000),
-});
 
 const postgresConnectionStringSchema = z.url().refine(
   (value) => {
@@ -84,6 +91,58 @@ const postgresConnectionStringSchema = z.url().refine(
   },
   { message: 'Expected a postgres:// or postgresql:// connection string.' },
 );
+
+const workerEnvironmentSchema = z
+  .object({
+    NODE_ENV: runtimeModeSchema.optional(),
+    WORKER_DATABASE_APPLICATION_NAME: z
+      .string()
+      .trim()
+      .min(1)
+      .max(63)
+      .default('creatordrop-worker'),
+    DATABASE_CONNECTION_TIMEOUT_MS: z.coerce.number().int().min(100).max(60_000).default(5000),
+    DATABASE_IDLE_TIMEOUT_MS: z.coerce.number().int().min(100).max(300_000).default(10_000),
+    DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(50).default(10),
+    OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(25),
+    OUTBOX_LEASE_MS: z.coerce.number().int().min(5_000).max(300_000).default(30_000),
+    OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(100).default(8),
+    OUTBOX_RETRY_BASE_MS: z.coerce.number().int().min(100).max(60_000).default(1_000),
+    OUTBOX_RETRY_MAX_MS: z.coerce.number().int().min(100).max(3_600_000).default(60_000),
+    REALTIME_PUBLISH_TIMEOUT_MS: z.coerce.number().int().min(100).max(60_000).default(5_000),
+    REALTIME_URL: browserOriginSchema,
+    REALTIME_WORKER_TOKEN: realtimeWorkerTokenSchema,
+    WORKER_DATABASE_URL: postgresConnectionStringSchema,
+    WORKER_POLL_INTERVAL_MS: z.coerce.number().int().min(100).max(60_000).default(1000),
+  })
+  .superRefine((environment, context) => {
+    if (environment.OUTBOX_RETRY_BASE_MS > environment.OUTBOX_RETRY_MAX_MS) {
+      context.addIssue({
+        code: 'custom',
+        message: 'The retry base delay cannot exceed the maximum delay.',
+        path: ['OUTBOX_RETRY_BASE_MS'],
+      });
+    }
+    if (environment.REALTIME_PUBLISH_TIMEOUT_MS >= environment.OUTBOX_LEASE_MS) {
+      context.addIssue({
+        code: 'custom',
+        message: 'The realtime publish timeout must be shorter than the outbox lease.',
+        path: ['REALTIME_PUBLISH_TIMEOUT_MS'],
+      });
+    }
+    if (
+      environment.REALTIME_WORKER_TOKEN === localRealtimeWorkerToken &&
+      environment.NODE_ENV !== 'development' &&
+      environment.NODE_ENV !== 'test'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'The local realtime worker token requires an explicit development or test runtime.',
+        path: ['REALTIME_WORKER_TOKEN'],
+      });
+    }
+  });
 
 const databaseEnvironmentSchema = z.object({
   DATABASE_APPLICATION_NAME: z.string().trim().min(1).max(63).default('creatordrop'),
@@ -216,6 +275,7 @@ export type ApiEnvironment = Readonly<{
   host: string;
   nodeEnvironment: z.infer<typeof runtimeModeSchema>;
   port: number;
+  realtimeWorkerToken: string;
   requestBodyLimitBytes: number;
   testCreditsEnabled: boolean;
   walletMutationRateLimitMax: number;
@@ -223,8 +283,17 @@ export type ApiEnvironment = Readonly<{
 }>;
 
 export type WorkerEnvironment = Readonly<{
+  batchSize: number;
+  database: DatabaseEnvironment;
+  leaseMs: number;
+  maxAttempts: number;
   nodeEnvironment: z.infer<typeof runtimeModeSchema>;
   pollIntervalMs: number;
+  publishTimeoutMs: number;
+  realtimeUrl: string;
+  realtimeWorkerToken: string;
+  retryBaseMs: number;
+  retryMaxMs: number;
 }>;
 
 export type DatabaseEnvironment = Readonly<{
@@ -265,6 +334,7 @@ export const parseApiEnvironment = (input: NodeJS.ProcessEnv): ApiEnvironment =>
     host: parsed.HOST,
     nodeEnvironment: parsed.NODE_ENV ?? 'development',
     port: parsed.PORT,
+    realtimeWorkerToken: parsed.REALTIME_WORKER_TOKEN,
     requestBodyLimitBytes: parsed.REQUEST_BODY_LIMIT_BYTES,
     testCreditsEnabled: parsed.WALLET_TEST_CREDITS_ENABLED === 'true',
     walletMutationRateLimitMax: parsed.WALLET_MUTATION_RATE_LIMIT_MAX,
@@ -276,8 +346,23 @@ export const parseWorkerEnvironment = (input: NodeJS.ProcessEnv): WorkerEnvironm
   const parsed = workerEnvironmentSchema.parse(input);
 
   return {
-    nodeEnvironment: parsed.NODE_ENV,
+    batchSize: parsed.OUTBOX_BATCH_SIZE,
+    database: {
+      applicationName: parsed.WORKER_DATABASE_APPLICATION_NAME,
+      connectionString: parsed.WORKER_DATABASE_URL,
+      connectionTimeoutMs: parsed.DATABASE_CONNECTION_TIMEOUT_MS,
+      idleTimeoutMs: parsed.DATABASE_IDLE_TIMEOUT_MS,
+      maxConnections: parsed.DATABASE_POOL_MAX,
+    },
+    leaseMs: parsed.OUTBOX_LEASE_MS,
+    maxAttempts: parsed.OUTBOX_MAX_ATTEMPTS,
+    nodeEnvironment: parsed.NODE_ENV ?? 'development',
     pollIntervalMs: parsed.WORKER_POLL_INTERVAL_MS,
+    publishTimeoutMs: parsed.REALTIME_PUBLISH_TIMEOUT_MS,
+    realtimeUrl: parsed.REALTIME_URL,
+    realtimeWorkerToken: parsed.REALTIME_WORKER_TOKEN,
+    retryBaseMs: parsed.OUTBOX_RETRY_BASE_MS,
+    retryMaxMs: parsed.OUTBOX_RETRY_MAX_MS,
   };
 };
 

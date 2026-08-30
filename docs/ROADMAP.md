@@ -60,7 +60,7 @@ Completed: multi-currency-capable ledger accounts/transactions/entries, one user
 
 Depends on: Phases 5, 7, and 8; opening eligibility/limit and inventory policy.
 
-Completed: the application service and REST command perform one atomic open across idempotency, sufficient-funds validation, nonce/RNG, stable shared inventory, balanced financial postings, immutable opening/win/obligation/earnings/points history, and two durable outbox rows. Database retries stop at the RNG boundary, so a post-selection deadlock rolls back and returns a retryable failure without rerolling. Deferred PostgreSQL checks enforce opening-linked inventory movements and bidirectional non-reversible sale/allocation linkage. Phase 10 delivery remains absent.
+Completed: the application service and REST command perform one atomic open across idempotency, sufficient-funds validation, nonce/RNG, stable shared inventory, balanced financial postings, immutable opening/win/obligation/earnings/points history, and two durable outbox rows. Database retries stop at the RNG boundary, so a post-selection deadlock rolls back and returns a retryable failure without rerolling. Deferred PostgreSQL checks enforce opening-linked inventory movements and bidirectional non-reversible sale/allocation linkage. Phase 9 itself does not publish; the subsequently completed Phase 10 worker consumes these committed rows.
 
 Compatibility decision: Phase 5–8 published versions are grandfathered immutable history and are never guessed/backfilled. Only a newly published `opening-v1` version with exactly one explicit base reward is openable. Phase 9 adds stable creator-owned finite pools shared across reward versions/boxes, live `pause_box` publication checks, `pause_box`/`backorder`, immutable opening-linked consumption, two-posting sale allocation, 20% default fee, 14-day pending creator earnings, immutable 5/20 point snapshots, and two transactional outbox records; no delivery worker or projection is included.
 
@@ -68,7 +68,17 @@ Compatibility decision: Phase 5–8 published versions are grandfathered immutab
 
 Depends on: Phase 9.
 
-Implement outbox claiming/retry/dead-letter policy, Socket.io authentication/rooms, sanitized versioned events, and post-commit publication. Tests prove no event before/after rolled-back transaction, at-least-once deduplication, worker crash recovery, room authorization, payload redaction, reconnect/refetch behavior, and outbox lag metrics.
+Completed: immutable Phase 9 events now have worker-only `SKIP LOCKED` claims, persisted
+claim-token leases, bounded deterministic backoff, terminal dead history, crash recovery, and lag
+snapshots. The separate worker publishes only `opening.completed.v1` and `drop.created.v1` after
+commit through an acknowledged, token-authenticated API Socket.io namespace. Active users get
+server-derived private rooms plus validated public creator/global subscriptions; public/private
+wire DTOs are exact allowlists, duplicate attempts retain one event ID, and reconnect emits an
+explicit refetch requirement. Tests cover rollback absence, two-worker claiming, stale leases,
+retry/dead behavior, room authorization, payload redaction, duplicates, and reconnect/refetch.
+
+No Redis projection or leaderboard is part of Phase 10. Those remain Phase 13 exactly as
+documented below.
 
 ## Phase 11 — Wallet funding provider adapter
 

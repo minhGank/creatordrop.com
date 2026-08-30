@@ -124,7 +124,9 @@ Detailed flow:
 10. Insert the immutable reward win, fulfillment obligation, and creator earning held for 14 days.
 11. Insert `opening.completed.v1` private and sanitized `drop.created.v1` public outbox rows in the same transaction. Phase 9 stores but does not deliver them and never exposes unrevealed server seed material.
 12. Store the exact successful response in the idempotency row and commit.
-13. Return the decided outcome. The Phase 10 worker will later consume the outbox, update projections, and emit events. The reel animates the returned result only.
+13. Return the decided outcome. The Phase 10 worker consumes the outbox only after commit and
+    emits the two versioned realtime events. Redis projections remain Phase 13. The reel
+    animates the returned result only.
 
 Failures before commit leave no charge, nonce, opening, fulfillment, or event. If commit succeeds but the HTTP response is lost, retry returns the stored result.
 
@@ -132,7 +134,29 @@ Failures before commit leave no charge, nonce, opening, fulfillment, or event. I
 
 Socket rooms are `creator:{publicCreatorId}`, `user:{userId}`, and optionally public global feeds. User rooms require authenticated socket handshakes and server-derived room membership. Public events contain a public opening ID, creator/box/reward display snapshot, timestamp, and safe display identity—not balances, addresses, provider references, seed secrets, or private fulfillment data.
 
-The outbox worker claims rows with `FOR UPDATE SKIP LOCKED`, publishes using an event ID, and marks them delivered. Delivery is at least once; consumers deduplicate by event ID. Redis leaderboards are projections rebuilt from PostgreSQL ledger/open data. Define a reconciliation job and TTLs; never read a Redis leaderboard to make a financial or eligibility decision.
+The Phase 10 outbox worker claims rows with `FOR UPDATE SKIP LOCKED` through a restricted
+worker-only database function. A persisted claim token and lease let another worker recover a
+row after a crash without allowing the stale worker to acknowledge it. The worker performs no
+network work in a PostgreSQL transaction. It publishes the immutable event ID to the API's
+token-authenticated `/worker` Socket.io namespace, waits for an acknowledgement that the API
+gateway accepted the broadcast, and only then marks the row delivered. Failures use bounded
+exponential backoff; exhausted or permanently invalid events remain as `dead` history for
+operator inspection.
+
+Delivery from the outbox to the realtime gateway is at least once. A worker can publish and
+crash before recording completion, so clients deduplicate by `eventId`. The API automatically
+joins an authenticated active user to only `user:{userId}` and accepts validated, read-only
+subscriptions for `creator:{publicCreatorId}` or the public global drop room. It never accepts a
+client-supplied user room. Every connection/reconnection receives `realtime.ready.v1` with
+`refetchRequired: true`; Socket.io is notification transport, not missed-event history. A lost
+opening response remains recoverable through the original idempotent opening command, and
+clients refetch available authoritative HTTP resources after reconnect.
+
+Phase 10 uses process-local Socket.io rooms and an acknowledged worker-to-API connection; a
+horizontally scaled Socket.io deployment will need an approved cross-node adapter and sticky
+connection policy before production scaling. Redis leaderboards and Redis-backed projections
+remain Phase 13 work. Redis projections will be rebuilt from PostgreSQL ledger/open data and
+must never make a financial or eligibility decision.
 
 ## Payment and fulfillment architecture
 

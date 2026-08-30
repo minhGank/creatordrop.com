@@ -9,10 +9,23 @@ import {
 } from '../src/index.js';
 
 describe('environment configuration', () => {
+  const syntheticWorkerDatabaseUrl = [
+    'postgresql:',
+    '//synthetic:',
+    'local-only',
+    '@database.example.test/creatordrop',
+  ].join('');
   const requiredApiEnvironment = {
     AUTH_JWT_ISSUER: 'http://127.0.0.1:54321/auth/v1',
     AUTH_JWKS_URL: 'http://127.0.0.1:54321/auth/v1/.well-known/jwks.json',
     CORS_ALLOWED_ORIGINS: 'http://127.0.0.1:5173,http://localhost:5173',
+    REALTIME_WORKER_TOKEN: 'synthetic-realtime-worker-token-00000001',
+  } as const;
+  const requiredWorkerEnvironment = {
+    NODE_ENV: 'test',
+    REALTIME_URL: 'http://127.0.0.1:3000',
+    REALTIME_WORKER_TOKEN: 'synthetic-realtime-worker-token-00000001',
+    WORKER_DATABASE_URL: syntheticWorkerDatabaseUrl,
   } as const;
 
   it('applies safe defaults without defaulting trusted endpoints or origins', () => {
@@ -29,14 +42,30 @@ describe('environment configuration', () => {
       host: '127.0.0.1',
       nodeEnvironment: 'development',
       port: 3000,
+      realtimeWorkerToken: 'synthetic-realtime-worker-token-00000001',
       requestBodyLimitBytes: 32_768,
       testCreditsEnabled: false,
       walletMutationRateLimitMax: 20,
       walletMutationRateLimitWindowMs: 60_000,
     });
-    expect(parseWorkerEnvironment({})).toEqual({
-      nodeEnvironment: 'development',
+    expect(parseWorkerEnvironment(requiredWorkerEnvironment)).toEqual({
+      batchSize: 25,
+      database: {
+        applicationName: 'creatordrop-worker',
+        connectionString: syntheticWorkerDatabaseUrl,
+        connectionTimeoutMs: 5000,
+        idleTimeoutMs: 10_000,
+        maxConnections: 10,
+      },
+      leaseMs: 30_000,
+      maxAttempts: 8,
+      nodeEnvironment: 'test',
       pollIntervalMs: 1000,
+      publishTimeoutMs: 5000,
+      realtimeUrl: 'http://127.0.0.1:3000',
+      realtimeWorkerToken: 'synthetic-realtime-worker-token-00000001',
+      retryBaseMs: 1000,
+      retryMaxMs: 60_000,
     });
   });
 
@@ -71,6 +100,7 @@ describe('environment configuration', () => {
       host: '0.0.0.0',
       nodeEnvironment: 'test',
       port: 4100,
+      realtimeWorkerToken: 'synthetic-realtime-worker-token-00000001',
       requestBodyLimitBytes: 4096,
       testCreditsEnabled: true,
       walletMutationRateLimitMax: 11,
@@ -88,6 +118,45 @@ describe('environment configuration', () => {
           WALLET_TEST_CREDITS_ENABLED: 'true',
         }).testCreditsEnabled,
       ).toBe(true);
+    },
+  );
+
+  it.each(['development', 'test'] as const)(
+    'accepts the documented local realtime worker token only with explicit %s',
+    (nodeEnvironment) => {
+      const localToken = 'local-development-realtime-worker-token-00000001';
+      expect(
+        parseApiEnvironment({
+          ...requiredApiEnvironment,
+          NODE_ENV: nodeEnvironment,
+          REALTIME_WORKER_TOKEN: localToken,
+        }).realtimeWorkerToken,
+      ).toBe(localToken);
+      expect(
+        parseWorkerEnvironment({
+          ...requiredWorkerEnvironment,
+          NODE_ENV: nodeEnvironment,
+          REALTIME_WORKER_TOKEN: localToken,
+        }).realtimeWorkerToken,
+      ).toBe(localToken);
+    },
+  );
+
+  it.each([undefined, 'production'] as const)(
+    'rejects the local realtime worker token for an unsafe %s runtime',
+    (nodeEnvironment) => {
+      const environment = {
+        REALTIME_WORKER_TOKEN: 'local-development-realtime-worker-token-00000001',
+        ...(nodeEnvironment === undefined ? {} : { NODE_ENV: nodeEnvironment }),
+      };
+      expect(() => parseApiEnvironment({ ...requiredApiEnvironment, ...environment })).toThrow();
+      expect(() =>
+        parseWorkerEnvironment({
+          REALTIME_URL: requiredWorkerEnvironment.REALTIME_URL,
+          WORKER_DATABASE_URL: requiredWorkerEnvironment.WORKER_DATABASE_URL,
+          ...environment,
+        }),
+      ).toThrow();
     },
   );
 
@@ -120,12 +189,16 @@ describe('environment configuration', () => {
     expect(() => parseApiEnvironment(environment)).toThrow();
   });
 
-  it.each([{ WORKER_POLL_INTERVAL_MS: '99' }, { WORKER_POLL_INTERVAL_MS: '60001' }])(
-    'rejects an invalid worker environment: %o',
-    (environment) => {
-      expect(() => parseWorkerEnvironment(environment)).toThrow();
-    },
-  );
+  it.each([
+    { WORKER_POLL_INTERVAL_MS: '99' },
+    { WORKER_POLL_INTERVAL_MS: '60001' },
+    { OUTBOX_LEASE_MS: '5000', REALTIME_PUBLISH_TIMEOUT_MS: '5000' },
+    { OUTBOX_RETRY_BASE_MS: '2000', OUTBOX_RETRY_MAX_MS: '1000' },
+  ])('rejects an invalid worker environment: %o', (environment) => {
+    expect(() =>
+      parseWorkerEnvironment({ ...requiredWorkerEnvironment, ...environment }),
+    ).toThrow();
+  });
 });
 
 describe('RNG lifecycle environment configuration', () => {

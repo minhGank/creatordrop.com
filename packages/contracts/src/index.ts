@@ -299,3 +299,5 @@ export interface BoxOpeningResponse {
     readonly wallet: WalletContract;
   };
 }
+
+export * from './realtime.js';

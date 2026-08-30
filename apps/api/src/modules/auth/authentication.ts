@@ -7,3 +7,5 @@ export interface AuthenticatedActor {
 }
 
 export type VerifyAccessToken = (accessToken: string) => Promise<TrustedIdentity>;
+
+export type AuthenticateAccessToken = (accessToken: string) => Promise<AuthenticatedActor>;

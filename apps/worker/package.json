@@ -13,6 +13,9 @@
   },
   "dependencies": {
     "@creatordrop/config": "*",
-    "@creatordrop/observability": "*"
+    "@creatordrop/contracts": "*",
+    "@creatordrop/database": "*",
+    "@creatordrop/observability": "*",
+    "socket.io-client": "^4.8.3"
   }
 }

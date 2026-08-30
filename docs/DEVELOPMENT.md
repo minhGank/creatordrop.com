@@ -52,7 +52,13 @@ set role creatordrop_migrator;
 reset role;
 ```
 
-Phase 2 creates `app` and `app_private`, restricted roles, default privileges, and foundational extensions. Phases 3–5 add users, creator tenancy, and versioned catalog configuration. Phases 6–7 add deterministic RNG and encrypted per-user seed lifecycle. Phase 8 adds multi-currency-capable wallets, immutable double-entry history, and reusable idempotency; only USD synthetic credits are enabled. Opening, fulfillment, outbox, real payment, conversion, Redis, and realtime tables remain absent.
+Phase 2 creates `app` and `app_private`, restricted roles, default privileges, and foundational
+extensions. Phases 3–5 add users, creator tenancy, and versioned catalog configuration. Phases
+6–7 add deterministic RNG and encrypted per-user seed lifecycle. Phase 8 adds
+multi-currency-capable wallets, immutable double-entry history, and reusable idempotency; only
+USD synthetic credits are enabled. Phase 9 adds atomic openings and transactional outbox rows.
+Phase 10 adds durable outbox delivery and Socket.io only. Real funding, payout, shipping, Redis
+projections/leaderboards, and currency conversion remain absent.
 
 ## Database package
 
@@ -123,7 +129,42 @@ Supabase Auth performs sign-up/sign-in. Send its access token as `Authorization:
 
 The bootstrap, creator, fairness, and wallet-mutation limiters are intentionally in memory and per API process. Wallet test-credit mutations use a pre-authentication IP gate followed by an actor-keyed budget. Before horizontally scaled production deployment, choose a shared limiter store and define the trusted reverse-proxy/IP policy. Redis is not introduced in Phase 8.
 
-Financial mutation primitives accept only the branded transaction executor. Future Phase 9 composition must acquire the idempotency claim, wallet, fairness profile, seed, and future inventory locks in that order, then insert ledger/business rows before one final commit. Ledger history is authoritative; `reconcileWallet` compares the cached wallet projection with the signed-entry sum and never repairs history.
+Financial mutation primitives accept only the branded transaction executor. The Phase 9 opening
+composition acquires the idempotency claim, wallet, fairness profile, seed, and inventory locks
+in the documented order, then inserts ledger/business/outbox rows before one final commit.
+Ledger history is authoritative; `reconcileWallet` compares the cached wallet projection with
+the signed-entry sum and never repairs history.
+
+## Durable outbox and realtime worker
+
+Phase 10 introduces a distinct `creatordrop_worker` PostgreSQL role. The local
+`WORKER_DATABASE_URL` in `.env.example` selects that role; production must provision an
+independent credential with only that role's privileges. `REALTIME_WORKER_TOKEN` authenticates
+the worker to the API's internal `/worker` Socket.io namespace. The checked-in token is an
+obvious local fixture and is rejected unless raw `NODE_ENV` explicitly says `development` or
+`test`; generate and inject independent production secret material.
+
+With Supabase and the API running, start the outbox worker:
+
+```bash
+npm run dev:worker
+```
+
+The worker immediately polls, then waits `WORKER_POLL_INTERVAL_MS` after each completed batch.
+It claims at most `OUTBOX_BATCH_SIZE` committed rows for `OUTBOX_LEASE_MS`. Socket publication
+must acknowledge within `REALTIME_PUBLISH_TIMEOUT_MS`, which configuration requires to be
+shorter than the lease. Failures retry at deterministic exponential delays bounded by
+`OUTBOX_RETRY_MAX_MS`; `OUTBOX_MAX_ATTEMPTS` exhaustion and permanently malformed versions
+remain `dead` for operator inspection. Do not delete delivered/dead rows or edit event content.
+
+The worker logs `outbox.lag.observed` with decimal-string pending, processing, dead, and oldest
+ready-age values. It logs IDs/types and stable error codes, never complete payloads. A delivered
+row means the realtime gateway acknowledged the broadcast, not that a browser was connected.
+Clients deduplicate durable event IDs and refetch/replay authoritative HTTP commands after every
+`realtime.ready.v1` reconnect signal. Current rooms are process-local; define a supported
+cross-node Socket.io adapter and sticky-connection policy before horizontally scaling the API.
+Redis projections and leaderboards are still Phase 13 and no Redis service is required for the
+Phase 10 worker.
 
 ## Full validation
 

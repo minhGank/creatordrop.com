@@ -23,9 +23,10 @@ const phase8Migrations = [
   '20260823230000_phase7_rng_lifecycle_user_lock.sql',
   '20260824154215_phase8_wallet_ledger_idempotency.sql',
 ] as const;
-const phase9Migrations = [
+const currentMigrations = [
   '20260824180000_phase9_atomic_box_opening.sql',
   '20260826134113_phase9_opening_high_remediation.sql',
+  '20260830024628_phase10_outbox_realtime_delivery.sql',
 ] as const;
 
 const migrationSql = (fileName: string): Promise<string> =>
@@ -52,7 +53,7 @@ const createPool = (connectionString: string, applicationName: string): Database
     },
   });
 
-describe('Phase 8 to Phase 9 forward migration', { concurrent: false }, () => {
+describe('Phase 8 to current forward migration', { concurrent: false }, () => {
   const admin = createPool(migrationEnvironment.connectionString, 'phase8-phase9-upgrade-admin');
   const databasesToDrop = new Set<string>();
 
@@ -259,7 +260,7 @@ describe('Phase 8 to Phase 9 forward migration', { concurrent: false }, () => {
         },
       ]);
 
-      for (const fileName of phase9Migrations) await database.query(await migrationSql(fileName));
+      for (const fileName of currentMigrations) await database.query(await migrationSql(fileName));
 
       const after = await database.query<{
         readonly baseCount: string;
