@@ -172,7 +172,9 @@ const parseLedgerAccount = (row: LedgerAccountRow): LedgerAccount => {
       'box_sales_clearing',
       'creator_pending_earnings',
       'platform_fee',
+      'provider_funding_clearing',
       'system_test_funding',
+      'user_funding_deficit',
       'user_wallet',
     ].includes(accountType)
   ) {
@@ -199,6 +201,9 @@ const parseLedgerTransaction = (row: LedgerTransactionRow): LedgerTransaction =>
     ![
       'box_open_allocation',
       'box_open_sale',
+      'provider_funding_credit',
+      'provider_funding_dispute',
+      'provider_funding_refund',
       'reversal',
       'test_credit_grant',
       'wallet_credit',
@@ -403,6 +408,55 @@ export const ensureOpeningLedgerAccount = async (
   return parseLedgerAccount(row);
 };
 
+export const ensureProviderFundingLedgerAccount = async (
+  transaction: TransactionExecutor,
+  input: {
+    readonly accountId: LedgerAccountId;
+    readonly accountType: 'provider_funding_clearing' | 'user_funding_deficit';
+    readonly currency: Currency;
+    readonly userId: UserId | null;
+  },
+): Promise<LedgerAccount> => {
+  assertTransactionExecutor(transaction);
+  await transaction.query(
+    `insert into app.ledger_accounts (
+       id, account_type, owner_user_id, owner_creator_id, currency
+     ) values ($1, $2, $3, null, $4)
+     on conflict do nothing`,
+    [input.accountId, input.accountType, input.userId, input.currency],
+  );
+  const result = await transaction.query<LedgerAccountRow>(
+    `select ${ledgerAccountColumns}
+       from app.ledger_accounts
+      where account_type = $1
+        and currency = $2
+        and owner_user_id is not distinct from $3::uuid`,
+    [input.accountType, input.currency, input.userId],
+  );
+  const row = result.rows[0];
+  if (row === undefined) {
+    throw new Error('The provider-funding ledger account could not be established.');
+  }
+  return parseLedgerAccount(row);
+};
+
+export const hasUnresolvedFundingDeficit = async (
+  transaction: TransactionExecutor,
+  userId: UserId,
+  currency: Currency,
+): Promise<boolean> => {
+  assertTransactionExecutor(transaction);
+  const result = await transaction.query<{ readonly restricted: unknown }>(
+    `select app.has_unresolved_funding_deficit($1, $2) as restricted`,
+    [userId, currency],
+  );
+  const restricted = result.rows[0]?.restricted;
+  if (typeof restricted !== 'boolean') {
+    throw new Error('The funding-deficit restriction could not be resolved.');
+  }
+  return restricted;
+};
+
 export const claimIdempotencyRecord = async (
   transaction: TransactionExecutor,
   input: {
@@ -551,6 +605,24 @@ export const applyWalletDelta = async (
       from app.apply_wallet_balance($1, $2)
   `,
     [walletId, deltaMinor.toString()],
+  );
+  return result.rows[0] === undefined ? undefined : parseWallet(result.rows[0]);
+};
+
+export const applyProviderAdjustmentWalletDelta = async (
+  transaction: TransactionExecutor,
+  input: {
+    readonly adjustmentId: string;
+    readonly deltaMinor: MoneyMinor;
+    readonly ledgerTransactionId: LedgerTransactionId;
+    readonly walletId: WalletId;
+  },
+): Promise<Wallet | undefined> => {
+  assertTransactionExecutor(transaction);
+  const result = await transaction.query<WalletRow>(
+    `select ${walletColumns}
+       from app.apply_provider_adjustment_wallet_balance($1, $2, $3, $4)`,
+    [input.walletId, input.ledgerTransactionId, input.adjustmentId, input.deltaMinor.toString()],
   );
   return result.rows[0] === undefined ? undefined : parseWallet(result.rows[0]);
 };

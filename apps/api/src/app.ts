@@ -18,6 +18,11 @@ import { createFairnessRouter } from './modules/fairness/fairness.route.js';
 import type { FairnessService } from './modules/fairness/fairness.service.js';
 import { createOpeningRouter } from './modules/openings/opening.route.js';
 import type { OpeningService } from './modules/openings/opening.service.js';
+import {
+  createPaymentRouter,
+  createStripeWebhookRouter,
+} from './modules/payments/payment.route.js';
+import type { PaymentService } from './modules/payments/payment.service.js';
 import { createWalletRouter } from './modules/wallet/wallet.route.js';
 import type { WalletService } from './modules/wallet/wallet.service.js';
 
@@ -34,8 +39,10 @@ export interface AppOptions {
   readonly fairnessService: FairnessService;
   readonly logger: Logger;
   readonly openingService?: OpeningService;
+  readonly paymentService?: PaymentService;
   readonly runtime: {
     readonly testCreditsEnabled: boolean;
+    readonly stripeFundingEnabled?: boolean;
   };
   readonly security: {
     readonly allowedOrigins: readonly string[];
@@ -46,6 +53,7 @@ export interface AppOptions {
     readonly fairnessMutationRateLimitMax: number;
     readonly fairnessMutationRateLimitWindowMs: number;
     readonly requestBodyLimitBytes: number;
+    readonly stripeWebhookBodyLimitBytes?: number;
     readonly walletMutationRateLimitMax: number;
     readonly walletMutationRateLimitWindowMs: number;
   };
@@ -59,6 +67,7 @@ export const createApp = ({
   fairnessService,
   logger,
   openingService,
+  paymentService,
   runtime,
   security,
   walletService,
@@ -70,6 +79,15 @@ export const createApp = ({
   app.use(requestLoggingMiddleware({ logger }));
   app.use(helmet());
   app.use(cors(createCorsOptions(security.allowedOrigins)));
+  if (runtime.stripeFundingEnabled && paymentService !== undefined) {
+    app.use(
+      '/v1/webhooks',
+      createStripeWebhookRouter({
+        bodyLimitBytes: security.stripeWebhookBodyLimitBytes ?? 262_144,
+        service: paymentService,
+      }),
+    );
+  }
   app.use(express.json({ limit: security.requestBodyLimitBytes }));
   app.get('/health', sendStatus('ok'));
   app.get('/ready', sendStatus('ready'));
@@ -101,6 +119,17 @@ export const createApp = ({
       service: catalogService,
     }),
   );
+  if (runtime.stripeFundingEnabled && paymentService !== undefined) {
+    app.use(
+      '/v1',
+      createPaymentRouter({
+        authenticate,
+        mutationRateLimitMax: security.walletMutationRateLimitMax,
+        mutationRateLimitWindowMs: security.walletMutationRateLimitWindowMs,
+        service: paymentService,
+      }),
+    );
+  }
   app.use(
     '/v1',
     createFairnessRouter({

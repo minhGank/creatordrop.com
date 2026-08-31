@@ -44,6 +44,10 @@ describe('environment configuration', () => {
       port: 3000,
       realtimeWorkerToken: 'synthetic-realtime-worker-token-00000001',
       requestBodyLimitBytes: 32_768,
+      stripeFundingEnabled: false,
+      stripeSecretKey: null,
+      stripeWebhookBodyLimitBytes: 262_144,
+      stripeWebhookSecret: null,
       testCreditsEnabled: false,
       walletMutationRateLimitMax: 20,
       walletMutationRateLimitWindowMs: 60_000,
@@ -102,6 +106,10 @@ describe('environment configuration', () => {
       port: 4100,
       realtimeWorkerToken: 'synthetic-realtime-worker-token-00000001',
       requestBodyLimitBytes: 4096,
+      stripeFundingEnabled: false,
+      stripeSecretKey: null,
+      stripeWebhookBodyLimitBytes: 262_144,
+      stripeWebhookSecret: null,
       testCreditsEnabled: true,
       walletMutationRateLimitMax: 11,
       walletMutationRateLimitWindowMs: 9000,
@@ -120,6 +128,52 @@ describe('environment configuration', () => {
       ).toBe(true);
     },
   );
+
+  it.each(['development', 'test'] as const)(
+    'enables Stripe test-mode funding only with an explicit %s runtime',
+    (nodeEnvironment) => {
+      expect(
+        parseApiEnvironment({
+          ...requiredApiEnvironment,
+          NODE_ENV: nodeEnvironment,
+          STRIPE_FUNDING_ENABLED: 'true',
+          STRIPE_SECRET_KEY: 'sk_test_synthetic_key_12345678',
+          STRIPE_WEBHOOK_SECRET: 'whsec_synthetic_secret_12345678',
+        }),
+      ).toMatchObject({
+        stripeFundingEnabled: true,
+        stripeSecretKey: 'sk_test_synthetic_key_12345678',
+        stripeWebhookSecret: 'whsec_synthetic_secret_12345678',
+      });
+    },
+  );
+
+  it.each([
+    { environment: {}, label: 'omitted' },
+    { environment: { NODE_ENV: '' }, label: 'empty' },
+    { environment: { NODE_ENV: 'production' }, label: 'production' },
+    { environment: { NODE_ENV: 'staging' }, label: 'unsupported' },
+  ])('rejects Stripe funding when NODE_ENV is $label', ({ environment }) => {
+    expect(() =>
+      parseApiEnvironment({
+        ...requiredApiEnvironment,
+        ...environment,
+        STRIPE_FUNDING_ENABLED: 'true',
+        STRIPE_SECRET_KEY: 'sk_test_synthetic_key_12345678',
+        STRIPE_WEBHOOK_SECRET: 'whsec_synthetic_secret_12345678',
+      }),
+    ).toThrow();
+  });
+
+  it('rejects enabled Stripe funding without both server-side secrets', () => {
+    expect(() =>
+      parseApiEnvironment({
+        ...requiredApiEnvironment,
+        NODE_ENV: 'test',
+        STRIPE_FUNDING_ENABLED: 'true',
+      }),
+    ).toThrow();
+  });
 
   it.each(['development', 'test'] as const)(
     'accepts the documented local realtime worker token only with explicit %s',

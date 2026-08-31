@@ -57,7 +57,9 @@ extensions. Phases 3–5 add users, creator tenancy, and versioned catalog confi
 6–7 add deterministic RNG and encrypted per-user seed lifecycle. Phase 8 adds
 multi-currency-capable wallets, immutable double-entry history, and reusable idempotency; only
 USD synthetic credits are enabled. Phase 9 adds atomic openings and transactional outbox rows.
-Phase 10 adds durable outbox delivery and Socket.io only. Real funding, payout, shipping, Redis
+Phase 10 adds durable outbox delivery and Socket.io only. Phase 11 adds Stripe test-mode USD
+funding, signed webhooks, provider compensation/deficits, and read-only reconciliation. Payout,
+shipping, Redis
 projections/leaderboards, and currency conversion remain absent.
 
 ## Database package
@@ -126,6 +128,10 @@ npm run dev:api
 ```
 
 Supabase Auth performs sign-up/sign-in. Send its access token as `Authorization: Bearer <token>` to `POST /v1/auth/session/exchange` with `{}` to create or retrieve the local user. The same token can use the creator/catalog/fairness APIs and `GET /v1/me/wallets`. With the explicit local `.env.example` opt-in `WALLET_TEST_CREDITS_ENABLED=true`, `POST /v1/me/wallets/USD/test-credits` accepts a canonical decimal-string `amountMinor` and `Idempotency-Key`. The flag defaults false and is rejected in production, where the route is absent and the service is disabled. Monetary amounts, inventory quantities, and weights are JSON decimal strings. The API needs only the public JWKS URL for verification; never add a Supabase service-role/secret key to browser code.
+
+For Stripe sandbox funding, set `STRIPE_FUNDING_ENABLED=true` only with explicit `NODE_ENV=development` or `test`, then supply a test-mode `STRIPE_SECRET_KEY` and the signing secret printed by `stripe listen --forward-to http://127.0.0.1:3000/v1/webhooks/stripe`. Never commit either value. Create a funding intent with `POST /v1/me/wallets/USD/funding-intents`, `{ "amountMinor": "2000" }`, and an `Idempotency-Key`; confirm the PaymentIntent using Stripe's client SDK/test payment methods. Only the signed webhook can credit the wallet. The configured limits are USD 500–50000 minor units. Local funding is closed-loop/nonwithdrawable, and no self-service refund route exists.
+
+Phase 11 integration tests mock only Stripe transport/event normalization; all intents, provider-event idempotency, ledger postings, wallet projections, refunds/disputes, deficits, rollback, and reconciliation assertions use real local PostgreSQL. `npm run test:integration` also applies the Phase 8 → current forward-upgrade harness. The application never stores raw webhook payloads or card data; only allowlisted identities/state and an exact raw-payload SHA-256 hash are retained.
 
 The bootstrap, creator, fairness, and wallet-mutation limiters are intentionally in memory and per API process. Wallet test-credit mutations use a pre-authentication IP gate followed by an actor-keyed budget. Before horizontally scaled production deployment, choose a shared limiter store and define the trusted reverse-proxy/IP policy. Redis is not introduced in Phase 8.
 

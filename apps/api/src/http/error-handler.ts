@@ -42,6 +42,7 @@ import {
   OpeningRetryableError,
 } from '../modules/openings/opening.errors.js';
 import {
+  AccountFundingRestrictedError,
   IdempotencyKeyReusedError,
   InsufficientBalanceError,
   LedgerTransactionNotFoundError,
@@ -51,6 +52,13 @@ import {
   WalletCurrencyNotEnabledError,
   WalletNotFoundError,
 } from '../modules/wallet/wallet.errors.js';
+import {
+  FundingAmountOutOfRangeError,
+  FundingEventRetryRequiredError,
+  FundingProviderUnavailableError,
+  FundingUnavailableError,
+  FundingWebhookSignatureError,
+} from '../modules/payments/payment.errors.js';
 import { ApiError } from './errors.js';
 
 const hasErrorType = (value: unknown, expectedType: string): boolean =>
@@ -243,6 +251,42 @@ const normalizeError = (error: unknown): ApiError => {
 
   if (error instanceof WalletNotFoundError) {
     return new ApiError(404, 'WALLET_NOT_FOUND', 'The wallet was not found.');
+  }
+
+  if (error instanceof AccountFundingRestrictedError) {
+    return new ApiError(
+      409,
+      'ACCOUNT_FUNDING_RESTRICTED',
+      'The account is restricted by an unresolved funding deficit.',
+    );
+  }
+
+  if (error instanceof FundingUnavailableError) {
+    return new ApiError(404, 'FUNDING_UNAVAILABLE', 'Stripe wallet funding is unavailable.');
+  }
+
+  if (error instanceof FundingAmountOutOfRangeError) {
+    return new ApiError(
+      422,
+      'FUNDING_AMOUNT_OUT_OF_RANGE',
+      'USD funding must be between 500 and 50000 minor units.',
+    );
+  }
+
+  if (error instanceof FundingWebhookSignatureError) {
+    return new ApiError(400, 'STRIPE_SIGNATURE_INVALID', 'The Stripe signature is invalid.');
+  }
+
+  if (error instanceof FundingProviderUnavailableError) {
+    return new ApiError(503, 'FUNDING_PROVIDER_UNAVAILABLE', 'Stripe is temporarily unavailable.');
+  }
+
+  if (error instanceof FundingEventRetryRequiredError) {
+    return new ApiError(
+      503,
+      'STRIPE_EVENT_RETRY_REQUIRED',
+      'The verified Stripe event must be retried.',
+    );
   }
 
   if (error instanceof WalletCurrencyNotEnabledError) {

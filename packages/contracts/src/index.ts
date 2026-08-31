@@ -272,6 +272,15 @@ export interface WalletTestCreditResponse {
   readonly wallet: WalletContract;
 }
 
+export interface WalletFundingIntentResponse {
+  readonly fundingIntent: {
+    readonly amountMinor: string;
+    readonly clientSecret: string;
+    readonly currency: 'USD';
+    readonly fundingIntentId: string;
+  };
+}
+
 export interface BoxOpeningResponse {
   readonly opening: {
     readonly boxId: string;

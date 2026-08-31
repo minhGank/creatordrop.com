@@ -84,7 +84,7 @@ documented below.
 
 Depends on: Phases 8 and 10; provider/custody/refund/chargeback decisions and legal approval.
 
-Implement funding intents, signed webhook ingestion, unique provider events, settled credits, refunds/chargebacks as compensating postings, and provider reconciliation. Use provider sandbox. Tests cover forged/reordered/duplicate events, amount/currency mismatch, redirect without webhook, webhook retry/crash, one ledger credit, refund/chargeback, and reconciliation drift.
+Completed: Stripe test-mode USD funding intents, exact-raw-body signed webhook ingestion, unique/retryable provider events, one-to-one settled wallet credits, provider-driven refund/dispute compensation, immutable unresolved funding deficits, account restrictions, and read-only provider reconciliation. Browser state is non-authoritative; PostgreSQL uniqueness/deferred checks enforce financial linkage and real-database tests cover forged/reordered/duplicate events, amount/currency and limit enforcement, redirect without webhook, rollback/retry, one ledger credit, refund/dispute shortfalls, reconciliation drift, and the Phase 8 → current upgrade path. Production/live charging, withdrawals, self-service refunds, payouts, conversion, and Phase 12+ remain absent.
 
 ## Phase 12 — Fulfillment state machine
 

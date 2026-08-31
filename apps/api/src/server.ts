@@ -20,6 +20,8 @@ import { createCreatorService } from './modules/creators/creator.service.js';
 import { createEnvironmentSeedEncryptionKeyProvider } from './modules/fairness/fairness.key-provider.js';
 import { createFairnessService } from './modules/fairness/fairness.service.js';
 import { createOpeningService } from './modules/openings/opening.service.js';
+import { createPaymentService } from './modules/payments/payment.service.js';
+import { createStripeFundingProvider } from './modules/payments/stripe.provider.js';
 import { createWalletService } from './modules/wallet/wallet.service.js';
 import { createRealtimeServer } from './platform/realtime/realtime.server.js';
 
@@ -68,6 +70,21 @@ const walletService = createWalletService({
   testCreditsEnabled,
 });
 const openingService = createOpeningService({ database, fairnessService, logger });
+const stripeProvider =
+  environment.stripeFundingEnabled &&
+  environment.stripeSecretKey !== null &&
+  environment.stripeWebhookSecret !== null
+    ? createStripeFundingProvider({
+        apiKey: environment.stripeSecretKey,
+        webhookSecret: environment.stripeWebhookSecret,
+      })
+    : null;
+const paymentService = createPaymentService({
+  database,
+  enabled: environment.stripeFundingEnabled,
+  logger,
+  provider: stripeProvider,
+});
 const app = createApp({
   authenticate,
   catalogService,
@@ -75,7 +92,8 @@ const app = createApp({
   fairnessService,
   logger,
   openingService,
-  runtime: { testCreditsEnabled },
+  paymentService,
+  runtime: { stripeFundingEnabled: environment.stripeFundingEnabled, testCreditsEnabled },
   security: {
     allowedOrigins: environment.corsAllowedOrigins,
     authRateLimitMax: environment.authRateLimitMax,
@@ -85,6 +103,7 @@ const app = createApp({
     fairnessMutationRateLimitMax: rngEnvironment.fairnessMutationRateLimitMax,
     fairnessMutationRateLimitWindowMs: rngEnvironment.fairnessMutationRateLimitWindowMs,
     requestBodyLimitBytes: environment.requestBodyLimitBytes,
+    stripeWebhookBodyLimitBytes: environment.stripeWebhookBodyLimitBytes,
     walletMutationRateLimitMax: environment.walletMutationRateLimitMax,
     walletMutationRateLimitWindowMs: environment.walletMutationRateLimitWindowMs,
   },

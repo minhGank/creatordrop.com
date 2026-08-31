@@ -20,6 +20,7 @@ import type { Logger } from '@creatordrop/observability';
 
 import type { CreatorId, UserId } from '../creators/creator.js';
 import {
+  AccountFundingRestrictedError,
   IdempotencyKeyReusedError,
   InsufficientBalanceError,
   LedgerTransactionNotFoundError,
@@ -30,16 +31,19 @@ import {
   WalletNotFoundError,
 } from './wallet.errors.js';
 import {
+  applyProviderAdjustmentWalletDelta,
   applyWalletDelta,
   claimIdempotencyRecord,
   completeBoxOpeningIdempotencyRecord,
   completeIdempotencyRecord,
   ensureSystemTestFundingAccount,
   ensureOpeningLedgerAccount,
+  ensureProviderFundingLedgerAccount,
   ensureUserWallet,
   finalizeLedgerTransaction,
   findLedgerTransactionWithEntries,
   findReversal,
+  hasUnresolvedFundingDeficit,
   insertLedgerEntries,
   insertLedgerTransaction,
   listWalletsForUser,
@@ -119,6 +123,66 @@ export interface BoxOpeningFinancialResult {
   readonly saleLedgerTransactionId: LedgerTransactionId;
   readonly wallet: Wallet;
 }
+
+export interface ProviderFundingCreditInput {
+  readonly actorUserId: UserId;
+  readonly amountMinor: PositiveMoneyMinor;
+  readonly currency: Currency;
+  readonly settlementId: string;
+}
+
+export interface ProviderFundingAdjustmentInput {
+  readonly actorUserId: UserId;
+  readonly adjustmentId: string;
+  readonly adjustmentType: 'dispute' | 'refund';
+  readonly amountMinor: PositiveMoneyMinor;
+  readonly currency: Currency;
+}
+
+export interface ProviderFundingAdjustmentResult {
+  readonly deficitLedgerAccountId: LedgerAccountId | null;
+  readonly deficitMinor: MoneyMinor;
+  readonly ledgerTransactionId: LedgerTransactionId;
+  readonly wallet: Wallet;
+  readonly walletRecoveredMinor: MoneyMinor;
+}
+
+export const assertWalletFundingAllowed = async (
+  transaction: TransactionExecutor,
+  userId: UserId,
+  currency: Currency,
+): Promise<void> => {
+  assertTransactionExecutor(transaction);
+  if (await hasUnresolvedFundingDeficit(transaction, userId, currency)) {
+    throw new AccountFundingRestrictedError();
+  }
+};
+
+export const ensureFundingWallet = async (
+  transaction: TransactionExecutor,
+  userId: UserId,
+  currency: Currency,
+  createId: CreateId = uuidv7,
+): Promise<Wallet> => {
+  assertTransactionExecutor(transaction);
+  return ensureUserWallet(transaction, {
+    currency,
+    ledgerAccountId: generatedId(createId, 'User ledger account ID', 'ledgerAccount'),
+    userId,
+    walletId: generatedId(createId, 'Wallet ID', 'wallet'),
+  });
+};
+
+export const lockFundingWallet = async (
+  transaction: TransactionExecutor,
+  userId: UserId,
+  currency: Currency,
+): Promise<Wallet> => {
+  assertTransactionExecutor(transaction);
+  const wallet = await lockWalletForUpdate(transaction, userId, currency);
+  if (wallet === undefined) throw new WalletNotFoundError();
+  return wallet;
+};
 
 interface WalletMovementInput {
   readonly actorUserId: UserId;
@@ -263,6 +327,12 @@ const postWalletMovement = async (
     input.kind === 'wallet_debit'
       ? toMoneyMinor(0n - BigInt(input.amountMinor))
       : toMoneyMinor(input.amountMinor);
+  if (
+    walletDelta < 0n &&
+    (await hasUnresolvedFundingDeficit(transaction, input.actorUserId, input.currency))
+  ) {
+    throw new AccountFundingRestrictedError();
+  }
   if (walletDelta < 0n && lockedWallet.availableBalanceMinor + walletDelta < 0n) {
     throw new InsufficientBalanceError();
   }
@@ -365,9 +435,179 @@ export const lockBoxOpeningWallet = async (
 ): Promise<Wallet> => {
   const wallet = await lockWalletForUpdate(transaction, userId, currency);
   if (wallet === undefined) throw new WalletNotFoundError();
+  if (await hasUnresolvedFundingDeficit(transaction, userId, currency)) {
+    throw new AccountFundingRestrictedError();
+  }
   if (requiredDebitMinor <= 0n) throw new WalletAmountOverflowError();
   if (wallet.availableBalanceMinor < requiredDebitMinor) throw new InsufficientBalanceError();
   return wallet;
+};
+
+export const postProviderFundingCredit = async (
+  transaction: TransactionExecutor,
+  input: ProviderFundingCreditInput,
+  createId: CreateId = uuidv7,
+): Promise<WalletMovementResult> => {
+  assertTransactionExecutor(transaction);
+  if (input.amountMinor <= 0n || input.amountMinor > maximumMoneyMinor) {
+    throw new WalletAmountOverflowError();
+  }
+  const wallet = await lockWalletForUpdate(transaction, input.actorUserId, input.currency);
+  if (wallet === undefined) throw new WalletNotFoundError();
+  const clearing = await ensureProviderFundingLedgerAccount(transaction, {
+    accountId: generatedId(createId, 'Provider clearing account ID', 'ledgerAccount'),
+    accountType: 'provider_funding_clearing',
+    currency: input.currency,
+    userId: null,
+  });
+  const ledgerTransactionId = generatedId(
+    createId,
+    'Provider funding ledger transaction ID',
+    'ledgerTransaction',
+  );
+  await insertLedgerTransaction(transaction, {
+    actorUserId: input.actorUserId,
+    businessReferenceId: input.settlementId,
+    businessReferenceType: 'funding_settlement',
+    currency: input.currency,
+    description: 'Settled Stripe wallet funding',
+    id: ledgerTransactionId,
+    idempotencyRecordId: null,
+    kind: 'provider_funding_credit',
+    reversesLedgerTransactionId: null,
+  });
+  await insertLedgerEntries(transaction, ledgerTransactionId, [
+    {
+      amountMinor: toMoneyMinor(input.amountMinor),
+      currency: input.currency,
+      id: generatedId(createId, 'Wallet funding ledger entry ID', 'ledgerEntry'),
+      ledgerAccountId: wallet.ledgerAccountId,
+      sequence: 0,
+    },
+    {
+      amountMinor: toMoneyMinor(0n - input.amountMinor),
+      currency: input.currency,
+      id: generatedId(createId, 'Provider clearing ledger entry ID', 'ledgerEntry'),
+      ledgerAccountId: clearing.id,
+      sequence: 1,
+    },
+  ]);
+  const updatedWallet = await applyWalletDelta(transaction, wallet.id, input.amountMinor);
+  if (updatedWallet === undefined) throw new WalletAmountOverflowError();
+  await finalizeLedgerTransaction(transaction, ledgerTransactionId);
+  return {
+    ledgerTransaction: {
+      actorUserId: input.actorUserId,
+      businessReferenceId: input.settlementId,
+      businessReferenceType: 'funding_settlement',
+      currency: input.currency,
+      id: ledgerTransactionId,
+      idempotencyRecordId: null,
+      kind: 'provider_funding_credit',
+      reversesLedgerTransactionId: null,
+      status: 'posted',
+    },
+    wallet: updatedWallet,
+  };
+};
+
+export const postProviderFundingAdjustment = async (
+  transaction: TransactionExecutor,
+  input: ProviderFundingAdjustmentInput,
+  createId: CreateId = uuidv7,
+): Promise<ProviderFundingAdjustmentResult> => {
+  assertTransactionExecutor(transaction);
+  if (input.amountMinor <= 0n || input.amountMinor > maximumMoneyMinor) {
+    throw new WalletAmountOverflowError();
+  }
+  const wallet = await lockWalletForUpdate(transaction, input.actorUserId, input.currency);
+  if (wallet === undefined) throw new WalletNotFoundError();
+  const walletRecoveredMinor = toMoneyMinor(
+    wallet.availableBalanceMinor < input.amountMinor
+      ? wallet.availableBalanceMinor
+      : input.amountMinor,
+  );
+  const deficitMinor = toMoneyMinor(input.amountMinor - walletRecoveredMinor);
+  const clearing = await ensureProviderFundingLedgerAccount(transaction, {
+    accountId: generatedId(createId, 'Provider clearing account ID', 'ledgerAccount'),
+    accountType: 'provider_funding_clearing',
+    currency: input.currency,
+    userId: null,
+  });
+  const deficitAccount =
+    deficitMinor === 0n
+      ? null
+      : await ensureProviderFundingLedgerAccount(transaction, {
+          accountId: generatedId(createId, 'Funding deficit account ID', 'ledgerAccount'),
+          accountType: 'user_funding_deficit',
+          currency: input.currency,
+          userId: input.actorUserId,
+        });
+  const ledgerTransactionId = generatedId(
+    createId,
+    'Provider adjustment ledger transaction ID',
+    'ledgerTransaction',
+  );
+  const entries: LedgerEntry[] = [];
+  if (walletRecoveredMinor > 0n) {
+    entries.push({
+      amountMinor: toMoneyMinor(0n - walletRecoveredMinor),
+      currency: input.currency,
+      id: generatedId(createId, 'Recovered wallet ledger entry ID', 'ledgerEntry'),
+      ledgerAccountId: wallet.ledgerAccountId,
+      sequence: entries.length,
+    });
+  }
+  if (deficitAccount !== null) {
+    entries.push({
+      amountMinor: toMoneyMinor(0n - deficitMinor),
+      currency: input.currency,
+      id: generatedId(createId, 'Funding deficit ledger entry ID', 'ledgerEntry'),
+      ledgerAccountId: deficitAccount.id,
+      sequence: entries.length,
+    });
+  }
+  entries.push({
+    amountMinor: toMoneyMinor(input.amountMinor),
+    currency: input.currency,
+    id: generatedId(createId, 'Provider adjustment clearing entry ID', 'ledgerEntry'),
+    ledgerAccountId: clearing.id,
+    sequence: entries.length,
+  });
+  await insertLedgerTransaction(transaction, {
+    actorUserId: input.actorUserId,
+    businessReferenceId: input.adjustmentId,
+    businessReferenceType: 'funding_adjustment',
+    currency: input.currency,
+    description:
+      input.adjustmentType === 'refund'
+        ? 'Stripe funding refund compensation'
+        : 'Stripe funding dispute compensation',
+    id: ledgerTransactionId,
+    idempotencyRecordId: null,
+    kind:
+      input.adjustmentType === 'refund' ? 'provider_funding_refund' : 'provider_funding_dispute',
+    reversesLedgerTransactionId: null,
+  });
+  await insertLedgerEntries(transaction, ledgerTransactionId, entries);
+  const updatedWallet =
+    walletRecoveredMinor === 0n
+      ? wallet
+      : await applyProviderAdjustmentWalletDelta(transaction, {
+          adjustmentId: input.adjustmentId,
+          deltaMinor: toMoneyMinor(0n - walletRecoveredMinor),
+          ledgerTransactionId,
+          walletId: wallet.id,
+        });
+  if (updatedWallet === undefined) throw new InsufficientBalanceError();
+  await finalizeLedgerTransaction(transaction, ledgerTransactionId);
+  return {
+    deficitLedgerAccountId: deficitAccount?.id ?? null,
+    deficitMinor,
+    ledgerTransactionId,
+    wallet: updatedWallet,
+    walletRecoveredMinor,
+  };
 };
 
 export const postBoxOpeningFinancials = async (
@@ -512,7 +752,10 @@ export const reverseLedgerTransaction = async (
   }
   if (
     original.transaction.kind === 'box_open_sale' ||
-    original.transaction.kind === 'box_open_allocation'
+    original.transaction.kind === 'box_open_allocation' ||
+    original.transaction.kind === 'provider_funding_credit' ||
+    original.transaction.kind === 'provider_funding_refund' ||
+    original.transaction.kind === 'provider_funding_dispute'
   ) {
     throw new LedgerTransactionNotReversibleError();
   }

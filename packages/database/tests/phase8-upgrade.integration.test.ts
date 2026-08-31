@@ -23,11 +23,16 @@ const phase8Migrations = [
   '20260823230000_phase7_rng_lifecycle_user_lock.sql',
   '20260824154215_phase8_wallet_ledger_idempotency.sql',
 ] as const;
-const currentMigrations = [
+const phase9And10Migrations = [
   '20260824180000_phase9_atomic_box_opening.sql',
   '20260826134113_phase9_opening_high_remediation.sql',
   '20260830024628_phase10_outbox_realtime_delivery.sql',
 ] as const;
+const phase11Migrations = [
+  '20260830120000_phase11_stripe_wallet_funding.sql',
+  '20260831120000_phase11_financial_integrity_remediation.sql',
+] as const;
+const currentMigrations = [...phase9And10Migrations, ...phase11Migrations] as const;
 
 const migrationSql = (fileName: string): Promise<string> =>
   readFile(new URL(`../../../infra/supabase/migrations/${fileName}`, import.meta.url), 'utf8');
@@ -335,6 +340,54 @@ describe('Phase 8 to current forward migration', { concurrent: false }, () => {
           [identifiers.version],
         ),
       ).rejects.toThrow(/Published catalog versions are immutable/iu);
+    } finally {
+      await database.close();
+      await admin.query(`drop database "${name}"`);
+      databasesToDrop.delete(name);
+    }
+  });
+
+  it('applies the remediated Phase 11 schema over a Phase 10 database', async () => {
+    const name = `creatordrop_phase10_upgrade_${randomUUID().replaceAll('-', '')}`;
+    if (!/^[a-z0-9_]+$/u.test(name)) throw new Error('Generated an unsafe database name.');
+    await admin.query(`create database "${name}"`);
+    databasesToDrop.add(name);
+    const database = createPool(databaseUrl(name), name);
+    try {
+      for (const fileName of [...phase8Migrations, ...phase9And10Migrations]) {
+        await database.query(await migrationSql(fileName));
+      }
+      const before = await database.query<{ readonly outbox: string | null }>(
+        `select to_regclass('app.event_outbox')::text as outbox`,
+      );
+      expect(before.rows).toEqual([{ outbox: 'app.event_outbox' }]);
+
+      for (const fileName of phase11Migrations) await database.query(await migrationSql(fileName));
+
+      const after = await database.query<{
+        readonly fundingIntents: string | null;
+        readonly oldWalletFunction: string | null;
+        readonly outbox: string | null;
+        readonly scopedWalletFunction: string | null;
+      }>(
+        `select to_regclass('app.event_outbox')::text as outbox,
+                to_regclass('app.funding_intents')::text as "fundingIntents",
+                to_regprocedure(
+                  'app.apply_provider_adjustment_wallet_balance(uuid,bigint)'
+                )::text as "oldWalletFunction",
+                to_regprocedure(
+                  'app.apply_provider_adjustment_wallet_balance(uuid,uuid,uuid,bigint)'
+                )::text as "scopedWalletFunction"`,
+      );
+      expect(after.rows).toEqual([
+        {
+          fundingIntents: 'app.funding_intents',
+          oldWalletFunction: null,
+          outbox: 'app.event_outbox',
+          scopedWalletFunction:
+            'app.apply_provider_adjustment_wallet_balance(uuid,uuid,uuid,bigint)',
+        },
+      ]);
     } finally {
       await database.close();
       await admin.query(`drop database "${name}"`);

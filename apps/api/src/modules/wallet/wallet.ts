@@ -21,6 +21,9 @@ export type WalletId = string & { readonly [walletIdBrand]: 'WalletId' };
 export type LedgerTransactionKind =
   | 'box_open_allocation'
   | 'box_open_sale'
+  | 'provider_funding_credit'
+  | 'provider_funding_dispute'
+  | 'provider_funding_refund'
   | 'reversal'
   | 'test_credit_grant'
   | 'wallet_credit'
@@ -30,7 +33,9 @@ export type LedgerAccountType =
   | 'box_sales_clearing'
   | 'creator_pending_earnings'
   | 'platform_fee'
+  | 'provider_funding_clearing'
   | 'system_test_funding'
+  | 'user_funding_deficit'
   | 'user_wallet';
 
 export interface Wallet {

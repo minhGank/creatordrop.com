@@ -155,11 +155,11 @@ Every opening has exactly one immutable awarded win and one immutable Phase 9 ob
 
 ### `ledger_accounts`
 
-`id`, `account_type`, nullable `owner_user_id`/`owner_creator_id`, `currency char(3)`, status, timestamps. In addition to Phase 8 `user_wallet` and `system_test_funding`, Phase 9 adds per-currency `box_sales_clearing` and `platform_fee` accounts plus one `creator_pending_earnings` account per creator/currency. Owner-shape checks and partial unique indexes enforce those scopes. Accounts are immutable.
+`id`, `account_type`, nullable `owner_user_id`/`owner_creator_id`, `currency char(3)`, status, timestamps. In addition to Phase 8 `user_wallet` and `system_test_funding`, Phase 9 adds per-currency `box_sales_clearing` and `platform_fee` accounts plus one `creator_pending_earnings` account per creator/currency. Phase 11 adds one `provider_funding_clearing` per currency and one `user_funding_deficit` per user/currency. Owner-shape checks and partial unique indexes enforce those scopes. Accounts are immutable.
 
 ### `ledger_transactions`
 
-Immutable header: `id`, `kind` (`test_credit_grant`, `wallet_credit`, `wallet_debit`, `reversal`, `box_open_sale`, `box_open_allocation`), actor/currency/business reference, optional unique idempotency/reversal references, status, description, and timestamps.
+Immutable header: `id`, `kind` (`test_credit_grant`, `wallet_credit`, `wallet_debit`, `reversal`, `box_open_sale`, `box_open_allocation`, `provider_funding_credit`, `provider_funding_refund`, `provider_funding_dispute`), actor/currency/business reference, optional unique idempotency/reversal references, status, description, and timestamps.
 
 Unique `(business_reference_type, business_reference_id)` is the final duplicate-posting defense. A header exists as `pending` only inside its caller-owned transaction, transitions once to `posted`, and cannot commit pending. Posted rows are never updated/deleted. Deferred checks enforce both directions of the Phase 9 relationship: every opening references exactly one sale and allocation posting, and every `box_open_sale`/`box_open_allocation` posting references exactly one matching opening. Those two opening legs cannot be reversed independently until a future atomic refund/compensation design exists. Other permitted reversals are new unique transactions linked to their original, and PostgreSQL verifies that their account/amount set is the exact opposite.
 
@@ -183,7 +183,21 @@ allocation: box-sales clearing      -1000
 
 ### Payment tables
 
-`payment_intents` tracks user, provider, provider intent ID, amount/currency, state, and timestamps; unique provider intent ID and unique client idempotency reference. `payment_events` stores unique `(provider, provider_event_id)`, signature verification result, payload hash/encrypted raw reference, processing status, attempts, and timestamps. A settled provider event creates exactly one ledger transaction. Equivalent tables/state machines apply to `payouts` before creator payouts launch.
+### `funding_intents`
+
+Provider-independent local commands: internal/public IDs, user/wallet, provider, unique Stripe PaymentIntent ID, actor-scoped client idempotency key/fingerprint, requested integer amount/currency, monotonic status, last provider-event time, and timestamps. Phase 11 enforces USD and 500–50000 minor units. The wallet/user/currency composite scope is checked at insert; provider identity may bind once and history cannot be rewritten. `reconciliation_required` may intentionally retain a null binding when a verified mismatching event arrived before binding; its immutable provider-event row retains the external object identity without treating it as a valid payment binding.
+
+### `provider_events`
+
+One row per unique `(provider, provider_event_id)`: exact event/object identity, linked funding intent when known, SHA-256 of the verified raw payload, provider/receipt/signature timestamps, processing/retryable/processed state, bounded attempt history, and allowlisted result code. Raw Stripe payload/card data is not retained. Signature verification occurs before insert. Retryable reordered events may return to processing with exactly one attempt increment; completed event identity/content is immutable.
+
+### `funding_settlements`, `funding_adjustments`, and `funding_deficits`
+
+`funding_settlements` is an immutable one-to-one link from local intent and Stripe PaymentIntent to the exact processed success event and one balanced `provider_funding_credit` ledger transaction. Deferred checks enforce the relationship in both directions and validate actor, amount, currency, business reference, wallet entry, and provider-clearing entry.
+
+`funding_adjustments` records one unique Stripe refund/dispute object and its controlled `provider_funding_refund`/`provider_funding_dispute` posting. The original credit is never reversed or edited. The posting credits provider clearing and recovers at most the currently spendable wallet balance through a function scoped to the exact pending provider-adjustment header, business reference, wallet entry, actor, and currency; an ordinary debit cannot invoke that exemption. Any remainder posts to the user's distinct deficit ledger account. Cumulative adjustments cannot exceed the settlement, and aggregate state is derived from their immutable total independently of delivery order. Provider funding postings cannot use the generic reversal primitive.
+
+`funding_deficits` immutably records the unrecovered user/currency shortfall and originating adjustment. Bidirectional deferred checks require exactly one matching deficit when the adjustment has an unrecovered amount and none otherwise; user, currency, amount, account, ledger entry, settlement, and intent lineage must all match. Phase 11 creates only `unresolved` rows; resolution/collections commands remain deferred and require new auditable history. Wallet balance remains nonnegative, and the payment lock order `wallet → funding_intent → provider_event → ledger/history inserts` serializes provider adjustments against spending without conflicting with opening's wallet-first order. An unresolved deficit blocks new funding plus ordinary debits/openings.
 
 ## Reliable events and auditing
 

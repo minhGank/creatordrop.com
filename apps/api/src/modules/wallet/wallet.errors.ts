@@ -53,3 +53,10 @@ export class LedgerTransactionNotReversibleError extends Error {
     this.name = 'LedgerTransactionNotReversibleError';
   }
 }
+
+export class AccountFundingRestrictedError extends Error {
+  constructor() {
+    super('The account is restricted by an unresolved funding deficit.');
+    this.name = 'AccountFundingRestrictedError';
+  }
+}

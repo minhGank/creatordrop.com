@@ -26,7 +26,7 @@ PostgreSQL owns users, configuration versions, openings, balances, ledger entrie
 
 All monetary amounts are signed 64-bit integer minor units plus an ISO 4217 currency code. No floating point is permitted. A wallet is unique by owner and currency. The ledger uses balanced postings, and the wallet balance is an atomically maintained projection guarded by a non-negative constraint.
 
-Phase 8 makes the schema currency-independent but enables only `USD` for synthetic MVP credit grants. Currency is explicit on wallets, ledger accounts, transaction headers, and entries; a posting cannot mix currencies, and no conversion exists. Adding an enabled currency later requires policy/configuration and matching controlled accounts, not a wallet/ledger redesign.
+Phase 8 makes the schema currency-independent. Phase 11 enables only `USD` for Stripe test-mode funding and retains development/test-only synthetic grants. Currency is explicit on funding intents, wallets, ledger accounts, transaction headers, and entries; a posting cannot mix currencies, and no conversion exists. Adding an enabled currency later requires policy/configuration and matching controlled accounts, not a wallet/ledger redesign.
 
 ## System context
 
@@ -160,7 +160,11 @@ must never make a financial or eligibility decision.
 
 ## Payment and fulfillment architecture
 
-Wallet funding and creator payouts are asynchronous state machines driven by signed, idempotent provider webhooks. Browser redirects are informational only. A provider event ID is unique, raw payload hashes are retained, signatures are checked before processing, and ledger credit occurs only at the designated settled state. Refunds and chargebacks are new compensating ledger transactions—never mutation or deletion of old entries.
+Wallet funding is an asynchronous state machine driven by signed, idempotent Stripe webhooks. The API creates the local intent before the test-mode Stripe PaymentIntent; Stripe network work stays outside PostgreSQL transactions. Browser redirects and client state are informational only. The webhook verifies the signature over exact raw bytes before any event is trusted, stores a unique provider event ID plus SHA-256 payload hash, validates the bound local intent/user/wallet/amount/currency, and credits the wallet only from `payment_intent.succeeded`.
+
+The settlement transaction discovers the intent without locking, then follows the authoritative payment order `wallet → funding_intent → provider_event → ledger/history inserts`; it revalidates the intent after locks and atomically inserts a balanced provider-clearing-to-wallet posting plus its immutable settlement linkage. Duplicate events and different events for one PaymentIntent converge on the unique settlement; a distinct success delivered after refund/dispute is retained as an audited no-op and cannot regress state or credit again. Reordered adjustments remain retryable until the original settlement exists, then derive monotonic reversal state from cumulative immutable adjustment history rather than provider timestamp order. Provider refunds and disputes create new compensating postings—never mutation/deletion of funding or opening history. Recoverable value reduces the nonnegative wallet through a posting-scoped database primitive; any shortfall posts to a distinct user funding-deficit account and creates exactly one immutable unresolved deficit with matching user/currency/amount lineage. The same wallet lock serializes adjustment and spending, while unresolved deficits block further funding and ordinary negative wallet movements. There is no withdrawal or self-service refund path.
+
+Stripe remains authoritative only for external payment state; PostgreSQL ledger history remains authoritative internally. Reconciliation retrieves the provider object outside a database transaction, reports amount/currency/linkage/state drift, and never repairs financial history implicitly. Phase 11 is test-mode only and fails closed unless the raw runtime is explicitly development/test with a test secret and webhook secret.
 
 Box proceeds initially credit a platform escrow/payable ledger account. Revenue share, fees, taxes, payout availability, reserves, and chargeback allocation must be decided before real-money launch. Creator earnings are not calculated from cached leaderboards.
 

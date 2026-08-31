@@ -224,14 +224,20 @@ Phase 8 implements only:
 | ------ | --------------------------------------- | ------------------ | ----------------------------------------------------------- |
 | `GET`  | `/v1/me/wallets`                        | active user        | Actor-owned settled wallet projections, ordered by currency |
 | `POST` | `/v1/me/wallets/:currency/test-credits` | user + idempotency | Synthetic credit grant; route absent in production          |
+| `POST` | `/v1/me/wallets/USD/funding-intents`    | user + idempotency | Create local + Stripe test-mode funding intent              |
+| `POST` | `/v1/webhooks/stripe`                   | Stripe signature   | Exact-raw-body authoritative provider event ingestion       |
 
 `GET` returns `{ "wallets": [{ "id", "currency", "balanceMinor", "revision" }] }`. Decimal strings preserve bigint precision. It never creates wallets and never exposes the linked ledger account, system accounts, entries, or idempotency metadata.
 
 The test-credit command accepts exactly `{ "amountMinor": "2000" }` plus an 8–128 character `Idempotency-Key`. Only `USD` is enabled in Phase 8. The deterministic fingerprint covers its version, operation, actor, currency, and canonical amount. Same-key/same-request replay returns the original `201` body; material reuse returns `409 IDEMPOTENCY_KEY_REUSED`. `WALLET_CURRENCY_NOT_ENABLED`, `WALLET_AMOUNT_OVERFLOW`, and validation errors fail without a committed claim or movement. Both route registration and the service require the explicit `WALLET_TEST_CREDITS_ENABLED=true` opt-in, and configuration rejects that opt-in in production.
 
-Future transaction receipts, provider funding intents, and webhooks are not implemented. The client cannot credit another user, credit a wallet directly, or mark any funding settled. Ledger access remains internal in Phase 8.
+Funding-intent input is exactly `{ "amountMinor": "2000" }`; 500 and 50000 are the inclusive USD limits. The response is `{ "fundingIntent": { "fundingIntentId", "amountMinor", "currency": "USD", "clientSecret" } }`. User/wallet/provider/settlement identity comes from the actor and server. No provider object, ledger account, event, payment-method, or secret-key field is exposed. The same actor/idempotency key replays one local/Stripe intent; conflicting input returns `IDEMPOTENCY_KEY_REUSED`.
 
-Refunds, withdrawals, creator payouts, real funding, promo credit, and administrator adjustments are omitted until policies are approved. They must be explicit commands with independent permissions/idempotency, not generic “set balance” endpoints.
+`POST /v1/webhooks/stripe` is mounted before JSON parsing and accepts `application/json` bytes plus `Stripe-Signature`. Invalid signatures return `STRIPE_SIGNATURE_INVALID` and create no trusted database state. Browser redirect/client success cannot credit a wallet. A verified, matched `payment_intent.succeeded` event atomically records the provider event, balanced wallet credit, and settlement. Duplicate/different events for the same payment cannot create another settlement; a distinct success after refund/dispute is retained as a harmless audited duplicate without changing the terminal state. A verified refund/dispute delivered before settlement returns `STRIPE_EVENT_RETRY_REQUIRED`. Amount/currency/linkage mismatches are retained for reconciliation without credit even when the local intent was not successfully bound; the provider event preserves the external object identity while the local intent remains explicitly reconciliation-required.
+
+Funding is absent unless `STRIPE_FUNDING_ENABLED=true` with an explicit development/test runtime, a Stripe test API key, and webhook secret. It is unavailable in production. `ACCOUNT_FUNDING_RESTRICTED` blocks funding and spending while an unresolved provider shortfall exists. Reconciliation is an internal read-only service operation, not a public repair endpoint.
+
+There is no self-service refund, wallet withdrawal, creator payout, production charge, currency conversion, generic balance setter, or public adjustment endpoint. Stripe-driven refunds/disputes preserve original funding/opening history and use unique compensating postings. Any unrecoverable amount becomes a separate immutable unresolved deficit; spendable wallet balance never becomes negative.
 
 ## Creator dashboard
 
