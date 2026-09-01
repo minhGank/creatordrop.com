@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  assertCryptographicKeySeparation,
   parseApiEnvironment,
   parseDatabaseEnvironment,
+  parseFulfillmentEnvironment,
   parseMigrationEnvironment,
   parseRngEnvironment,
   parseWorkerEnvironment,
@@ -252,6 +254,113 @@ describe('environment configuration', () => {
     expect(() =>
       parseWorkerEnvironment({ ...requiredWorkerEnvironment, ...environment }),
     ).toThrow();
+  });
+});
+
+describe('fulfillment encryption environment configuration', () => {
+  const valid = {
+    DIGITAL_DELIVERY_MASTER_KEY: '42'.repeat(32),
+    DIGITAL_DELIVERY_MASTER_KEY_VERSION: 'digital-test-v1',
+    FULFILLMENT_ACTOR_BINDING_KEY: '45'.repeat(32),
+    FULFILLMENT_ACTOR_BINDING_KEY_VERSION: 'actor-test-v1',
+    FULFILLMENT_ADDRESS_MASTER_KEY: '41'.repeat(32),
+    FULFILLMENT_ADDRESS_MASTER_KEY_VERSION: 'address-test-v1',
+    NODE_ENV: 'test',
+  } as const;
+
+  it('parses separate active and historical domains without inventing retention', () => {
+    expect(
+      parseFulfillmentEnvironment({
+        ...valid,
+        DIGITAL_DELIVERY_HISTORICAL_MASTER_KEYS: JSON.stringify([
+          { key: '44'.repeat(32), version: 'digital-test-v0' },
+        ]),
+        FULFILLMENT_ADDRESS_HISTORICAL_MASTER_KEYS: JSON.stringify([
+          { key: '43'.repeat(32), version: 'address-test-v0' },
+        ]),
+      }),
+    ).toEqual({
+      actorBinding: {
+        keyHex: '45'.repeat(32),
+        version: 'actor-test-v1',
+      },
+      address: {
+        historicalMasterKeys: { 'address-test-v0': '43'.repeat(32) },
+        masterKeyHex: '41'.repeat(32),
+        masterKeyVersion: 'address-test-v1',
+      },
+      digitalSecret: {
+        historicalMasterKeys: { 'digital-test-v0': '44'.repeat(32) },
+        masterKeyHex: '42'.repeat(32),
+        masterKeyVersion: 'digital-test-v1',
+      },
+      retentionMs: null,
+    });
+    expect(
+      parseFulfillmentEnvironment({ ...valid, FULFILLMENT_DATA_RETENTION_MS: '60000' }).retentionMs,
+    ).toBe(60_000);
+  });
+
+  it('rejects missing, malformed, reused, and cross-domain-equivalent key material', () => {
+    for (const environment of [
+      {},
+      { ...valid, DIGITAL_DELIVERY_MASTER_KEY: '41'.repeat(32) },
+      {
+        ...valid,
+        FULFILLMENT_ADDRESS_HISTORICAL_MASTER_KEYS: JSON.stringify([
+          { key: valid.FULFILLMENT_ADDRESS_MASTER_KEY, version: 'address-test-v0' },
+        ]),
+      },
+      { ...valid, DIGITAL_DELIVERY_MASTER_KEY: 'GG'.repeat(32) },
+      { ...valid, FULFILLMENT_DATA_RETENTION_MS: '59999' },
+    ]) {
+      expect(() => parseFulfillmentEnvironment(environment)).toThrow();
+    }
+  });
+
+  it('allows public local fixtures only in an explicit development or test runtime', () => {
+    const local = {
+      DIGITAL_DELIVERY_MASTER_KEY: '22'.repeat(32),
+      DIGITAL_DELIVERY_MASTER_KEY_VERSION: 'local-digital-delivery-v1',
+      FULFILLMENT_ACTOR_BINDING_KEY: '33'.repeat(32),
+      FULFILLMENT_ACTOR_BINDING_KEY_VERSION: 'local-fulfillment-actor-v1',
+      FULFILLMENT_ADDRESS_MASTER_KEY: '11'.repeat(32),
+      FULFILLMENT_ADDRESS_MASTER_KEY_VERSION: 'local-fulfillment-address-v1',
+    } as const;
+    expect(() => parseFulfillmentEnvironment(local)).toThrow();
+    expect(() => parseFulfillmentEnvironment({ ...local, NODE_ENV: 'production' })).toThrow();
+    expect(() =>
+      parseFulfillmentEnvironment({
+        ...local,
+        FULFILLMENT_ADDRESS_MASTER_KEY: '00'.repeat(32),
+        FULFILLMENT_ADDRESS_MASTER_KEY_VERSION: 'production-address-v1',
+        NODE_ENV: 'production',
+      }),
+    ).toThrow();
+    for (const nodeEnvironment of ['development', 'test'] as const) {
+      expect(parseFulfillmentEnvironment({ ...local, NODE_ENV: nodeEnvironment })).toBeDefined();
+    }
+  });
+
+  it('rejects key-material overlap across active and historical RNG and fulfillment domains', () => {
+    const fulfillment = parseFulfillmentEnvironment(valid);
+    const rng = parseRngEnvironment({
+      RNG_MASTER_KEY: '01'.repeat(32),
+      RNG_MASTER_KEY_VERSION: 'rng-test-v1',
+      RNG_HISTORICAL_MASTER_KEYS: JSON.stringify([
+        { key: '02'.repeat(32), version: 'rng-test-v0' },
+      ]),
+    });
+    expect(() => assertCryptographicKeySeparation({ fulfillment, rng })).not.toThrow();
+    for (const collision of [
+      { ...rng, masterKeyHex: fulfillment.address.masterKeyHex },
+      {
+        ...rng,
+        historicalMasterKeys: { 'rng-test-v0': fulfillment.digitalSecret.masterKeyHex },
+      },
+    ]) {
+      expect(() => assertCryptographicKeySeparation({ fulfillment, rng: collision })).toThrow();
+    }
   });
 });
 

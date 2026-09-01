@@ -7,7 +7,9 @@ import { createApp } from './app.js';
 import {
   getApiEnvironment,
   getDatabaseEnvironment,
+  getFulfillmentEnvironment,
   getRngEnvironment,
+  validateCryptographicKeySeparation,
 } from './config/environment.js';
 import {
   createAccessTokenAuthenticator,
@@ -19,6 +21,9 @@ import { createUserBootstrapService } from './modules/users/bootstrap-user.servi
 import { createCreatorService } from './modules/creators/creator.service.js';
 import { createEnvironmentSeedEncryptionKeyProvider } from './modules/fairness/fairness.key-provider.js';
 import { createFairnessService } from './modules/fairness/fairness.service.js';
+import { createEnvironmentFulfillmentActorBindingProvider } from './modules/fulfillment/fulfillment.actor-binding.js';
+import { createEnvironmentFulfillmentKeyProvider } from './modules/fulfillment/fulfillment.key-provider.js';
+import { createFulfillmentService } from './modules/fulfillment/fulfillment.service.js';
 import { createOpeningService } from './modules/openings/opening.service.js';
 import { createPaymentService } from './modules/payments/payment.service.js';
 import { createStripeFundingProvider } from './modules/payments/stripe.provider.js';
@@ -28,6 +33,8 @@ import { createRealtimeServer } from './platform/realtime/realtime.server.js';
 const environment = getApiEnvironment();
 const databaseEnvironment = getDatabaseEnvironment();
 const rngEnvironment = getRngEnvironment();
+const fulfillmentEnvironment = getFulfillmentEnvironment();
+validateCryptographicKeySeparation(rngEnvironment, fulfillmentEnvironment);
 const logger = createConsoleLogger({ service: 'api' });
 const database = createDatabasePool({
   ...databaseEnvironment,
@@ -70,6 +77,27 @@ const walletService = createWalletService({
   testCreditsEnabled,
 });
 const openingService = createOpeningService({ database, fairnessService, logger });
+const fulfillmentService = createFulfillmentService({
+  actorBindingProvider: createEnvironmentFulfillmentActorBindingProvider({
+    keyHex: fulfillmentEnvironment.actorBinding.keyHex,
+    version: fulfillmentEnvironment.actorBinding.version,
+  }),
+  database,
+  keyProvider: createEnvironmentFulfillmentKeyProvider({
+    address: {
+      historicalKeys: fulfillmentEnvironment.address.historicalMasterKeys,
+      keyHex: fulfillmentEnvironment.address.masterKeyHex,
+      version: fulfillmentEnvironment.address.masterKeyVersion,
+    },
+    digitalSecret: {
+      historicalKeys: fulfillmentEnvironment.digitalSecret.historicalMasterKeys,
+      keyHex: fulfillmentEnvironment.digitalSecret.masterKeyHex,
+      version: fulfillmentEnvironment.digitalSecret.masterKeyVersion,
+    },
+  }),
+  logger,
+  retentionMs: fulfillmentEnvironment.retentionMs,
+});
 const stripeProvider =
   environment.stripeFundingEnabled &&
   environment.stripeSecretKey !== null &&
@@ -90,6 +118,7 @@ const app = createApp({
   catalogService,
   creatorService,
   fairnessService,
+  fulfillmentService,
   logger,
   openingService,
   paymentService,

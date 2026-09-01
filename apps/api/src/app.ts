@@ -16,6 +16,8 @@ import { createCreatorRouter } from './modules/creators/creator.route.js';
 import type { CreatorService } from './modules/creators/creator.service.js';
 import { createFairnessRouter } from './modules/fairness/fairness.route.js';
 import type { FairnessService } from './modules/fairness/fairness.service.js';
+import { createFulfillmentRouter } from './modules/fulfillment/fulfillment.route.js';
+import type { FulfillmentService } from './modules/fulfillment/fulfillment.service.js';
 import { createOpeningRouter } from './modules/openings/opening.route.js';
 import type { OpeningService } from './modules/openings/opening.service.js';
 import {
@@ -37,6 +39,7 @@ export interface AppOptions {
   readonly catalogService: CatalogService;
   readonly creatorService: CreatorService;
   readonly fairnessService: FairnessService;
+  readonly fulfillmentService?: FulfillmentService;
   readonly logger: Logger;
   readonly openingService?: OpeningService;
   readonly paymentService?: PaymentService;
@@ -65,6 +68,7 @@ export const createApp = ({
   catalogService,
   creatorService,
   fairnessService,
+  fulfillmentService,
   logger,
   openingService,
   paymentService,
@@ -139,6 +143,17 @@ export const createApp = ({
       service: fairnessService,
     }),
   );
+  if (fulfillmentService !== undefined) {
+    app.use(
+      '/v1',
+      createFulfillmentRouter({
+        authenticate,
+        mutationRateLimitMax: security.creatorMutationRateLimitMax,
+        mutationRateLimitWindowMs: security.creatorMutationRateLimitWindowMs,
+        service: fulfillmentService,
+      }),
+    );
+  }
   app.use(
     '/v1',
     createWalletRouter({

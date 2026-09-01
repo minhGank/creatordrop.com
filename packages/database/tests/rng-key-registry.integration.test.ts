@@ -288,7 +288,7 @@ describe('authoritative RNG encryption-key registry', { concurrent: false }, () 
          values ('database-registry-renamed', decode($1, 'hex'))`,
         [firstKeyIdentity],
       ),
-    ).rejects.toThrow(/rng_encryption_key_versions_identity_unique|duplicate key/iu);
+    ).rejects.toMatchObject({ constraint: 'encryption_key_domain_material_reuse' });
     await expect(
       migrationDatabase.query(
         `insert into app.rng_encryption_key_versions (version, key_identity)
@@ -296,6 +296,33 @@ describe('authoritative RNG encryption-key registry', { concurrent: false }, () 
         [firstVersion, 'fe'.repeat(32)],
       ),
     ).rejects.toThrow(/rng_encryption_key_versions_pkey|duplicate key/iu);
+  });
+
+  it('rejects encryption-key identity reuse across RNG and fulfillment registries', async () => {
+    const fulfillmentIdentity = await migrationDatabase.query<{ readonly identity: string }>(
+      `select encode(key_identity, 'hex') as identity
+         from app.fulfillment_encryption_key_versions
+        where encryption_domain = 'address'
+          and version = 'local-fulfillment-address-v1'`,
+    );
+    const addressIdentity = fulfillmentIdentity.rows[0]?.identity;
+    if (addressIdentity === undefined) throw new Error('The local address key is not registered.');
+
+    await expect(
+      migrationDatabase.query(
+        `insert into app.rng_encryption_key_versions (version, key_identity)
+         values ('cross-domain-rng-key', decode($1, 'hex'))`,
+        [addressIdentity],
+      ),
+    ).rejects.toMatchObject({ constraint: 'encryption_key_domain_material_reuse' });
+    await expect(
+      migrationDatabase.query(
+        `insert into app.fulfillment_encryption_key_versions (
+           encryption_domain, version, key_identity
+         ) values ('digital_secret', 'cross-domain-fulfillment-key', decode($1, 'hex'))`,
+        [firstKeyIdentity],
+      ),
+    ).rejects.toMatchObject({ constraint: 'encryption_key_domain_material_reuse' });
   });
 
   it('derives seed identity from the registry and rejects application-forged identity', async () => {

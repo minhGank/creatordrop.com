@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   getApiEnvironment,
   getDatabaseEnvironment,
+  getFulfillmentEnvironment,
   getRngEnvironment,
+  validateCryptographicKeySeparation,
 } from '../src/config/environment.js';
 
 describe('API environment adapter', () => {
@@ -73,5 +75,49 @@ describe('API environment adapter', () => {
     });
 
     vi.unstubAllEnvs();
+  });
+
+  it('requires separate fulfillment encryption domains through the process boundary', () => {
+    vi.stubEnv('NODE_ENV', 'test');
+    vi.stubEnv('FULFILLMENT_ADDRESS_MASTER_KEY', '41'.repeat(32));
+    vi.stubEnv('FULFILLMENT_ADDRESS_MASTER_KEY_VERSION', 'address-test-v1');
+    vi.stubEnv('FULFILLMENT_ACTOR_BINDING_KEY', '45'.repeat(32));
+    vi.stubEnv('FULFILLMENT_ACTOR_BINDING_KEY_VERSION', 'actor-test-v1');
+    vi.stubEnv('DIGITAL_DELIVERY_MASTER_KEY', '42'.repeat(32));
+    vi.stubEnv('DIGITAL_DELIVERY_MASTER_KEY_VERSION', 'digital-test-v1');
+    expect(getFulfillmentEnvironment()).toMatchObject({
+      actorBinding: { version: 'actor-test-v1' },
+      address: { masterKeyVersion: 'address-test-v1' },
+      digitalSecret: { masterKeyVersion: 'digital-test-v1' },
+      retentionMs: null,
+    });
+    vi.unstubAllEnvs();
+  });
+
+  it('checks RNG and fulfillment key domains together at startup', () => {
+    const rng = {
+      fairnessMutationRateLimitMax: 20,
+      fairnessMutationRateLimitWindowMs: 60_000,
+      historicalMasterKeys: {},
+      masterKeyHex: '41'.repeat(32),
+      masterKeyVersion: 'rng-test-v1',
+      maxOpeningsPerSeed: 1000n,
+      maxSeedAgeMs: 86_400_000,
+    };
+    const fulfillment = {
+      actorBinding: { keyHex: '45'.repeat(32), version: 'actor-test-v1' },
+      address: {
+        historicalMasterKeys: {},
+        masterKeyHex: '41'.repeat(32),
+        masterKeyVersion: 'address-test-v1',
+      },
+      digitalSecret: {
+        historicalMasterKeys: {},
+        masterKeyHex: '42'.repeat(32),
+        masterKeyVersion: 'digital-test-v1',
+      },
+      retentionMs: null,
+    };
+    expect(() => validateCryptographicKeySeparation(rng, fulfillment)).toThrow();
   });
 });

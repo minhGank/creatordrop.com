@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { z } from 'zod';
 
 const runtimeModeSchema = z.enum(['development', 'test', 'production']);
@@ -300,6 +302,130 @@ const rngEnvironmentSchema = z
     }
   });
 
+const fulfillmentHistoricalKeysSchema = (label: string) =>
+  z
+    .string()
+    .default('[]')
+    .transform((value, context): unknown => {
+      try {
+        return JSON.parse(value) as unknown;
+      } catch {
+        context.addIssue({ code: 'custom', message: `Expected a JSON array of ${label} keys.` });
+        return z.NEVER;
+      }
+    })
+    .pipe(z.array(rngHistoricalKeyEntrySchema).max(128))
+    .superRefine((entries, context) => {
+      if (new Set(entries.map(({ version }) => version)).size !== entries.length) {
+        context.addIssue({ code: 'custom', message: `${label} key versions must be unique.` });
+      }
+      if (new Set(entries.map(({ key }) => key)).size !== entries.length) {
+        context.addIssue({ code: 'custom', message: `${label} key material must be unique.` });
+      }
+    });
+
+const fulfillmentEnvironmentSchema = z
+  .object({
+    NODE_ENV: runtimeModeSchema.optional(),
+    FULFILLMENT_ADDRESS_HISTORICAL_MASTER_KEYS: fulfillmentHistoricalKeysSchema(
+      'Historical fulfillment-address',
+    ),
+    FULFILLMENT_ACTOR_BINDING_KEY: rngKeyHexSchema,
+    FULFILLMENT_ACTOR_BINDING_KEY_VERSION: rngKeyVersionSchema,
+    FULFILLMENT_ADDRESS_MASTER_KEY: rngKeyHexSchema,
+    FULFILLMENT_ADDRESS_MASTER_KEY_VERSION: rngKeyVersionSchema,
+    FULFILLMENT_DATA_RETENTION_MS: z.coerce
+      .number()
+      .int()
+      .min(60_000)
+      .max(315_576_000_000)
+      .optional(),
+    DIGITAL_DELIVERY_HISTORICAL_MASTER_KEYS: fulfillmentHistoricalKeysSchema(
+      'Historical digital-delivery',
+    ),
+    DIGITAL_DELIVERY_MASTER_KEY: rngKeyHexSchema,
+    DIGITAL_DELIVERY_MASTER_KEY_VERSION: rngKeyVersionSchema,
+  })
+  .superRefine((value, context) => {
+    const domains = [
+      {
+        activeKey: value.FULFILLMENT_ADDRESS_MASTER_KEY,
+        activeVersion: value.FULFILLMENT_ADDRESS_MASTER_KEY_VERSION,
+        historical: value.FULFILLMENT_ADDRESS_HISTORICAL_MASTER_KEYS,
+        path: 'FULFILLMENT_ADDRESS_HISTORICAL_MASTER_KEYS',
+      },
+      {
+        activeKey: value.DIGITAL_DELIVERY_MASTER_KEY,
+        activeVersion: value.DIGITAL_DELIVERY_MASTER_KEY_VERSION,
+        historical: value.DIGITAL_DELIVERY_HISTORICAL_MASTER_KEYS,
+        path: 'DIGITAL_DELIVERY_HISTORICAL_MASTER_KEYS',
+      },
+    ] as const;
+    for (const domain of domains) {
+      if (domain.historical.some(({ version }) => version === domain.activeVersion)) {
+        context.addIssue({
+          code: 'custom',
+          message: 'An active fulfillment key version cannot also be historical.',
+          path: [domain.path],
+        });
+      }
+      if (domain.historical.some(({ key }) => key === domain.activeKey)) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Every fulfillment key version must use distinct key material.',
+          path: [domain.path],
+        });
+      }
+    }
+    const allKeys = [
+      value.FULFILLMENT_ACTOR_BINDING_KEY,
+      value.FULFILLMENT_ADDRESS_MASTER_KEY,
+      ...value.FULFILLMENT_ADDRESS_HISTORICAL_MASTER_KEYS.map(({ key }) => key),
+      value.DIGITAL_DELIVERY_MASTER_KEY,
+      ...value.DIGITAL_DELIVERY_HISTORICAL_MASTER_KEYS.map(({ key }) => key),
+    ];
+    if (new Set(allKeys).size !== allKeys.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Fulfillment encryption and actor binding must use distinct key material.',
+        path: ['DIGITAL_DELIVERY_MASTER_KEY'],
+      });
+    }
+    if (value.NODE_ENV === 'development' || value.NODE_ENV === 'test') return;
+    const configuredKeys = [
+      {
+        key: value.FULFILLMENT_ACTOR_BINDING_KEY,
+        version: value.FULFILLMENT_ACTOR_BINDING_KEY_VERSION,
+      },
+      {
+        key: value.FULFILLMENT_ADDRESS_MASTER_KEY,
+        version: value.FULFILLMENT_ADDRESS_MASTER_KEY_VERSION,
+      },
+      ...value.FULFILLMENT_ADDRESS_HISTORICAL_MASTER_KEYS,
+      {
+        key: value.DIGITAL_DELIVERY_MASTER_KEY,
+        version: value.DIGITAL_DELIVERY_MASTER_KEY_VERSION,
+      },
+      ...value.DIGITAL_DELIVERY_HISTORICAL_MASTER_KEYS,
+    ];
+    if (
+      configuredKeys.some(
+        ({ key, version }) =>
+          key === '11'.repeat(32) ||
+          key === '22'.repeat(32) ||
+          key === '33'.repeat(32) ||
+          key === publicExampleRngKey ||
+          localRngKeyVersionPattern.test(version),
+      )
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Production fulfillment encryption cannot use local example keys.',
+        path: ['FULFILLMENT_ADDRESS_MASTER_KEY'],
+      });
+    }
+  });
+
 export type ApiEnvironment = Readonly<{
   authAudience: string;
   authIssuer: string;
@@ -358,6 +484,22 @@ export type RngEnvironment = Readonly<{
   masterKeyVersion: string;
   maxOpeningsPerSeed: bigint;
   maxSeedAgeMs: number;
+}>;
+
+export type FulfillmentKeyEnvironment = Readonly<{
+  historicalMasterKeys: Readonly<Record<string, string>>;
+  masterKeyHex: string;
+  masterKeyVersion: string;
+}>;
+
+export type FulfillmentEnvironment = Readonly<{
+  actorBinding: Readonly<{
+    keyHex: string;
+    version: string;
+  }>;
+  address: FulfillmentKeyEnvironment;
+  digitalSecret: FulfillmentKeyEnvironment;
+  retentionMs: number | null;
 }>;
 
 export const parseApiEnvironment = (input: NodeJS.ProcessEnv): ApiEnvironment => {
@@ -444,4 +586,52 @@ export const parseRngEnvironment = (input: NodeJS.ProcessEnv): RngEnvironment =>
     maxOpeningsPerSeed: parsed.RNG_MAX_OPENINGS_PER_SEED,
     maxSeedAgeMs: parsed.RNG_MAX_SEED_AGE_MS,
   };
+};
+
+export const parseFulfillmentEnvironment = (input: NodeJS.ProcessEnv): FulfillmentEnvironment => {
+  const parsed = fulfillmentEnvironmentSchema.parse(input);
+  const toHistory = (entries: readonly { readonly key: string; readonly version: string }[]) =>
+    Object.fromEntries(entries.map(({ key, version }) => [version, key]));
+  return {
+    actorBinding: {
+      keyHex: parsed.FULFILLMENT_ACTOR_BINDING_KEY,
+      version: parsed.FULFILLMENT_ACTOR_BINDING_KEY_VERSION,
+    },
+    address: {
+      historicalMasterKeys: toHistory(parsed.FULFILLMENT_ADDRESS_HISTORICAL_MASTER_KEYS),
+      masterKeyHex: parsed.FULFILLMENT_ADDRESS_MASTER_KEY,
+      masterKeyVersion: parsed.FULFILLMENT_ADDRESS_MASTER_KEY_VERSION,
+    },
+    digitalSecret: {
+      historicalMasterKeys: toHistory(parsed.DIGITAL_DELIVERY_HISTORICAL_MASTER_KEYS),
+      masterKeyHex: parsed.DIGITAL_DELIVERY_MASTER_KEY,
+      masterKeyVersion: parsed.DIGITAL_DELIVERY_MASTER_KEY_VERSION,
+    },
+    retentionMs: parsed.FULFILLMENT_DATA_RETENTION_MS ?? null,
+  };
+};
+
+const keyIdentity = (keyHex: string): string =>
+  createHash('sha256').update(Buffer.from(keyHex, 'hex')).digest('hex');
+
+export const assertCryptographicKeySeparation = (input: {
+  readonly fulfillment: FulfillmentEnvironment;
+  readonly rng: RngEnvironment;
+}): void => {
+  const materials = [
+    input.rng.masterKeyHex,
+    ...Object.values(input.rng.historicalMasterKeys),
+    input.fulfillment.address.masterKeyHex,
+    ...Object.values(input.fulfillment.address.historicalMasterKeys),
+    input.fulfillment.digitalSecret.masterKeyHex,
+    ...Object.values(input.fulfillment.digitalSecret.historicalMasterKeys),
+  ];
+  const identities = materials.map(keyIdentity);
+  if (new Set(identities).size !== identities.length) {
+    throw new Error('RNG, address, and digital-delivery key material must be distinct.');
+  }
+  const actorBindingIdentity = keyIdentity(input.fulfillment.actorBinding.keyHex);
+  if (identities.includes(actorBindingIdentity)) {
+    throw new Error('Fulfillment actor-binding key material must use a distinct key.');
+  }
 };

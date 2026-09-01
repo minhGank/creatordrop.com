@@ -239,6 +239,45 @@ Funding is absent unless `STRIPE_FUNDING_ENABLED=true` with an explicit developm
 
 There is no self-service refund, wallet withdrawal, creator payout, production charge, currency conversion, generic balance setter, or public adjustment endpoint. Stripe-driven refunds/disputes preserve original funding/opening history and use unique compensating postings. Any unrecoverable amount becomes a separate immutable unresolved deficit; spendable wallet balance never becomes negative.
 
+## Fulfillment
+
+All fulfillment routes require an active authenticated user. Lists and ordinary detail responses
+contain the reward display snapshot, creator/opening IDs, typed state, revision/timestamps,
+non-sensitive delivery availability, and immutable transition history. They never contain wallet,
+payment, RNG, ciphertext/key metadata, another user's identity, or raw delivery data.
+
+| Method | Path                                                                                 | Authorization              | Purpose                                              |
+| ------ | ------------------------------------------------------------------------------------ | -------------------------- | ---------------------------------------------------- |
+| `GET`  | `/v1/me/fulfillments`                                                                | winning user               | List own fulfillment records                         |
+| `GET`  | `/v1/me/fulfillments/:fulfillmentId`                                                 | winning user               | Read own state/history                               |
+| `GET`  | `/v1/me/fulfillments/:fulfillmentId/delivery-data`                                   | winning user               | Read own unexpired protected address/entitlement     |
+| `POST` | `/v1/me/fulfillments/:fulfillmentId/address`                                         | winning user + action key  | Encrypt/update address while eligible                |
+| `POST` | `/v1/me/fulfillments/:fulfillmentId/delivery-data/redact`                            | winning user + action key  | Explicitly redact terminal delivery data             |
+| `GET`  | `/v1/creators/:creatorId/dashboard/fulfillments`                                     | viewer+                    | Creator-scoped non-sensitive queue                   |
+| `GET`  | `/v1/creators/:creatorId/dashboard/fulfillments/:fulfillmentId`                      | viewer+                    | Creator-scoped non-sensitive detail/history          |
+| `POST` | `/v1/creators/:creatorId/dashboard/fulfillments/:fulfillmentId/actions`              | owner/manager + action key | Typed backorder/shipping/digital/experience action   |
+| `POST` | `/v1/creators/:creatorId/dashboard/fulfillments/:fulfillmentId/delivery-data/access` | owner/manager              | Audited minimum-necessary decrypt with exact purpose |
+| `POST` | `/v1/creators/:creatorId/dashboard/fulfillments/:fulfillmentId/delivery-data/redact` | owner/manager + action key | Explicit terminal redaction                          |
+| `POST` | `/v1/creators/:creatorId/dashboard/inventory-pools/:poolId/restocks`                 | owner/manager + action key | Append manual positive restock event                 |
+
+Mutation commands require `Idempotency-Key`; fulfillment transitions/redaction/address updates
+also require `If-Match`. The only creator action bodies are `resolve_backorder`, `mark_shipped`,
+`mark_delivered`, `fulfill_experience`, or `deliver_digital` with its secret. Restock accepts only
+`{ "quantity": "<positive canonical bigint>" }`. Same key/same semantic command replays without a
+second history row; conflicting reuse returns `IDEMPOTENCY_KEY_REUSED`. Stable failures include
+`FULFILLMENT_NOT_FOUND`, `FULFILLMENT_FORBIDDEN`, `FULFILLMENT_REVISION_CONFLICT`,
+`FULFILLMENT_TRANSITION_INVALID`, `FULFILLMENT_DATA_UNAVAILABLE`,
+`FULFILLMENT_KEY_UNAVAILABLE`, and `INVENTORY_RESTOCK_INVALID`.
+
+Address input is exactly recipient name, address lines, city, region, postal code, and ISO alpha-2
+country; phone is not collected. Creator owner/manager delivery-data access requires
+`{ "purpose": "fulfillment_execution" }` and creates an immutable audit event only after a valid
+payload is decrypted and returned. Route UUIDs are canonicalized before cryptographic or
+idempotency use, so equivalent UUID casing cannot alter AAD or command identity. Editor/viewer
+roles cannot decrypt. Restock accepts only a published/shared pool and changes only its availability
+and history; it does not resolve an
+obligation or resume a box automatically.
+
 ## Creator dashboard
 
 | Method | Path                                                         | Auth                         | Purpose                                                              |

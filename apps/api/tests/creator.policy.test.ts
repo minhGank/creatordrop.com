@@ -10,6 +10,7 @@ const expectedActionsByRole: Readonly<Record<CreatorRole, readonly string[]>> = 
     'content.draft.write',
     'catalog.view',
     'catalog.draft.write',
+    'fulfillment.view',
   ],
   manager: [
     'workspace.view',
@@ -21,9 +22,13 @@ const expectedActionsByRole: Readonly<Record<CreatorRole, readonly string[]>> = 
     'catalog.draft.write',
     'catalog.publish',
     'catalog.archive',
+    'fulfillment.view',
+    'fulfillment.manage',
+    'fulfillment.sensitive.read',
+    'inventory.restock',
   ],
   owner: [...creatorActions],
-  viewer: ['workspace.view', 'membership.list', 'catalog.view'],
+  viewer: ['workspace.view', 'membership.list', 'catalog.view', 'fulfillment.view'],
 };
 
 describe('creator authorization policy', () => {

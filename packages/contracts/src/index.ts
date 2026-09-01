@@ -309,4 +309,95 @@ export interface BoxOpeningResponse {
   };
 }
 
+export const fulfillmentTypes = ['physical', 'digital', 'experience'] as const;
+export type FulfillmentType = (typeof fulfillmentTypes)[number];
+
+export const fulfillmentStates = [
+  'awaiting_restock',
+  'awaiting_address',
+  'ready_to_ship',
+  'shipped',
+  'delivered',
+  'ready_for_delivery',
+  'coordination_required',
+  'fulfilled',
+] as const;
+export type FulfillmentState = (typeof fulfillmentStates)[number];
+
+export interface FulfillmentEventContract {
+  readonly action: string;
+  readonly actorType: 'system' | 'user' | 'creator';
+  readonly createdAt: string;
+  readonly fromState: FulfillmentState | null;
+  readonly id: string;
+  readonly revision: number;
+  readonly toState: FulfillmentState;
+}
+
+export interface FulfillmentContract {
+  readonly createdAt: string;
+  readonly creatorId: string;
+  readonly deliveryData: {
+    readonly available: boolean;
+    readonly expiresAt: string | null;
+    readonly redactedAt: string | null;
+  };
+  readonly deliveredAt: string | null;
+  readonly events: readonly FulfillmentEventContract[];
+  readonly fulfilledAt: string | null;
+  readonly fulfillmentType: FulfillmentType;
+  readonly id: string;
+  readonly openingId: string;
+  readonly revision: number;
+  readonly reward: {
+    readonly imageUrl: string | null;
+    readonly name: string;
+    readonly rewardId: string;
+    readonly rewardVersionId: string;
+  };
+  readonly shippedAt: string | null;
+  readonly state: FulfillmentState;
+  readonly updatedAt: string;
+}
+
+export interface FulfillmentResponse {
+  readonly fulfillment: FulfillmentContract;
+  readonly replayed?: boolean;
+}
+
+export interface FulfillmentsResponse {
+  readonly fulfillments: readonly FulfillmentContract[];
+}
+
+export interface FulfillmentAddressContract {
+  readonly addressLine1: string;
+  readonly addressLine2: string | null;
+  readonly city: string;
+  readonly country: string;
+  readonly postalCode: string;
+  readonly recipientName: string;
+  readonly region: string;
+}
+
+export interface FulfillmentDeliveryDataResponse {
+  readonly address?: FulfillmentAddressContract;
+  readonly digitalSecret?: string;
+  readonly expiresAt: string | null;
+  readonly fulfillmentId: string;
+}
+
+export interface InventoryRestockResponse {
+  readonly inventoryPool: {
+    readonly availableQuantity: string;
+    readonly id: string;
+    readonly initialQuantity: string;
+  };
+  readonly restockEvent: {
+    readonly createdAt: string;
+    readonly id: string;
+    readonly quantityAdded: string;
+  };
+  readonly replayed: boolean;
+}
+
 export * from './realtime.js';

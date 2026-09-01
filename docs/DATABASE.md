@@ -76,9 +76,17 @@ Inventory configuration is either `unlimited` with a null quantity/policy/pool o
 
 ### `inventory_pools` and `inventory_consumptions`
 
-`inventory_pools` stores a stable UUID, immutable creator owner, stockout policy and initial quantity, plus mutable nonnegative available quantity. Reward-version references must stay within the same creator. Publication locks every referenced finite `pause_box` pool in UUID order and verifies its live `available_quantity > 0` before locking/activating the box; immutable configured quantity is not an availability signal.
+`inventory_pools` stores a stable UUID, immutable creator owner, protected stockout policy and
+historical initial quantity, plus mutable nonnegative available quantity. Reward-version
+references must stay within the same creator. Publication locks every referenced finite
+`pause_box` pool in UUID order and verifies its live `available_quantity > 0` before
+locking/activating the box; configured quantity is not an availability signal. Phase 12 manual
+restock never rewrites initial quantity: owner/manager commands on a published/shared pool append an immutable,
+creator-scoped `inventory_restock_events` row with `(pool, actor, positive quantity, action key,
+fingerprint)` and increase availability in the same transaction. Duplicate semantic commands
+replay; key reuse with different quantity fails. Automatic restock and box resume do not exist.
 
-Each successful in-stock finite opening has exactly one immutable `inventory_consumptions` row keyed by `opening_id`, with its pool, quantity one, and timestamp. Pool decrement and movement insertion occur through one transaction-owned function. Deferred checks require the movement to match the selected reward version, opening pool, and `pending_fulfillment` obligation, and reconcile `initial_quantity - available_quantity` to total immutable consumption. Unlimited and zero-stock `backorder` openings have no consumption row.
+Each successful in-stock finite opening has exactly one immutable `inventory_consumptions` row keyed by `opening_id`, with its pool, quantity one, and timestamp. Pool decrement and movement insertion occur through one transaction-owned function. A zero-stock `backorder` opening initially has no consumption; owner/manager resolution later locks the same pool and appends its one opening-linked consumption before advancing the existing obligation. Deferred checks require the movement to match the selected reward version and opening pool and reconcile `initial_quantity + sum(restocks) - available_quantity = sum(consumptions)`. Unlimited openings never receive a consumption row.
 
 ### `box_version_rewards`
 
@@ -145,7 +153,44 @@ Unique `(rng_seed_set_id, nonce)` guarantees no nonce reuse. Indexes `(user_id, 
 
 ### `reward_wins`, `fulfillment_obligations`, and `creator_earnings`
 
-Every opening has exactly one immutable awarded win and one immutable Phase 9 obligation. An in-stock/unlimited winner records `pending_fulfillment`; a zero-stock explicit backorder records `awaiting_restock`. Shipping transitions are not implemented. A matching creator earning snapshots the creator share/currency, allocation posting, `pending` state, and 14-day `available_at`; no release or payout exists yet.
+Every opening has exactly one immutable awarded win and one Phase 9 origin obligation. The origin
+`status` remains immutable (`pending_fulfillment` or `awaiting_restock`) for historical opening
+verification. Phase 12 adds immutable winner/creator/reward-version scope, typed
+`fulfillment_type`, optimistic `revision`, `current_state`, update and terminal timestamps. A
+trigger derives that scope from the reward win; callers cannot choose or change the winner,
+creator, opening, or selected reward.
+
+Physical state is `awaiting_address → ready_to_ship → shipped → delivered`; digital state is
+`ready_for_delivery → delivered`; experience state is `coordination_required → fulfilled`.
+Each may begin at `awaiting_restock` and advance only through the pool-authoritative resolution
+operation. Database transition guards reject skipped/backward/cross-type transitions and require
+one immutable `fulfillment_events` row with the matching prior state, new state, result revision,
+actor kind, action key, command fingerprint, and safe metadata. `(fulfillment, action_key)` and
+`(fulfillment, result_revision)` are unique. Address and digital-secret action fingerprints are
+HMAC-derived with a domain-separated subkey; their immutable event rows snapshot the registered
+fingerprint key domain/version so low-entropy delivery values are not exposed to offline hash
+guessing and retries remain comparable after active-key rotation.
+
+`fulfillment_delivery_data` stores one address or digital-secret ciphertext record per eligible
+fulfillment. AES-256-GCM IV/tag sizes, encrypted/redacted shape, actor scope, and the exact
+registered `(domain, version, key identity)` are constrained. `fulfillment_encryption_key_versions`
+contains only immutable SHA-256 identities; raw encryption keys remain external. A private central
+identity registry gives RNG/address/digital/actor-binding key material one authoritative domain.
+The private actor-binding registry derives that identity from its raw HMAC verifier key, permits
+exactly one active version, retains retired identities for permanent collision prevention, and
+records explicit rotations immutably. Retired versions cannot verify capabilities; request-scoped
+capabilities safely retry under the new active key. Narrow Phase 12 functions first verify a
+short-lived operation/resource-bound actor capability whose verifier secret is inaccessible to
+`creatordrop_app`, then enforce winner or creator membership scope.
+Creator decrypted reads insert immutable `fulfillment_data_access_events` only as the final step
+of the same transaction after authenticated decryption and payload validation succeed.
+The app role can read only non-secret delivery metadata columns and cannot directly read
+ciphertext or mutate delivery/history tables. Nullable `expires_at` and explicit terminal-state
+redaction preserve non-sensitive history while making the protected value unreadable.
+
+A matching creator earning continues to snapshot the creator share/currency, allocation posting,
+`pending` state, and 14-day `available_at`; fulfillment does not alter financial history and no
+release or payout exists yet.
 
 ## Wallet and double-entry ledger
 

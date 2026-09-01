@@ -168,7 +168,45 @@ Stripe remains authoritative only for external payment state; PostgreSQL ledger 
 
 Box proceeds initially credit a platform escrow/payable ledger account. Revenue share, fees, taxes, payout availability, reserves, and chargeback allocation must be decided before real-money launch. Creator earnings are not calculated from cached leaderboards.
 
-Fulfillment is also a state machine. A reward win is immutable; retries update fulfillment attempts/status, not the win. Physical address and provider secrets require field-level encryption or tokenization, restricted access, retention limits, and audit logging.
+Fulfillment is a typed state machine layered on the immutable Phase 9 reward win and origin
+obligation. Physical rewards move `awaiting_address → ready_to_ship → shipped → delivered`,
+digital rewards move `ready_for_delivery → delivered`, and experiences move
+`coordination_required → fulfilled`. A backordered obligation remains tied to the selected
+reward version and moves out of `awaiting_restock` only when an owner/manager command locks its
+shared inventory pool, consumes one available unit for the original opening, and commits the
+transition and immutable history together. There is no reroll or substitution.
+
+Addresses are collected only after a physical win. Address ciphertext and digital-secret
+ciphertext use separate versioned AES-256-GCM key domains, fresh 12-byte IVs, 16-byte tags, and
+AAD bound to the fulfillment, creator, user, purpose, and key version. Key material stays out of
+PostgreSQL; immutable non-secret SHA-256 identities in one cross-domain registry prevent
+RNG/address/digital/actor-binding version-material drift or reuse. UUIDs are canonical lowercase before AAD,
+fingerprint scope, and persistence comparison. Creator owner/manager decryption is
+minimum-disclosure and creates an immutable access event only after key lookup, identity
+verification, authenticated decryption, UTF-8 decoding, and payload validation succeed; editor and
+viewer roles can read non-sensitive status/history only. Expiry is nullable until legal policy
+chooses a duration, and explicit terminal-state redaction removes ciphertext while retaining
+fulfillment and access history. Phase 12 has no carrier/digital provider, so no new asynchronous
+provider job is needed; the existing Phase 10 worker remains unchanged.
+
+Every sensitive Phase 12 database command additionally verifies a short-lived HMAC capability
+over the JWT-authenticated actor and exact immutable command scope. Its verifier key lives in
+`app_private` and is unavailable to `creatordrop_app`; legacy actor-ID-only functions are not
+executable by that role. The database permits exactly one active signer identity, verifies only
+that version, and appends an immutable record whenever an operator atomically retires it and
+activates a globally distinct replacement. Creator membership remains the authorization source
+after capability verification, so direct membership-table privileges cannot manufacture Phase 12
+authority.
+
+Idempotency fingerprints for address and digital-secret commands are HMAC-derived with a
+purpose/domain-separated subkey instead of storing dictionary-testable hashes of sensitive input.
+The immutable event snapshots its fingerprint key domain/version for replay across key rotation.
+
+Manual inventory restock is an owner/manager-only, creator-scoped command. It appends an
+immutable `inventory_restock_events` row and increases only `available_quantity`; it never
+rewrites the pool's historical initial quantity. Deferred reconciliation enforces
+`initial + restocks - consumptions = available`. Restocking does not automatically resolve
+backorders or resume paused boxes.
 
 ## Repository structure
 

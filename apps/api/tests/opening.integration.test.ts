@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -34,8 +34,26 @@ import {
   createFairnessService,
   type FairnessService,
 } from '../src/modules/fairness/fairness.service.js';
+import { createEnvironmentFulfillmentActorBindingProvider } from '../src/modules/fulfillment/fulfillment.actor-binding.js';
+import {
+  buildFulfillmentAad,
+  encryptFulfillmentValue,
+} from '../src/modules/fulfillment/fulfillment.crypto.js';
+import { createEnvironmentFulfillmentKeyProvider } from '../src/modules/fulfillment/fulfillment.key-provider.js';
+import {
+  createFulfillmentService,
+  type FulfillmentService,
+} from '../src/modules/fulfillment/fulfillment.service.js';
 import type { ClientSeed } from '../src/modules/fairness/fairness.js';
 import { OpeningRetryableError } from '../src/modules/openings/opening.errors.js';
+import {
+  FulfillmentDataUnavailableError,
+  FulfillmentKeyUnavailableError,
+  FulfillmentNotFoundError,
+  FulfillmentPermissionDeniedError,
+  FulfillmentTransitionError,
+  InventoryRestockError,
+} from '../src/modules/fulfillment/fulfillment.errors.js';
 import {
   createOpeningService,
   type OpeningService,
@@ -49,7 +67,10 @@ import {
   insertLedgerTransaction,
   lockWalletsForLedgerAccounts,
 } from '../src/modules/wallet/wallet.repository.js';
-import { LedgerTransactionNotReversibleError } from '../src/modules/wallet/wallet.errors.js';
+import {
+  IdempotencyKeyReusedError,
+  LedgerTransactionNotReversibleError,
+} from '../src/modules/wallet/wallet.errors.js';
 import {
   createWalletService,
   reverseLedgerTransaction,
@@ -166,6 +187,7 @@ describe('atomic box opening', { concurrent: false }, () => {
   let blockerDatabase: Database;
   let fairness: FairnessService;
   let firstConcurrencyDatabase: Database;
+  let fulfillments: FulfillmentService;
   let nextServerSeed: Uint8Array | undefined;
   let openings: OpeningService;
   let secondConcurrencyDatabase: Database;
@@ -240,6 +262,27 @@ describe('atomic box opening', { concurrent: false }, () => {
     });
     wallets = createWalletService({ database, logger, testCreditsEnabled: true });
     openings = createOpeningService({ database, fairnessService: fairness, logger });
+    fulfillments = createFulfillmentService({
+      actorBindingProvider: createEnvironmentFulfillmentActorBindingProvider({
+        keyHex: '33'.repeat(32),
+        version: 'local-fulfillment-actor-v1',
+      }),
+      database,
+      keyProvider: createEnvironmentFulfillmentKeyProvider({
+        address: {
+          historicalKeys: {},
+          keyHex: '11'.repeat(32),
+          version: 'local-fulfillment-address-v1',
+        },
+        digitalSecret: {
+          historicalKeys: {},
+          keyHex: '22'.repeat(32),
+          version: 'local-digital-delivery-v1',
+        },
+      }),
+      logger,
+      retentionMs: null,
+    });
   });
 
   afterAll(async () => {
@@ -331,6 +374,7 @@ describe('atomic box opening', { concurrent: false }, () => {
       readonly mode: 'finite' | 'unlimited';
       readonly policy?: 'backorder' | 'pause_box';
       readonly quantity?: string;
+      readonly rewardType?: 'digital' | 'experience' | 'physical';
     },
   ): Promise<{ readonly rewardId: RewardId; readonly versionId: RewardVersionId }> => {
     const ownerId = await creatorOwner(creatorId);
@@ -343,7 +387,7 @@ describe('atomic box opening', { concurrent: false }, () => {
         inventoryQuantity: input.mode === 'finite' ? (input.quantity ?? '1') : null,
         inventoryStockoutPolicy: input.mode === 'finite' ? (input.policy ?? 'pause_box') : null,
         name: `Reward ${randomUUID()}`,
-        rewardType: 'digital',
+        rewardType: input.rewardType ?? 'digital',
       }),
       requestId: randomUUID(),
     });
@@ -357,6 +401,7 @@ describe('atomic box opening', { concurrent: false }, () => {
       readonly mode: 'finite' | 'unlimited';
       readonly policy?: 'backorder' | 'pause_box';
       readonly quantity?: string;
+      readonly rewardType?: 'digital' | 'experience' | 'physical';
     },
   ): Promise<RewardVersionId> => {
     return (await createRewardRecord(creatorId, input)).versionId;
@@ -860,14 +905,787 @@ describe('atomic box opening', { concurrent: false }, () => {
         )
       ).rows,
     ).toEqual([{ quantity: '0' }]);
+
+    const ownerId = await creatorOwner(creatorId);
+    const obligation = await database.query<{ readonly id: string }>(
+      `select obligation.id::text as id
+         from app.fulfillment_obligations as obligation
+         join app.box_opens as opening on opening.id = obligation.opening_id
+        where opening.public_id = $1`,
+      [result.body.opening.id],
+    );
+    const fulfillmentId = obligation.rows[0]?.id;
+    if (fulfillmentId === undefined) throw new Error('Backorder fulfillment was not found.');
+    await expect(
+      fulfillments.applyCreatorAction({
+        action: { action: 'resolve_backorder' },
+        actionKey: `resolve_empty_${randomUUID()}`,
+        actorUserId: ownerId,
+        creatorId,
+        expectedRevision: 1,
+        fulfillmentId,
+        requestId: randomUUID(),
+      }),
+    ).rejects.toBeInstanceOf(FulfillmentTransitionError);
+    const restockKey = `restock_${randomUUID()}`;
+    const concurrentRestocks = await Promise.all([
+      fulfillments.restock({
+        actionKey: restockKey,
+        actorUserId: ownerId,
+        creatorId,
+        poolId,
+        quantity: 1n,
+        requestId: randomUUID(),
+      }),
+      fulfillments.restock({
+        actionKey: restockKey,
+        actorUserId: ownerId,
+        creatorId,
+        poolId,
+        quantity: 1n,
+        requestId: randomUUID(),
+      }),
+    ]);
+    expect(concurrentRestocks.map(({ replayed }) => replayed).sort()).toEqual([false, true]);
+    expect(new Set(concurrentRestocks.map(({ restockEvent }) => restockEvent.id)).size).toBe(1);
+    expect(
+      concurrentRestocks.every(
+        ({ inventoryPool, restockEvent }) =>
+          inventoryPool.availableQuantity === '1' &&
+          inventoryPool.id === poolId &&
+          inventoryPool.initialQuantity === '1' &&
+          restockEvent.quantityAdded === '1',
+      ),
+    ).toBe(true);
+    await expect(
+      fulfillments.restock({
+        actionKey: restockKey,
+        actorUserId: ownerId,
+        creatorId,
+        poolId,
+        quantity: 1n,
+        requestId: randomUUID(),
+      }),
+    ).resolves.toMatchObject({ replayed: true });
+    await expect(
+      fulfillments.restock({
+        actionKey: restockKey,
+        actorUserId: ownerId,
+        creatorId,
+        poolId,
+        quantity: 2n,
+        requestId: randomUUID(),
+      }),
+    ).rejects.toBeInstanceOf(IdempotencyKeyReusedError);
+    const otherCreatorId = await createCreator();
+    await expect(
+      fulfillments.restock({
+        actionKey: `other_${randomUUID()}`,
+        actorUserId: await creatorOwner(otherCreatorId),
+        creatorId: otherCreatorId,
+        poolId,
+        quantity: 1n,
+        requestId: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ name: 'FulfillmentNotFoundError' });
+    await expect(
+      database.query(
+        `select * from app.restock_inventory_pool_bound(
+           $1, $2, $3, $4, 1, 'forged-restock-command',
+           decode(repeat('44', 32), 'hex'), 'local-fulfillment-actor-v1',
+           floor(extract(epoch from clock_timestamp()) * 1000)::bigint + 30000,
+           decode(repeat('aa', 32), 'hex')
+         )`,
+        [poolId, creatorId, ownerId, randomUUID()],
+      ),
+    ).rejects.toMatchObject({ constraint: 'fulfillment_actor_binding_invalid' });
+
+    const resolved = await fulfillments.applyCreatorAction({
+      action: { action: 'resolve_backorder' },
+      actionKey: `resolve_${randomUUID()}`,
+      actorUserId: ownerId,
+      creatorId,
+      expectedRevision: 1,
+      fulfillmentId,
+      requestId: randomUUID(),
+    });
+    expect(resolved.fulfillment.state).toBe('ready_for_delivery');
+    const deliveryActionKey = `deliver_${randomUUID()}`;
+    const delivered = await fulfillments.applyCreatorAction({
+      action: { action: 'deliver_digital', secret: 'synthetic-redemption-code' },
+      actionKey: deliveryActionKey,
+      actorUserId: ownerId,
+      creatorId: creatorId.toUpperCase(),
+      expectedRevision: 2,
+      fulfillmentId,
+      requestId: randomUUID(),
+    });
+    expect(delivered.fulfillment.state).toBe('delivered');
+    await expect(
+      fulfillments.applyCreatorAction({
+        action: { action: 'deliver_digital', secret: 'synthetic-redemption-code' },
+        actionKey: deliveryActionKey,
+        actorUserId: ownerId,
+        creatorId,
+        expectedRevision: 2,
+        fulfillmentId,
+        requestId: randomUUID(),
+      }),
+    ).resolves.toMatchObject({ replayed: true });
+    await expect(fulfillments.getUserDeliveryData(user.id, fulfillmentId)).resolves.toEqual({
+      digitalSecret: 'synthetic-redemption-code',
+      expiresAt: null,
+      fulfillmentId,
+    });
+    await expect(
+      fulfillments.getCreatorDeliveryData({
+        actorUserId: ownerId,
+        creatorId,
+        fulfillmentId,
+        purpose: 'fulfillment_execution',
+      }),
+    ).resolves.toMatchObject({ digitalSecret: 'synthetic-redemption-code' });
+    const history = await adminDatabase.query<{
+      readonly accessEvents: string;
+      readonly available: string;
+      readonly consumptions: string;
+      readonly initial: string;
+      readonly restocks: string;
+    }>(
+      `select
+         (select count(*)::text from app.fulfillment_data_access_events
+           where fulfillment_id = $1) as "accessEvents",
+         (select available_quantity::text from app.inventory_pools where id = $2) as available,
+         (select count(*)::text from app.inventory_consumptions
+           where inventory_pool_id = $2) as consumptions,
+         (select initial_quantity::text from app.inventory_pools where id = $2) as initial,
+         (select count(*)::text from app.inventory_restock_events
+           where inventory_pool_id = $2) as restocks`,
+      [fulfillmentId, poolId],
+    );
+    expect(history.rows).toEqual([
+      { accessEvents: '1', available: '0', consumptions: '2', initial: '1', restocks: '1' },
+    ]);
+    await adminDatabase.query(
+      `update app.fulfillment_delivery_data
+          set expires_at = created_at,
+              updated_at = clock_timestamp() + interval '1 millisecond'
+        where fulfillment_id = $1`,
+      [fulfillmentId],
+    );
+    await expect(fulfillments.getUserDeliveryData(user.id, fulfillmentId)).rejects.toBeInstanceOf(
+      FulfillmentDataUnavailableError,
+    );
+    await expect(fulfillments.getUserFulfillment(user.id, fulfillmentId)).resolves.toMatchObject({
+      deliveryData: { available: false },
+      reward: { rewardVersionId },
+      state: 'delivered',
+    });
+    await expect(
+      database.query(
+        `update app.inventory_restock_events set quantity_added = 2
+          where inventory_pool_id = $1`,
+        [poolId],
+      ),
+    ).rejects.toThrow(/permission denied/iu);
+    await expect(
+      database.query(
+        `update app.inventory_pools set initial_quantity = initial_quantity + 1 where id = $1`,
+        [poolId],
+      ),
+    ).rejects.toBeDefined();
+    await expect(
+      database.query(
+        `insert into app.inventory_restock_events (
+           id, inventory_pool_id, creator_id, actor_user_id,
+           quantity_added, action_key, command_fingerprint
+         ) values ($1, $2, $3, $4, 1, 'forged-restock', decode(repeat('44', 32), 'hex'))`,
+        [randomUUID(), poolId, creatorId, ownerId],
+      ),
+    ).rejects.toThrow(/permission denied/iu);
+  });
+
+  it('enforces physical and experience fulfillment transitions and sensitive-role access', async () => {
+    const creatorId = await createCreator();
+    const ownerId = await creatorOwner(creatorId);
+    const managerId = randomUUID() as UserId;
+    const editorId = randomUUID() as UserId;
+    await database.query(
+      `insert into app.users (id, auth_provider, auth_subject, username) values
+         ($1, 'synthetic-fulfillment-member', $1::uuid::text, $3),
+         ($2, 'synthetic-fulfillment-member', $2::uuid::text, $4)`,
+      [
+        managerId,
+        editorId,
+        `fulfillment_manager_${managerId.replaceAll('-', '')}`,
+        `fulfillment_editor_${editorId.replaceAll('-', '')}`,
+      ],
+    );
+    await database.query(
+      `insert into app.creator_memberships (creator_id, user_id, role)
+       values ($1, $2, 'manager'), ($1, $3, 'editor')`,
+      [creatorId, managerId, editorId],
+    );
+
+    const physicalVersion = await createReward(creatorId, {
+      mode: 'unlimited',
+      rewardType: 'physical',
+    });
+    const physicalBox = await createBox(creatorId, physicalVersion);
+    const physicalUser = await createUser('999');
+    const physicalOpen = await open(physicalUser, physicalBox.boxId);
+    const physicalIdResult = await database.query<{ readonly id: string }>(
+      `select obligation.id::text as id
+         from app.fulfillment_obligations as obligation
+         join app.box_opens as opening on opening.id = obligation.opening_id
+        where opening.public_id = $1`,
+      [physicalOpen.body.opening.id],
+    );
+    const physicalId = physicalIdResult.rows[0]?.id;
+    if (physicalId === undefined) throw new Error('Physical fulfillment was not created.');
+    expect(await fulfillments.getUserFulfillment(physicalUser.id, physicalId)).toMatchObject({
+      fulfillmentType: 'physical',
+      state: 'awaiting_address',
+    });
+    const addressKey = `address_${randomUUID()}`;
+    const address = {
+      addressLine1: '123 Example Street',
+      addressLine2: null,
+      city: 'Toronto',
+      country: 'CA',
+      postalCode: 'M5V 2T6',
+      recipientName: 'Synthetic Recipient',
+      region: 'ON',
+    } as const;
+    const addressResult = await fulfillments.submitAddress({
+      actionKey: addressKey,
+      actorUserId: physicalUser.id,
+      address,
+      expectedRevision: 1,
+      fulfillmentId: physicalId,
+      requestId: randomUUID(),
+    });
+    expect(addressResult.fulfillment.state).toBe('ready_to_ship');
+    await expect(
+      fulfillments.submitAddress({
+        actionKey: addressKey,
+        actorUserId: physicalUser.id,
+        address,
+        expectedRevision: 1,
+        fulfillmentId: physicalId,
+        requestId: randomUUID(),
+      }),
+    ).resolves.toMatchObject({ fulfillment: { revision: 2 }, replayed: true });
+    await expect(
+      fulfillments.submitAddress({
+        actionKey: addressKey,
+        actorUserId: physicalUser.id,
+        address: { ...address, city: 'Ottawa' },
+        expectedRevision: 2,
+        fulfillmentId: physicalId,
+        requestId: randomUUID(),
+      }),
+    ).rejects.toBeInstanceOf(IdempotencyKeyReusedError);
+    await expect(fulfillments.getUserFulfillment(managerId, physicalId)).rejects.toBeInstanceOf(
+      FulfillmentNotFoundError,
+    );
+    const otherCreatorId = await createCreator();
+    await expect(
+      fulfillments.getCreatorFulfillment({
+        actorUserId: await creatorOwner(otherCreatorId),
+        creatorId: otherCreatorId,
+        fulfillmentId: physicalId,
+      }),
+    ).rejects.toBeInstanceOf(FulfillmentNotFoundError);
+    await expect(
+      fulfillments.getCreatorDeliveryData({
+        actorUserId: await creatorOwner(otherCreatorId),
+        creatorId: otherCreatorId,
+        fulfillmentId: physicalId,
+        purpose: 'fulfillment_execution',
+      }),
+    ).rejects.toBeInstanceOf(FulfillmentNotFoundError);
+    await expect(fulfillments.getUserDeliveryData(managerId, physicalId)).rejects.toBeInstanceOf(
+      FulfillmentNotFoundError,
+    );
+    await expect(
+      fulfillments.applyCreatorAction({
+        action: { action: 'mark_shipped' },
+        actionKey: `fan_${randomUUID()}`,
+        actorUserId: physicalUser.id,
+        creatorId,
+        expectedRevision: 2,
+        fulfillmentId: physicalId,
+        requestId: randomUUID(),
+      }),
+    ).rejects.toBeInstanceOf(FulfillmentNotFoundError);
+    await expect(
+      fulfillments.applyCreatorAction({
+        action: { action: 'mark_shipped' },
+        actionKey: `editor_${randomUUID()}`,
+        actorUserId: editorId,
+        creatorId,
+        expectedRevision: 2,
+        fulfillmentId: physicalId,
+        requestId: randomUUID(),
+      }),
+    ).rejects.toBeInstanceOf(FulfillmentPermissionDeniedError);
+    await expect(
+      fulfillments.getCreatorDeliveryData({
+        actorUserId: editorId,
+        creatorId,
+        fulfillmentId: physicalId,
+        purpose: 'fulfillment_execution',
+      }),
+    ).rejects.toBeInstanceOf(FulfillmentPermissionDeniedError);
+    await expect(
+      fulfillments.getCreatorDeliveryData({
+        actorUserId: ownerId,
+        creatorId,
+        fulfillmentId: physicalId,
+        purpose: 'fulfillment_execution',
+      }),
+    ).resolves.toMatchObject({ address });
+    await expect(
+      database.query(
+        `select ciphertext from app.fulfillment_delivery_data where fulfillment_id = $1`,
+        [physicalId],
+      ),
+    ).rejects.toThrow(/permission denied/iu);
+    const protectedAddress = await adminDatabase.query<{
+      readonly accessCount: string;
+      readonly containsPlaintext: boolean;
+      readonly fingerprint: string;
+      readonly fingerprintDomain: string;
+      readonly fingerprintVersion: string;
+    }>(
+      `select
+         position(convert_to('123 Example Street', 'utf8') in ciphertext) > 0
+           as "containsPlaintext",
+         (select count(*)::text from app.fulfillment_data_access_events
+           where fulfillment_id = $1) as "accessCount",
+         (select encode(command_fingerprint, 'hex') from app.fulfillment_events
+           where fulfillment_id = $1 and action = 'submit_address') as fingerprint,
+         (select fingerprint_key_domain from app.fulfillment_events
+           where fulfillment_id = $1 and action = 'submit_address') as "fingerprintDomain",
+         (select fingerprint_key_version from app.fulfillment_events
+           where fulfillment_id = $1 and action = 'submit_address') as "fingerprintVersion"
+       from app.fulfillment_delivery_data where fulfillment_id = $1`,
+      [physicalId],
+    );
+    expect(protectedAddress.rows).toHaveLength(1);
+    expect(protectedAddress.rows[0]).toMatchObject({
+      accessCount: '1',
+      containsPlaintext: false,
+      fingerprintDomain: 'address',
+      fingerprintVersion: 'local-fulfillment-address-v1',
+    });
+    expect(protectedAddress.rows[0]?.fingerprint).toMatch(/^[0-9a-f]{64}$/u);
+    expect(protectedAddress.rows[0]?.fingerprint).not.toBe(
+      createHash('sha256')
+        .update(JSON.stringify({ action: 'submit_address', address }))
+        .digest('hex'),
+    );
+    await expect(
+      fulfillments.applyCreatorAction({
+        action: { action: 'mark_delivered' },
+        actionKey: `invalid_${randomUUID()}`,
+        actorUserId: managerId,
+        creatorId,
+        expectedRevision: 2,
+        fulfillmentId: physicalId,
+        requestId: randomUUID(),
+      }),
+    ).rejects.toBeInstanceOf(FulfillmentTransitionError);
+    const afterInvalid = await adminDatabase.query<{
+      readonly eventCount: string;
+      readonly revision: string;
+      readonly state: string;
+    }>(
+      `select obligation.current_state as state, obligation.revision::text as revision,
+              (select count(*)::text from app.fulfillment_events
+                where fulfillment_id = obligation.id) as "eventCount"
+         from app.fulfillment_obligations as obligation where obligation.id = $1`,
+      [physicalId],
+    );
+    expect(afterInvalid.rows).toEqual([{ eventCount: '2', revision: '2', state: 'ready_to_ship' }]);
+    const shippedKey = `ship_${randomUUID()}`;
+    const shipped = await fulfillments.applyCreatorAction({
+      action: { action: 'mark_shipped' },
+      actionKey: shippedKey,
+      actorUserId: managerId,
+      creatorId,
+      expectedRevision: 2,
+      fulfillmentId: physicalId,
+      requestId: randomUUID(),
+    });
+    expect(shipped.fulfillment.state).toBe('shipped');
+    await expect(
+      fulfillments.applyCreatorAction({
+        action: { action: 'mark_shipped' },
+        actionKey: shippedKey,
+        actorUserId: managerId,
+        creatorId,
+        expectedRevision: 2,
+        fulfillmentId: physicalId,
+        requestId: randomUUID(),
+      }),
+    ).resolves.toMatchObject({ fulfillment: { revision: 3 }, replayed: true });
+    await expect(
+      fulfillments.applyCreatorAction({
+        action: { action: 'mark_delivered' },
+        actionKey: shippedKey,
+        actorUserId: managerId,
+        creatorId,
+        expectedRevision: 3,
+        fulfillmentId: physicalId,
+        requestId: randomUUID(),
+      }),
+    ).rejects.toBeInstanceOf(IdempotencyKeyReusedError);
+    const delivered = await fulfillments.applyCreatorAction({
+      action: { action: 'mark_delivered' },
+      actionKey: `delivered_${randomUUID()}`,
+      actorUserId: ownerId,
+      creatorId,
+      expectedRevision: 3,
+      fulfillmentId: physicalId,
+      requestId: randomUUID(),
+    });
+    expect(delivered.fulfillment.state).toBe('delivered');
+    const redacted = await fulfillments.redactUserDeliveryData({
+      actionKey: `redact_${randomUUID()}`,
+      actorUserId: physicalUser.id,
+      expectedRevision: 4,
+      fulfillmentId: physicalId,
+      requestId: randomUUID(),
+    });
+    expect(redacted.fulfillment.deliveryData).toMatchObject({ available: false });
+    await expect(
+      fulfillments.getUserDeliveryData(physicalUser.id, physicalId),
+    ).rejects.toBeInstanceOf(FulfillmentDataUnavailableError);
+    const immutablePhysical = await adminDatabase.query<{
+      readonly ciphertextRemoved: boolean;
+      readonly eventCount: string;
+      readonly rewardVersionId: string;
+      readonly state: string;
+    }>(
+      `select obligation.current_state as state,
+              obligation.reward_version_id::text as "rewardVersionId",
+              (select count(*)::text from app.fulfillment_events
+                where fulfillment_id = obligation.id) as "eventCount",
+              (select ciphertext is null and encryption_iv is null
+                 and encryption_auth_tag is null
+                 from app.fulfillment_delivery_data where fulfillment_id = obligation.id)
+                as "ciphertextRemoved"
+         from app.fulfillment_obligations as obligation where obligation.id = $1`,
+      [physicalId],
+    );
+    expect(immutablePhysical.rows).toEqual([
+      {
+        ciphertextRemoved: true,
+        eventCount: '5',
+        rewardVersionId: physicalVersion,
+        state: 'delivered',
+      },
+    ]);
+    await expect(
+      database.query(
+        `update app.fulfillment_obligations
+            set reward_version_id = $2, current_state = 'awaiting_address'
+          where id = $1`,
+        [physicalId, physicalVersion],
+      ),
+    ).rejects.toThrow(/permission denied/iu);
+    await expect(
+      database.query(
+        `update app.fulfillment_events set to_state = 'shipped' where fulfillment_id = $1`,
+        [physicalId],
+      ),
+    ).rejects.toThrow(/permission denied/iu);
+    await expect(
+      database.query(
+        `insert into app.fulfillment_obligations (id, opening_id, reward_win_id, status)
+         select $2, opening_id, reward_win_id, status
+           from app.fulfillment_obligations where id = $1`,
+        [physicalId, randomUUID()],
+      ),
+    ).rejects.toBeDefined();
+
+    const experienceVersion = await createReward(creatorId, {
+      mode: 'unlimited',
+      rewardType: 'experience',
+    });
+    const experienceBox = await createBox(creatorId, experienceVersion);
+    const experienceUser = await createUser('999');
+    const experienceOpen = await open(experienceUser, experienceBox.boxId);
+    const experienceIdResult = await database.query<{ readonly id: string }>(
+      `select obligation.id::text as id
+         from app.fulfillment_obligations as obligation
+         join app.box_opens as opening on opening.id = obligation.opening_id
+        where opening.public_id = $1`,
+      [experienceOpen.body.opening.id],
+    );
+    const experienceId = experienceIdResult.rows[0]?.id;
+    if (experienceId === undefined) throw new Error('Experience fulfillment was not created.');
+    const experience = await fulfillments.getUserFulfillment(experienceUser.id, experienceId);
+    expect(experience).toMatchObject({
+      fulfillmentType: 'experience',
+      state: 'coordination_required',
+    });
+    await expect(
+      fulfillments.applyCreatorAction({
+        action: { action: 'fulfill_experience' },
+        actionKey: `experience_${randomUUID()}`,
+        actorUserId: managerId,
+        creatorId,
+        expectedRevision: 1,
+        fulfillmentId: experienceId,
+        requestId: randomUUID(),
+      }),
+    ).resolves.toMatchObject({ fulfillment: { state: 'fulfilled' } });
+  });
+
+  it('records protected creator access only after successful key and plaintext validation', async () => {
+    const creatorId = await createCreator();
+    const ownerId = await creatorOwner(creatorId);
+    const rewardVersionId = await createReward(creatorId, {
+      mode: 'unlimited',
+      rewardType: 'physical',
+    });
+    const box = await createBox(creatorId, rewardVersionId);
+    const user = await createUser('999');
+    const result = await open(user, box.boxId);
+    const fulfillmentResult = await database.query<{ readonly id: string }>(
+      `select obligation.id::text as id
+         from app.fulfillment_obligations as obligation
+         join app.box_opens as opening on opening.id = obligation.opening_id
+        where opening.public_id = $1`,
+      [result.body.opening.id],
+    );
+    const fulfillmentId = fulfillmentResult.rows[0]?.id;
+    if (fulfillmentId === undefined) throw new Error('Protected-read fixture was not created.');
+    const address = {
+      addressLine1: '321 Synthetic Avenue',
+      addressLine2: null,
+      city: 'Toronto',
+      country: 'CA',
+      postalCode: 'M5V 2T6',
+      recipientName: 'Synthetic Reader',
+      region: 'ON',
+    } as const;
+    await fulfillments.submitAddress({
+      actionKey: `protected_${randomUUID()}`,
+      actorUserId: user.id,
+      address,
+      expectedRevision: 1,
+      fulfillmentId,
+      requestId: randomUUID(),
+    });
+
+    const accessCount = async (): Promise<string> =>
+      (
+        await adminDatabase.query<{ readonly count: string }>(
+          `select count(*)::text as count from app.fulfillment_data_access_events
+            where fulfillment_id = $1`,
+          [fulfillmentId],
+        )
+      ).rows[0]?.count ?? 'missing';
+    const serviceWithAddressKey = (
+      keyHex: string,
+      version = 'local-fulfillment-address-v1',
+      actorBinding = {
+        keyHex: '33'.repeat(32),
+        version: 'local-fulfillment-actor-v1',
+      },
+    ) =>
+      createFulfillmentService({
+        actorBindingProvider: createEnvironmentFulfillmentActorBindingProvider(actorBinding),
+        database,
+        keyProvider: createEnvironmentFulfillmentKeyProvider({
+          address: { keyHex, version },
+          digitalSecret: {
+            keyHex: '22'.repeat(32),
+            version: 'local-digital-delivery-v1',
+          },
+        }),
+        logger,
+        retentionMs: null,
+      });
+    const readAsCreator = (service: FulfillmentService) =>
+      service.getCreatorDeliveryData({
+        actorUserId: ownerId,
+        creatorId,
+        fulfillmentId,
+        purpose: 'fulfillment_execution',
+      });
+
+    await expect(
+      readAsCreator(
+        serviceWithAddressKey('11'.repeat(32), 'local-fulfillment-address-v1', {
+          keyHex: '44'.repeat(32),
+          version: 'inactive-actor-binding-v2',
+        }),
+      ),
+    ).rejects.toBeInstanceOf(FulfillmentKeyUnavailableError);
+    expect(await accessCount()).toBe('0');
+
+    const forgedEventId = randomUUID();
+    const forgedExpiry = Date.now() + 30_000;
+    const forgedSignature = Buffer.alloc(32, 0xaa);
+    await expect(
+      database.query(
+        `select app.apply_creator_fulfillment_action_bound(
+           $1,$2,$3,2,$4,'mark_shipped','forged-transition',
+           decode(repeat('55',32),'hex'),'local-fulfillment-actor-v1',$5,$6
+         )`,
+        [fulfillmentId, creatorId, ownerId, forgedEventId, forgedExpiry, forgedSignature],
+      ),
+    ).rejects.toMatchObject({ constraint: 'fulfillment_actor_binding_invalid' });
+    await expect(
+      database.query(
+        `select * from app.read_fulfillment_delivery_data_bound(
+           $1,$2,$3,$4,'fulfillment_execution',
+           'local-fulfillment-actor-v1',$5,$6
+         )`,
+        [fulfillmentId, ownerId, creatorId, forgedEventId, forgedExpiry, forgedSignature],
+      ),
+    ).rejects.toMatchObject({ constraint: 'fulfillment_actor_binding_invalid' });
+    await expect(
+      database.query(
+        `select app.record_fulfillment_data_access_bound(
+           $1,$2,$3,$4,'fulfillment_execution',
+           'local-fulfillment-actor-v1',$5,$6
+         )`,
+        [fulfillmentId, ownerId, creatorId, forgedEventId, forgedExpiry, forgedSignature],
+      ),
+    ).rejects.toMatchObject({ constraint: 'fulfillment_actor_binding_invalid' });
+    expect(await accessCount()).toBe('0');
+    expect(
+      (
+        await database.query<{
+          readonly canUseLegacyAction: boolean;
+          readonly canUseLegacyRead: boolean;
+          readonly state: string;
+        }>(
+          `select
+             has_function_privilege(
+               current_user,
+               'app.apply_creator_fulfillment_action(uuid,uuid,uuid,bigint,uuid,text,text,bytea)',
+               'EXECUTE'
+             ) as "canUseLegacyAction",
+             has_function_privilege(
+               current_user,
+               'app.read_fulfillment_delivery_data(uuid,uuid,uuid,uuid,text)',
+               'EXECUTE'
+             ) as "canUseLegacyRead",
+             (select current_state from app.fulfillment_obligations where id = $1) as state`,
+          [fulfillmentId],
+        )
+      ).rows,
+    ).toEqual([{ canUseLegacyAction: false, canUseLegacyRead: false, state: 'ready_to_ship' }]);
+
+    await expect(
+      readAsCreator(serviceWithAddressKey('44'.repeat(32), 'unavailable-address-v1')),
+    ).rejects.toMatchObject({ name: 'FulfillmentKeyUnavailableError' });
+    await expect(readAsCreator(serviceWithAddressKey('44'.repeat(32)))).rejects.toMatchObject({
+      name: 'FulfillmentKeyUnavailableError',
+    });
+    expect(await accessCount()).toBe('0');
+
+    const original = await adminDatabase.query<{
+      readonly authenticationTag: Uint8Array;
+      readonly ciphertext: Uint8Array;
+      readonly iv: Uint8Array;
+    }>(
+      `select ciphertext, encryption_iv as iv,
+              encryption_auth_tag as "authenticationTag"
+         from app.fulfillment_delivery_data where fulfillment_id = $1`,
+      [fulfillmentId],
+    );
+    const protectedValue = original.rows[0];
+    if (protectedValue === undefined) throw new Error('Protected address was not stored.');
+    const restore = async (): Promise<void> => {
+      await adminDatabase.query(
+        `update app.fulfillment_delivery_data
+            set ciphertext = $2, encryption_iv = $3, encryption_auth_tag = $4,
+                updated_at = greatest(updated_at + interval '1 microsecond', clock_timestamp())
+          where fulfillment_id = $1`,
+        [
+          fulfillmentId,
+          protectedValue.ciphertext,
+          protectedValue.iv,
+          protectedValue.authenticationTag,
+        ],
+      );
+    };
+    for (const column of ['ciphertext', 'encryption_auth_tag'] as const) {
+      await adminDatabase.query(
+        `update app.fulfillment_delivery_data
+            set ${column} = set_byte(${column}, 0, get_byte(${column}, 0) # 1),
+                updated_at = greatest(updated_at + interval '1 microsecond', clock_timestamp())
+          where fulfillment_id = $1`,
+        [fulfillmentId],
+      );
+      await expect(readAsCreator(fulfillments)).rejects.toBeInstanceOf(
+        FulfillmentDataUnavailableError,
+      );
+      expect(await accessCount()).toBe('0');
+      await restore();
+    }
+
+    for (const malformedPlaintext of [
+      Uint8Array.of(0xff),
+      new TextEncoder().encode('{"unexpected":true}'),
+    ]) {
+      const malformed = encryptFulfillmentValue({
+        aad: buildFulfillmentAad({
+          creatorId,
+          domain: 'address',
+          fulfillmentId,
+          keyVersion: 'local-fulfillment-address-v1',
+          userId: user.id,
+        }),
+        key: new Uint8Array(32).fill(0x11),
+        plaintext: malformedPlaintext,
+      });
+      await adminDatabase.query(
+        `update app.fulfillment_delivery_data
+            set ciphertext = $2, encryption_iv = $3, encryption_auth_tag = $4,
+                updated_at = greatest(updated_at + interval '1 microsecond', clock_timestamp())
+          where fulfillment_id = $1`,
+        [fulfillmentId, malformed.ciphertext, malformed.iv, malformed.authenticationTag],
+      );
+      await expect(readAsCreator(fulfillments)).rejects.toBeInstanceOf(
+        FulfillmentDataUnavailableError,
+      );
+      expect(await accessCount()).toBe('0');
+      malformed.authenticationTag.fill(0);
+      malformed.ciphertext.fill(0);
+      malformed.iv.fill(0);
+      malformedPlaintext.fill(0);
+      await restore();
+    }
+
+    await expect(readAsCreator(fulfillments)).resolves.toMatchObject({ address });
+    expect(await accessCount()).toBe('1');
   });
 
   it('shares one stable pool across reward versions without replenishing cloned stock', async () => {
     const creatorId = await createCreator();
     const ownerId = await creatorOwner(creatorId);
     const reward = await createRewardRecord(creatorId, { mode: 'finite', quantity: '2' });
-    const firstBox = await createBox(creatorId, reward.versionId);
     const poolId = await inventoryPoolForVersion(reward.versionId);
+    await expect(
+      fulfillments.restock({
+        actionKey: `draft_${randomUUID()}`,
+        actorUserId: ownerId,
+        creatorId,
+        poolId,
+        quantity: 1n,
+        requestId: randomUUID(),
+      }),
+    ).rejects.toBeInstanceOf(InventoryRestockError);
+    const firstBox = await createBox(creatorId, reward.versionId);
     expect(poolId).not.toBe(reward.versionId);
     await open(await createUser('999'), firstBox.boxId);
 

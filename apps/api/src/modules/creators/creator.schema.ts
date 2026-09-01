@@ -88,7 +88,7 @@ export const parseCreatorId = (value: string | undefined): CreatorId => {
     throw validationError('creatorId must be a UUID.', { field: 'creatorId' });
   }
 
-  return value as CreatorId;
+  return value.toLowerCase() as CreatorId;
 };
 
 export const parseUserId = (value: string | undefined): UserId => {
@@ -96,7 +96,7 @@ export const parseUserId = (value: string | undefined): UserId => {
     throw validationError('userId must be a UUID.', { field: 'userId' });
   }
 
-  return value as UserId;
+  return value.toLowerCase() as UserId;
 };
 
 export const trustedUserId = (value: string): UserId => {
@@ -104,7 +104,7 @@ export const trustedUserId = (value: string): UserId => {
     throw new Error('The authenticated local user ID is not a UUID.');
   }
 
-  return value as UserId;
+  return value.toLowerCase() as UserId;
 };
 
 export const parseCreateCreatorInput = (body: unknown): CreateCreatorInput => {

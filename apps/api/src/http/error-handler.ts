@@ -36,6 +36,15 @@ import {
   SeedSetUnavailableError,
 } from '../modules/fairness/fairness.errors.js';
 import {
+  FulfillmentDataUnavailableError,
+  FulfillmentKeyUnavailableError,
+  FulfillmentNotFoundError,
+  FulfillmentPermissionDeniedError,
+  FulfillmentRevisionConflictError,
+  FulfillmentTransitionError,
+  InventoryRestockError,
+} from '../modules/fulfillment/fulfillment.errors.js';
+import {
   BoxNotOpenableError,
   InventoryUnavailableError,
   OpeningCurrencyUnavailableError,
@@ -251,6 +260,44 @@ const normalizeError = (error: unknown): ApiError => {
 
   if (error instanceof WalletNotFoundError) {
     return new ApiError(404, 'WALLET_NOT_FOUND', 'The wallet was not found.');
+  }
+
+  if (error instanceof FulfillmentNotFoundError) {
+    return new ApiError(404, 'FULFILLMENT_NOT_FOUND', 'The fulfillment was not found.');
+  }
+  if (error instanceof FulfillmentPermissionDeniedError) {
+    return new ApiError(403, 'FULFILLMENT_FORBIDDEN', 'The fulfillment action is not permitted.');
+  }
+  if (error instanceof FulfillmentRevisionConflictError) {
+    return new ApiError(409, 'FULFILLMENT_REVISION_CONFLICT', 'The fulfillment revision is stale.');
+  }
+  if (error instanceof FulfillmentTransitionError) {
+    return new ApiError(
+      409,
+      'FULFILLMENT_TRANSITION_INVALID',
+      'The fulfillment transition is invalid.',
+    );
+  }
+  if (error instanceof FulfillmentDataUnavailableError) {
+    return new ApiError(
+      409,
+      'FULFILLMENT_DATA_UNAVAILABLE',
+      'Protected fulfillment data is unavailable.',
+    );
+  }
+  if (error instanceof FulfillmentKeyUnavailableError) {
+    return new ApiError(
+      503,
+      'FULFILLMENT_KEY_UNAVAILABLE',
+      'The required fulfillment key is unavailable.',
+    );
+  }
+  if (error instanceof InventoryRestockError) {
+    return new ApiError(
+      409,
+      'INVENTORY_RESTOCK_INVALID',
+      'The inventory pool cannot be restocked.',
+    );
   }
 
   if (error instanceof AccountFundingRestrictedError) {

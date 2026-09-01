@@ -90,7 +90,17 @@ Completed: Stripe test-mode USD funding intents, exact-raw-body signed webhook i
 
 Depends on: Phases 9 and 10; fulfillment and inventory/privacy policy.
 
-Implement typed reward-specific fulfillment transitions, worker retries, creator/user views, encrypted/tokenized delivery data, access audit, and retention. Tests cover invalid transitions, duplicate action keys, cross-creator access, provider retry, address redaction/encryption, expired data, and immutable reward wins.
+Completed: typed physical, digital, and experience fulfillment transitions; immutable transition
+history; creator/user views; dedicated versioned address/digital AES-256-GCM encryption domains;
+audited owner/manager sensitive access; nullable retention metadata and explicit redaction; and
+creator-scoped idempotent manual inventory restock/backorder resolution. No external fulfillment
+provider is present, so no new provider job was invented; existing Phase 10 outbox/worker behavior
+remains unchanged. Tests cover invalid transitions, duplicate action/restock keys, role and tenant
+scope, encryption/AAD failure, redaction, pool-authoritative backorders, immutable reward wins, and
+authenticated database actor binding, audit rollback on failed decrypt/validation, cross-domain
+key separation, canonical UUID AAD, and Phase 9–11 regressions. Automatic restocking/box resume,
+carriers, scheduling, and production
+retention policy remain deferred.
 
 ## Phase 13 — Redis projections and leaderboards
 

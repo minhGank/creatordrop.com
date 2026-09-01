@@ -3,11 +3,21 @@ import { describe, expect, it } from 'vitest';
 import {
   parseAddCreatorMemberInput,
   parseCreateCreatorInput,
+  parseCreatorId,
   parseExpectedRevision,
   parseUpdateCreatorInput,
+  parseUserId,
 } from '../src/modules/creators/creator.schema.js';
 
 describe('creator request validation', () => {
+  it('canonicalizes validated UUID route identities to lowercase', () => {
+    expect(parseCreatorId('019C0000-0000-7000-8000-000000000010')).toBe(
+      '019c0000-0000-7000-8000-000000000010',
+    );
+    expect(parseUserId('019C0000-0000-7000-8000-000000000001')).toBe(
+      '019c0000-0000-7000-8000-000000000001',
+    );
+  });
   it('parses the allowlisted creator fields', () => {
     expect(
       parseCreateCreatorInput({

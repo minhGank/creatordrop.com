@@ -50,7 +50,7 @@ import {
 const localApplicationUrl =
   'postgresql://postgres:postgres@127.0.0.1:54322/postgres?options=-c%20role%3Dcreatordrop_app';
 const localMigrationUrl = 'postgresql://postgres:postgres@127.0.0.1:54322/postgres';
-const masterKeyHex = '11'.repeat(32);
+const masterKeyHex = '70'.repeat(32);
 const keyVersion = 'synthetic-integration-v1';
 const historicalKeyVersion = 'synthetic-history-v2';
 const replacementKeyVersion = 'synthetic-replacement-v2';
@@ -378,7 +378,7 @@ describe('RNG seed lifecycle', { concurrent: false }, () => {
     });
     for (const [version, keyHex] of [
       [keyVersion, masterKeyHex],
-      [historicalKeyVersion, '33'.repeat(32)],
+      [historicalKeyVersion, '83'.repeat(32)],
       [replacementKeyVersion, '44'.repeat(32)],
       [concurrentReplacementKeyVersion, '45'.repeat(32)],
       [legacyReplacementKeyVersion, '46'.repeat(32)],
@@ -469,7 +469,7 @@ describe('RNG seed lifecycle', { concurrent: false }, () => {
       ciphertextLength: 32,
       commitment: commitServerSeed(Buffer.from(rawSeedHex, 'hex')),
       ivLength: 12,
-      keyIdentity: '02d449a31fbb267c8f352e9968a79e3e5fc95c1bbeaa502fd6454ebde5a4bedc',
+      keyIdentity: keyIdentity(masterKeyHex),
       keyVersion,
       revealed: null,
     });
@@ -772,7 +772,7 @@ describe('RNG seed lifecycle', { concurrent: false }, () => {
     });
 
     const v2WithoutHistory = createService({
-      keyProvider: keyProvider(historicalKeyVersion, '33'.repeat(32)),
+      keyProvider: keyProvider(historicalKeyVersion, '83'.repeat(32)),
     });
     await expect(
       v2WithoutHistory.revealRetiredSeedSet({
@@ -786,7 +786,7 @@ describe('RNG seed lifecycle', { concurrent: false }, () => {
     ).toMatchObject({ revealedServerSeed: null, status: 'retired' });
 
     const v2WithWrongHistory = createService({
-      keyProvider: keyProvider(historicalKeyVersion, '33'.repeat(32), {
+      keyProvider: keyProvider(historicalKeyVersion, '83'.repeat(32), {
         [keyVersion]: '44'.repeat(32),
       }),
     });
@@ -802,7 +802,7 @@ describe('RNG seed lifecycle', { concurrent: false }, () => {
     ).toMatchObject({ revealedServerSeed: null, status: 'retired' });
 
     const v2WithHistory = createService({
-      keyProvider: keyProvider(historicalKeyVersion, '33'.repeat(32), {
+      keyProvider: keyProvider(historicalKeyVersion, '83'.repeat(32), {
         [keyVersion]: masterKeyHex,
       }),
     });
@@ -955,9 +955,7 @@ describe('RNG seed lifecycle', { concurrent: false }, () => {
          from app.rng_seed_sets where id = $1`,
       [initialized.fairness.activeSeedSet.id],
     );
-    expect(predecessor.rows).toEqual([
-      { identity: '02d449a31fbb267c8f352e9968a79e3e5fc95c1bbeaa502fd6454ebde5a4bedc' },
-    ]);
+    expect(predecessor.rows).toEqual([{ identity: keyIdentity(masterKeyHex) }]);
   });
 
   it('returns a completed replay when a concurrent retry provider fails after its initial miss', async () => {

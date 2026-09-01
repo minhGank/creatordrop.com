@@ -58,8 +58,9 @@ extensions. Phases 3–5 add users, creator tenancy, and versioned catalog confi
 multi-currency-capable wallets, immutable double-entry history, and reusable idempotency; only
 USD synthetic credits are enabled. Phase 9 adds atomic openings and transactional outbox rows.
 Phase 10 adds durable outbox delivery and Socket.io only. Phase 11 adds Stripe test-mode USD
-funding, signed webhooks, provider compensation/deficits, and read-only reconciliation. Payout,
-shipping, Redis
+funding, signed webhooks, provider compensation/deficits, and read-only reconciliation. Phase 12
+adds typed fulfillment, protected delivery data, audited creator access, and manual immutable
+restock events. Payout, carrier integration, automatic restock/box resume, Redis
 projections/leaderboards, and currency conversion remain absent.
 
 ## Database package
@@ -113,6 +114,51 @@ The key registry stores only `SHA-256(raw 32-byte key)` for equality and never s
 The migrations cannot infer a pre-hardening row's encryption key from ciphertext. They therefore preserve an unregistered or null-identity row as unresolved and fail nonce use, reveal, rotation, and compromise replacement closed until its exact registry mapping is established. Provision the authoritative mappings first, then use migration credentials in one transaction to update only null identities for the exact versions, and verify every affected row count and fingerprint before commit. The null-to-populated history update must equal the protected mapping; a mismatch is rejected and requires incident review rather than correction in place. A completed legacy `key_compromise` replacement using one version or an already-established equal identity makes the forward migration fail. A different-version replacement stays explicitly unresolved until both mappings are operator-verified, at which point deferred constraints revalidate it. Never log a key or silently rewrite invalid lifecycle history: retain the database, investigate/quarantine any rejected history, and resolve it through an audited forward migration or incident procedure before retrying.
 
 Phase 7 integration tests exercise encrypted storage, real PostgreSQL row locks, rollback, rotation/reveal, corruption, key unavailability/recovery, original-schema upgrades, and Supabase Auth through `npm run test:integration`.
+
+## Fulfillment encryption and restock configuration
+
+Phase 12 requires independent address and digital-delivery key domains:
+
+- `FULFILLMENT_ACTOR_BINDING_KEY` / `_VERSION`, a distinct short-lived command-signing key whose
+  matching verifier entry is readable only inside `app_private` security-definer code;
+- `FULFILLMENT_ADDRESS_MASTER_KEY` / `_VERSION` and strict JSON
+  `FULFILLMENT_ADDRESS_HISTORICAL_MASTER_KEYS`;
+- `DIGITAL_DELIVERY_MASTER_KEY` / `_VERSION` and strict JSON
+  `DIGITAL_DELIVERY_HISTORICAL_MASTER_KEYS`;
+- optional `FULFILLMENT_DATA_RETENTION_MS`; omit it until legal/operations approves a period.
+
+Every key is exactly 32 bytes as lowercase hex. All configured RNG, address, digital-secret, and
+actor-binding keys use different material. Startup hashes the decoded bytes and rejects overlap
+across active and historical configurations. The public `00…`/`11…`/`22…`/`33…` examples and local version names require explicit
+development/test mode and are rejected otherwise. Before configuring another key, use protected
+operator credentials to register only `SHA-256(raw key)` with its domain/version in
+`app.fulfillment_encryption_key_versions`; the private cross-domain identity registry makes the
+same fingerprint unusable in the RNG or actor-binding registry, including under concurrent
+provisioning. Never store or log an RNG/address/digital encryption key. Retain old configured keys
+while ciphertext references them. Missing/mismatched historical material fails closed and must
+not be treated as corruption or silently rewritten.
+
+Rotate the actor-binding verifier explicitly with
+`app_private.rotate_fulfillment_actor_binding_key(new_version, new_key_material, reason)` under
+migration/operator credentials, then inject the same active version/material into the API secret
+environment. Rotation atomically retires the previous version, derives and reserves the new
+SHA-256 identity in the shared domain registry, and appends immutable audit history. Exactly one
+version remains active; retired versions immediately stop verifying capabilities, while existing
+mutation idempotency makes an interrupted short-lived request safe to retry. The restricted
+application role can read only the active non-secret version/fingerprint and cannot read or mutate
+raw verifier keys or rotation history. The API confirms its configured identity is active before
+signing a 30-second capability over the authenticated actor and exact
+operation/creator/resource/event/revision/action/fingerprint/quantity scope. The checked-in `33…`
+entry is local-only.
+
+The same domain key provider derives a purpose-separated HMAC subkey for sensitive-command
+idempotency fingerprints. Immutable events store only the opaque fingerprint and non-secret key
+domain/version; address or redemption-code hashes are never stored directly.
+
+Manual restock is `POST /v1/creators/:creatorId/dashboard/inventory-pools/:poolId/restocks` with
+owner/manager authentication, `Idempotency-Key`, and a canonical positive decimal quantity.
+Restock appends history and changes availability atomically for a published/shared pool. Backorders are separately resolved
+through their typed fulfillment action; neither paused-box resume nor automatic resolution occurs.
 
 ## Run the API locally
 
