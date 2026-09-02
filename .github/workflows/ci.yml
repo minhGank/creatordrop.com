@@ -73,3 +73,7 @@ jobs:
       - name: Stop local Supabase
         if: always()
         run: npm run db:stop
+
+      - name: Stop local Redis
+        if: always()
+        run: npm run redis:stop

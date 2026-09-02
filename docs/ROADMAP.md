@@ -106,7 +106,15 @@ retention policy remain deferred.
 
 Depends on: Phases 9 and 10; leaderboard definition/privacy policy.
 
-Build idempotent consumers for creator spend/drop projections, cache-aside public catalog reads, TTL/invalidation, PostgreSQL rebuild and drift reconciliation. Tests run with Redis unavailable/evicted, replay duplicate events, rebuild from PostgreSQL, verify ordering/tie rules, isolate creators/currencies, and prove no financial command depends on cache.
+Completed: an independent durable consumer projects immutable opening point snapshots into
+rebuildable Redis global/creator all-time and seasonal boards; cache-aside public catalog reads use
+TTL/invalidation; PostgreSQL rebuild and drift reconciliation remain authoritative; and ended
+seasons finalize immutable global/creator champion results plus permanent achievements. Ranking is
+points, earliest score-reach time, then stable UUID internally. Participation and champion
+eligibility are automatic for every eligible user, with no Phase 13 opt-out. Public unauthenticated
+responses expose only the explicit authoritative username as user identity. Tests cover Redis
+loss/unavailability, replay/crash windows, multi-worker claims, ties, creator/season isolation,
+rebuild/drift, finalization/idempotency, public fallback, and financial independence.
 
 ## Phase 14 — Web authentication and catalog shell
 
@@ -130,7 +138,11 @@ Implement role-aware creator settings, box/reward drafts, probability preview/pu
 
 Depends on: Phases 10, 13, and 14.
 
-Implement live drop feed, leaderboards with freshness indicators, creator aggregates, reconnect/deduplication, privacy controls, and currency separation. Tests cover duplicate/out-of-order events, stale projections, Redis fallback, identity opt-out, and high-volume rendering.
+Implement live drop feed, leaderboards with freshness indicators, creator aggregates,
+reconnect/deduplication, presentation-only privacy controls, and currency separation. Privacy
+presentation changes must not remove ranking/champion eligibility or rewrite finalized rankings
+and achievements. Tests cover duplicate/out-of-order events, stale projections, Redis fallback,
+safe identity presentation, and high-volume rendering.
 
 ## Phase 18 — Operational hardening and launch gate
 

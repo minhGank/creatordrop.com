@@ -2,6 +2,7 @@ import { v7 as uuidv7 } from 'uuid';
 
 import type { Database, QueryExecutor } from '@creatordrop/database';
 import type { Logger } from '@creatordrop/observability';
+import { publicCatalogCacheKeys } from '@creatordrop/redis-projections';
 
 import { canPerformCreatorAction, type CreatorAction } from '../creators/creator.policy.js';
 import type { CreatorId, CreatorRole, UserId } from '../creators/creator.js';
@@ -12,6 +13,11 @@ import {
   CatalogResourceNotFoundError,
   CatalogRevisionConflictError,
 } from './catalog.errors.js';
+import {
+  parseCachedPublishedCatalog,
+  type CatalogCache,
+  type CatalogCacheIdentity,
+} from './catalog.cache.js';
 import {
   createPublishedManifest,
   hashPublishedManifest,
@@ -151,6 +157,7 @@ export interface CatalogService {
 }
 
 export interface CatalogServiceOptions {
+  readonly cache?: CatalogCache;
   readonly createId?: () => string;
   readonly database: Database;
   readonly logger: Logger;
@@ -327,427 +334,496 @@ const validatePublicationEntries = (records: readonly ConfigurationEntryRecord[]
 };
 
 export const createCatalogService = ({
+  cache,
   createId = uuidv7,
   database,
   logger,
-}: CatalogServiceOptions): CatalogService => ({
-  createBox: async (command) => {
-    const boxId = asBoxId(createId());
-    const versionId = asBoxVersionId(createId());
-    await database.transaction(async (transaction) => {
-      await requireCreatorPermission(
-        transaction,
-        command.creatorId,
-        command.actorUserId,
-        'catalog.draft.write',
-        true,
-      );
-      await insertBoxAndDraft(
-        transaction,
-        { boxId, versionId },
-        command.creatorId,
-        command.actorUserId,
-        command,
-      );
-    });
-    const box = await findBoxScoped(database, command.creatorId, command.actorUserId, boxId);
-    if (box === undefined) throw new Error('Created box was not found.');
-    logger.info('catalog.audit', {
-      action: 'box.created',
-      actorUserId: command.actorUserId,
-      boxId,
-      creatorId: command.creatorId,
-      requestId: command.requestId,
-      revision: box.revision,
-    });
-    return box;
-  },
-
-  listBoxes: async (scope) => {
-    await requireCreatorPermission(
-      database,
-      scope.creatorId,
-      scope.actorUserId,
-      'catalog.view',
-      false,
-    );
-    return listBoxesScoped(database, scope.creatorId, scope.actorUserId);
-  },
-
-  getBox: (scope, boxId) => requireBox(database, scope, boxId, 'catalog.view', false),
-
-  updateBox: async (command) => {
-    await database.transaction(async (transaction) => {
-      await requireCreatorPermission(
-        transaction,
-        command.creatorId,
-        command.actorUserId,
-        'catalog.draft.write',
-        true,
-      );
-      const box = await requireBox(
-        transaction,
-        command,
-        command.boxId,
-        'catalog.draft.write',
-        true,
-      );
-      requireRevision(box.revision, command.expectedRevision);
-      ensureEditableBox(box);
-      await createBoxDraftIfMissing(transaction, box, command.actorUserId, createId);
-      await updateBoxDraft(transaction, command.creatorId, command.boxId, command);
-      await incrementBoxRevision(transaction, command.creatorId, command.boxId);
-    });
-    const box = await findBoxScoped(
-      database,
-      command.creatorId,
-      command.actorUserId,
-      command.boxId,
-    );
-    if (box === undefined) throw new Error('Updated box was not found.');
-    return box;
-  },
-
-  createReward: async (command) => {
-    const rewardId = asRewardId(createId());
-    const versionId = asRewardVersionId(createId());
-    await database.transaction(async (transaction) => {
-      await requireCreatorPermission(
-        transaction,
-        command.creatorId,
-        command.actorUserId,
-        'catalog.draft.write',
-        true,
-      );
-      await insertRewardAndDraft(
-        transaction,
-        { rewardId, versionId },
-        command.creatorId,
-        command.actorUserId,
-        command,
-      );
-    });
-    const reward = await findRewardScoped(
-      database,
-      command.creatorId,
-      command.actorUserId,
-      rewardId,
-    );
-    if (reward === undefined) throw new Error('Created reward was not found.');
-    logger.info('catalog.audit', {
-      action: 'reward.created',
-      actorUserId: command.actorUserId,
-      creatorId: command.creatorId,
-      requestId: command.requestId,
-      rewardId,
-      revision: reward.revision,
-    });
-    return reward;
-  },
-
-  listRewards: async (scope) => {
-    await requireCreatorPermission(
-      database,
-      scope.creatorId,
-      scope.actorUserId,
-      'catalog.view',
-      false,
-    );
-    return listRewardsScoped(database, scope.creatorId, scope.actorUserId);
-  },
-
-  getReward: (scope, rewardId) => requireReward(database, scope, rewardId, 'catalog.view', false),
-
-  updateReward: async (command) => {
-    await database.transaction(async (transaction) => {
-      await requireCreatorPermission(
-        transaction,
-        command.creatorId,
-        command.actorUserId,
-        'catalog.draft.write',
-        true,
-      );
-      const reward = await requireReward(
-        transaction,
-        command,
-        command.rewardId,
-        'catalog.draft.write',
-        true,
-      );
-      requireRevision(reward.revision, command.expectedRevision);
-      ensureEditableReward(reward);
-      await createRewardDraftIfMissing(transaction, reward, command.actorUserId, createId);
-      await updateRewardDraft(transaction, command.creatorId, command.rewardId, command);
-      await incrementRewardRevision(transaction, command.creatorId, command.rewardId);
-    });
-    const reward = await findRewardScoped(
-      database,
-      command.creatorId,
-      command.actorUserId,
-      command.rewardId,
-    );
-    if (reward === undefined) throw new Error('Updated reward was not found.');
-    return reward;
-  },
-
-  getDraftConfiguration: async (scope, boxId) => {
-    await requireBox(database, scope, boxId, 'catalog.view', false);
-    return (await listDraftConfiguration(database, scope.creatorId, boxId)).map(
-      ({ entry }) => entry,
-    );
-  },
-
-  replaceDraftConfiguration: async (command) => {
-    await database.transaction(async (transaction) => {
-      await requireCreatorPermission(
-        transaction,
-        command.creatorId,
-        command.actorUserId,
-        'catalog.draft.write',
-        true,
-      );
-      const box = await requireBox(
-        transaction,
-        command,
-        command.boxId,
-        'catalog.draft.write',
-        true,
-      );
-      requireRevision(box.revision, command.expectedRevision);
-      ensureEditableBox(box);
-      await createBoxDraftIfMissing(transaction, box, command.actorUserId, createId);
-      const requestedIds = command.entries.map(({ rewardVersionId }) => rewardVersionId);
-      const versions = await findRewardVersionsForCreator(
-        transaction,
-        command.creatorId,
-        requestedIds,
-      );
-      if (
-        versions.length !== requestedIds.length ||
-        versions.some(
-          ({ rewardStatus, version }) =>
-            rewardStatus !== 'active' || !['draft', 'published'].includes(version.state),
-        )
-      ) {
-        throw new CatalogDraftConflictError(
-          'Every configured reward version must be active and belong to this creator.',
-        );
+}: CatalogServiceOptions): CatalogService => {
+  const readCache = async (
+    key: string,
+    identity: CatalogCacheIdentity,
+  ): Promise<PublishedCatalogVersion | undefined> => {
+    if (cache === undefined) return undefined;
+    try {
+      const value = await cache.redis.get(key);
+      return value === undefined ? undefined : parseCachedPublishedCatalog(value, identity);
+    } catch (error) {
+      logger.info('catalog.cache.read_failed', {
+        errorName: error instanceof Error ? error.name : 'UnknownError',
+      });
+      try {
+        await cache.redis.delete(key);
+      } catch {
+        // Redis is disposable; PostgreSQL remains the read authority.
       }
-      await replaceDraftConfiguration(
-        transaction,
-        command.creatorId,
-        command.boxId,
-        command.entries.map((entry) => ({ ...entry, id: asEntryId(createId()) })),
-      );
-      await incrementBoxRevision(transaction, command.creatorId, command.boxId);
-    });
-    logger.info('catalog.audit', {
-      action: 'box.draft_configuration_replaced',
-      actorUserId: command.actorUserId,
-      boxId: command.boxId,
-      creatorId: command.creatorId,
-      entryCount: command.entries.length,
-      requestId: command.requestId,
-    });
-    return (await listDraftConfiguration(database, command.creatorId, command.boxId)).map(
-      ({ entry }) => entry,
-    );
-  },
+      return undefined;
+    }
+  };
+  const writeCache = async (
+    keys: readonly string[],
+    value: PublishedCatalogVersion,
+  ): Promise<void> => {
+    if (cache === undefined) return;
+    try {
+      await Promise.all(keys.map((key) => cache.redis.set(key, value, cache.ttlSeconds)));
+    } catch (error) {
+      logger.info('catalog.cache.write_failed', {
+        errorName: error instanceof Error ? error.name : 'UnknownError',
+      });
+    }
+  };
+  const invalidateCurrent = async (boxId: BoxId): Promise<void> => {
+    if (cache === undefined) return;
+    try {
+      await cache.redis.delete(publicCatalogCacheKeys.currentBox(boxId));
+    } catch (error) {
+      logger.info('catalog.cache.invalidation_failed', {
+        errorName: error instanceof Error ? error.name : 'UnknownError',
+      });
+    }
+  };
 
-  publishBox: async (command) => {
-    const publishedVersion = await database.transaction(async (transaction) => {
+  return {
+    createBox: async (command) => {
+      const boxId = asBoxId(createId());
+      const versionId = asBoxVersionId(createId());
+      await database.transaction(async (transaction) => {
+        await requireCreatorPermission(
+          transaction,
+          command.creatorId,
+          command.actorUserId,
+          'catalog.draft.write',
+          true,
+        );
+        await insertBoxAndDraft(
+          transaction,
+          { boxId, versionId },
+          command.creatorId,
+          command.actorUserId,
+          command,
+        );
+      });
+      const box = await findBoxScoped(database, command.creatorId, command.actorUserId, boxId);
+      if (box === undefined) throw new Error('Created box was not found.');
+      logger.info('catalog.audit', {
+        action: 'box.created',
+        actorUserId: command.actorUserId,
+        boxId,
+        creatorId: command.creatorId,
+        requestId: command.requestId,
+        revision: box.revision,
+      });
+      return box;
+    },
+
+    listBoxes: async (scope) => {
       await requireCreatorPermission(
-        transaction,
-        command.creatorId,
-        command.actorUserId,
-        'catalog.publish',
-        true,
-      );
-      const preflightBox = await requireBox(
-        transaction,
-        command,
-        command.boxId,
-        'catalog.publish',
+        database,
+        scope.creatorId,
+        scope.actorUserId,
+        'catalog.view',
         false,
       );
-      requireRevision(preflightBox.revision, command.expectedRevision);
-      ensureEditableBox(preflightBox);
-      if (preflightBox.draft === null)
-        throw new CatalogDraftConflictError('The box has no draft to publish.');
-      const preflightRecords = await listDraftConfiguration(
-        transaction,
-        command.creatorId,
-        command.boxId,
-      );
-      validatePublicationEntries(preflightRecords);
-      const lockedInventory = await lockBoxPublicationInventoryPools(
-        transaction,
-        preflightBox.draft.id,
-        command.creatorId,
-      );
-      if (lockedInventory.some(({ availableQuantity }) => availableQuantity <= 0n)) {
-        throw new CatalogPublicationError(
-          'INVALID_INVENTORY',
-          'Finite pause-box inventory must be currently available before publication.',
-        );
-      }
+      return listBoxesScoped(database, scope.creatorId, scope.actorUserId);
+    },
 
-      const box = await requireBox(transaction, command, command.boxId, 'catalog.publish', true);
-      requireRevision(box.revision, command.expectedRevision);
-      ensureEditableBox(box);
-      const lockedDraft = box.draft;
-      if (lockedDraft?.id !== preflightBox.draft.id) {
-        throw new CatalogRevisionConflictError(box.revision);
-      }
-      const records = await listDraftConfiguration(transaction, command.creatorId, command.boxId);
-      validatePublicationEntries(records);
-      if (lockedDraft.openingCompatibilityVersion !== 'opening-v1') {
-        throw new CatalogPublicationError(
-          'BASE_REWARD_INVALID',
-          'Legacy drafts must be explicitly reconfigured before they can be published for opening.',
+    getBox: (scope, boxId) => requireBox(database, scope, boxId, 'catalog.view', false),
+
+    updateBox: async (command) => {
+      await database.transaction(async (transaction) => {
+        await requireCreatorPermission(
+          transaction,
+          command.creatorId,
+          command.actorUserId,
+          'catalog.draft.write',
+          true,
         );
-      }
-      const manifest = createPublishedManifest({
-        boxId: box.id,
-        boxVersionId: lockedDraft.id,
-        currency: lockedDraft.currency,
-        entries: records.map(({ entry }) => ({
-          id: entry.id,
-          position: entry.position,
-          rewardVersionId: entry.rewardVersion.id,
-          weight: asWeight(entry.weight),
-        })),
-        priceMinor: asMoney(lockedDraft.priceMinor),
+        const box = await requireBox(
+          transaction,
+          command,
+          command.boxId,
+          'catalog.draft.write',
+          true,
+        );
+        requireRevision(box.revision, command.expectedRevision);
+        ensureEditableBox(box);
+        await createBoxDraftIfMissing(transaction, box, command.actorUserId, createId);
+        await updateBoxDraft(transaction, command.creatorId, command.boxId, command);
+        await incrementBoxRevision(transaction, command.creatorId, command.boxId);
       });
-      const totalWeight = totalProbabilityWeight(
-        records.map(({ entry }) => ({
-          id: entry.id,
-          position: entry.position,
-          rewardVersionId: entry.rewardVersion.id,
-          weight: asWeight(entry.weight),
-        })),
-      );
-      const configurationHash = hashPublishedManifest(manifest);
-      await markConfigurationRewardsPublished(transaction, lockedDraft.id);
-      await publishBoxVersion(
-        transaction,
+      const box = await findBoxScoped(
+        database,
         command.creatorId,
+        command.actorUserId,
         command.boxId,
-        lockedDraft.id,
-        totalWeight,
-        configurationHash,
-        rngAlgorithmVersion,
       );
-      return lockedDraft;
-    });
+      if (box === undefined) throw new Error('Updated box was not found.');
+      return box;
+    },
 
-    const published = await findPublicPublishedVersion(
-      database,
-      command.boxId,
-      publishedVersion.id,
-    );
-    if (published === undefined) throw new Error('Published version was not found.');
-    const catalog = await buildPublishedCatalog(database, published.boxId, published.version);
-    logger.info('catalog.audit', {
-      action: 'box.published',
-      actorUserId: command.actorUserId,
-      boxId: command.boxId,
-      boxVersionId: published.version.id,
-      configurationHash: catalog.configurationHash,
-      creatorId: command.creatorId,
-      requestId: command.requestId,
-      totalWeight: catalog.manifest.totalWeight,
-    });
-    return catalog;
-  },
-
-  listBoxVersions: async (scope, boxId) => {
-    await requireBox(database, scope, boxId, 'catalog.view', false);
-    return listBoxVersionsScoped(database, scope.creatorId, scope.actorUserId, boxId);
-  },
-
-  listRewardVersions: async (scope, rewardId) => {
-    await requireReward(database, scope, rewardId, 'catalog.view', false);
-    return listRewardVersionsScoped(database, scope.creatorId, scope.actorUserId, rewardId);
-  },
-
-  getPublicBox: async (boxId) => {
-    const published = await findPublicCurrentVersion(database, boxId);
-    if (published === undefined) throw new CatalogResourceNotFoundError();
-    return buildPublishedCatalog(database, published.boxId, published.version);
-  },
-
-  getPublicBoxVersion: async (boxId, versionId) => {
-    const published = await findPublicPublishedVersion(database, boxId, versionId);
-    if (published === undefined) throw new CatalogResourceNotFoundError();
-    return buildPublishedCatalog(database, published.boxId, published.version);
-  },
-
-  archiveBox: async (command) => {
-    await database.transaction(async (transaction) => {
-      await requireCreatorPermission(
-        transaction,
+    createReward: async (command) => {
+      const rewardId = asRewardId(createId());
+      const versionId = asRewardVersionId(createId());
+      await database.transaction(async (transaction) => {
+        await requireCreatorPermission(
+          transaction,
+          command.creatorId,
+          command.actorUserId,
+          'catalog.draft.write',
+          true,
+        );
+        await insertRewardAndDraft(
+          transaction,
+          { rewardId, versionId },
+          command.creatorId,
+          command.actorUserId,
+          command,
+        );
+      });
+      const reward = await findRewardScoped(
+        database,
         command.creatorId,
         command.actorUserId,
-        'catalog.archive',
-        true,
+        rewardId,
       );
-      const box = await requireBox(transaction, command, command.boxId, 'catalog.archive', true);
-      requireRevision(box.revision, command.expectedRevision);
-      await archiveBoxScoped(transaction, command.creatorId, command.boxId);
-    });
-    const box = await findBoxScoped(
-      database,
-      command.creatorId,
-      command.actorUserId,
-      command.boxId,
-    );
-    if (box === undefined) throw new Error('Archived box was not found.');
-    logger.info('catalog.audit', {
-      action: 'box.archived',
-      actorUserId: command.actorUserId,
-      boxId: command.boxId,
-      creatorId: command.creatorId,
-      requestId: command.requestId,
-      revision: box.revision,
-    });
-    return box;
-  },
+      if (reward === undefined) throw new Error('Created reward was not found.');
+      logger.info('catalog.audit', {
+        action: 'reward.created',
+        actorUserId: command.actorUserId,
+        creatorId: command.creatorId,
+        requestId: command.requestId,
+        rewardId,
+        revision: reward.revision,
+      });
+      return reward;
+    },
 
-  archiveReward: async (command) => {
-    await database.transaction(async (transaction) => {
+    listRewards: async (scope) => {
       await requireCreatorPermission(
-        transaction,
+        database,
+        scope.creatorId,
+        scope.actorUserId,
+        'catalog.view',
+        false,
+      );
+      return listRewardsScoped(database, scope.creatorId, scope.actorUserId);
+    },
+
+    getReward: (scope, rewardId) => requireReward(database, scope, rewardId, 'catalog.view', false),
+
+    updateReward: async (command) => {
+      await database.transaction(async (transaction) => {
+        await requireCreatorPermission(
+          transaction,
+          command.creatorId,
+          command.actorUserId,
+          'catalog.draft.write',
+          true,
+        );
+        const reward = await requireReward(
+          transaction,
+          command,
+          command.rewardId,
+          'catalog.draft.write',
+          true,
+        );
+        requireRevision(reward.revision, command.expectedRevision);
+        ensureEditableReward(reward);
+        await createRewardDraftIfMissing(transaction, reward, command.actorUserId, createId);
+        await updateRewardDraft(transaction, command.creatorId, command.rewardId, command);
+        await incrementRewardRevision(transaction, command.creatorId, command.rewardId);
+      });
+      const reward = await findRewardScoped(
+        database,
         command.creatorId,
         command.actorUserId,
-        'catalog.archive',
-        true,
-      );
-      const reward = await requireReward(
-        transaction,
-        command,
         command.rewardId,
-        'catalog.archive',
-        true,
       );
-      requireRevision(reward.revision, command.expectedRevision);
-      await archiveRewardScoped(transaction, command.creatorId, command.rewardId);
-    });
-    const reward = await findRewardScoped(
-      database,
-      command.creatorId,
-      command.actorUserId,
-      command.rewardId,
-    );
-    if (reward === undefined) throw new Error('Archived reward was not found.');
-    logger.info('catalog.audit', {
-      action: 'reward.archived',
-      actorUserId: command.actorUserId,
-      creatorId: command.creatorId,
-      requestId: command.requestId,
-      rewardId: command.rewardId,
-      revision: reward.revision,
-    });
-    return reward;
-  },
-});
+      if (reward === undefined) throw new Error('Updated reward was not found.');
+      return reward;
+    },
+
+    getDraftConfiguration: async (scope, boxId) => {
+      await requireBox(database, scope, boxId, 'catalog.view', false);
+      return (await listDraftConfiguration(database, scope.creatorId, boxId)).map(
+        ({ entry }) => entry,
+      );
+    },
+
+    replaceDraftConfiguration: async (command) => {
+      await database.transaction(async (transaction) => {
+        await requireCreatorPermission(
+          transaction,
+          command.creatorId,
+          command.actorUserId,
+          'catalog.draft.write',
+          true,
+        );
+        const box = await requireBox(
+          transaction,
+          command,
+          command.boxId,
+          'catalog.draft.write',
+          true,
+        );
+        requireRevision(box.revision, command.expectedRevision);
+        ensureEditableBox(box);
+        await createBoxDraftIfMissing(transaction, box, command.actorUserId, createId);
+        const requestedIds = command.entries.map(({ rewardVersionId }) => rewardVersionId);
+        const versions = await findRewardVersionsForCreator(
+          transaction,
+          command.creatorId,
+          requestedIds,
+        );
+        if (
+          versions.length !== requestedIds.length ||
+          versions.some(
+            ({ rewardStatus, version }) =>
+              rewardStatus !== 'active' || !['draft', 'published'].includes(version.state),
+          )
+        ) {
+          throw new CatalogDraftConflictError(
+            'Every configured reward version must be active and belong to this creator.',
+          );
+        }
+        await replaceDraftConfiguration(
+          transaction,
+          command.creatorId,
+          command.boxId,
+          command.entries.map((entry) => ({ ...entry, id: asEntryId(createId()) })),
+        );
+        await incrementBoxRevision(transaction, command.creatorId, command.boxId);
+      });
+      logger.info('catalog.audit', {
+        action: 'box.draft_configuration_replaced',
+        actorUserId: command.actorUserId,
+        boxId: command.boxId,
+        creatorId: command.creatorId,
+        entryCount: command.entries.length,
+        requestId: command.requestId,
+      });
+      return (await listDraftConfiguration(database, command.creatorId, command.boxId)).map(
+        ({ entry }) => entry,
+      );
+    },
+
+    publishBox: async (command) => {
+      const publishedVersion = await database.transaction(async (transaction) => {
+        await requireCreatorPermission(
+          transaction,
+          command.creatorId,
+          command.actorUserId,
+          'catalog.publish',
+          true,
+        );
+        const preflightBox = await requireBox(
+          transaction,
+          command,
+          command.boxId,
+          'catalog.publish',
+          false,
+        );
+        requireRevision(preflightBox.revision, command.expectedRevision);
+        ensureEditableBox(preflightBox);
+        if (preflightBox.draft === null)
+          throw new CatalogDraftConflictError('The box has no draft to publish.');
+        const preflightRecords = await listDraftConfiguration(
+          transaction,
+          command.creatorId,
+          command.boxId,
+        );
+        validatePublicationEntries(preflightRecords);
+        const lockedInventory = await lockBoxPublicationInventoryPools(
+          transaction,
+          preflightBox.draft.id,
+          command.creatorId,
+        );
+        if (lockedInventory.some(({ availableQuantity }) => availableQuantity <= 0n)) {
+          throw new CatalogPublicationError(
+            'INVALID_INVENTORY',
+            'Finite pause-box inventory must be currently available before publication.',
+          );
+        }
+
+        const box = await requireBox(transaction, command, command.boxId, 'catalog.publish', true);
+        requireRevision(box.revision, command.expectedRevision);
+        ensureEditableBox(box);
+        const lockedDraft = box.draft;
+        if (lockedDraft?.id !== preflightBox.draft.id) {
+          throw new CatalogRevisionConflictError(box.revision);
+        }
+        const records = await listDraftConfiguration(transaction, command.creatorId, command.boxId);
+        validatePublicationEntries(records);
+        if (lockedDraft.openingCompatibilityVersion !== 'opening-v1') {
+          throw new CatalogPublicationError(
+            'BASE_REWARD_INVALID',
+            'Legacy drafts must be explicitly reconfigured before they can be published for opening.',
+          );
+        }
+        const manifest = createPublishedManifest({
+          boxId: box.id,
+          boxVersionId: lockedDraft.id,
+          currency: lockedDraft.currency,
+          entries: records.map(({ entry }) => ({
+            id: entry.id,
+            position: entry.position,
+            rewardVersionId: entry.rewardVersion.id,
+            weight: asWeight(entry.weight),
+          })),
+          priceMinor: asMoney(lockedDraft.priceMinor),
+        });
+        const totalWeight = totalProbabilityWeight(
+          records.map(({ entry }) => ({
+            id: entry.id,
+            position: entry.position,
+            rewardVersionId: entry.rewardVersion.id,
+            weight: asWeight(entry.weight),
+          })),
+        );
+        const configurationHash = hashPublishedManifest(manifest);
+        await markConfigurationRewardsPublished(transaction, lockedDraft.id);
+        await publishBoxVersion(
+          transaction,
+          command.creatorId,
+          command.boxId,
+          lockedDraft.id,
+          totalWeight,
+          configurationHash,
+          rngAlgorithmVersion,
+        );
+        return lockedDraft;
+      });
+
+      const published = await findPublicPublishedVersion(
+        database,
+        command.boxId,
+        publishedVersion.id,
+      );
+      if (published === undefined) throw new Error('Published version was not found.');
+      const catalog = await buildPublishedCatalog(database, published.boxId, published.version);
+      logger.info('catalog.audit', {
+        action: 'box.published',
+        actorUserId: command.actorUserId,
+        boxId: command.boxId,
+        boxVersionId: published.version.id,
+        configurationHash: catalog.configurationHash,
+        creatorId: command.creatorId,
+        requestId: command.requestId,
+        totalWeight: catalog.manifest.totalWeight,
+      });
+      await invalidateCurrent(command.boxId);
+      await writeCache(
+        [
+          publicCatalogCacheKeys.currentBox(command.boxId),
+          publicCatalogCacheKeys.version(command.boxId, published.version.id),
+        ],
+        catalog,
+      );
+      return catalog;
+    },
+
+    listBoxVersions: async (scope, boxId) => {
+      await requireBox(database, scope, boxId, 'catalog.view', false);
+      return listBoxVersionsScoped(database, scope.creatorId, scope.actorUserId, boxId);
+    },
+
+    listRewardVersions: async (scope, rewardId) => {
+      await requireReward(database, scope, rewardId, 'catalog.view', false);
+      return listRewardVersionsScoped(database, scope.creatorId, scope.actorUserId, rewardId);
+    },
+
+    getPublicBox: async (boxId) => {
+      const key = publicCatalogCacheKeys.currentBox(boxId);
+      const cached = await readCache(key, { boxId });
+      if (cached !== undefined) return cached;
+      const published = await findPublicCurrentVersion(database, boxId);
+      if (published === undefined) throw new CatalogResourceNotFoundError();
+      const catalog = await buildPublishedCatalog(database, published.boxId, published.version);
+      await writeCache(
+        [key, publicCatalogCacheKeys.version(published.boxId, published.version.id)],
+        catalog,
+      );
+      return catalog;
+    },
+
+    getPublicBoxVersion: async (boxId, versionId) => {
+      const key = publicCatalogCacheKeys.version(boxId, versionId);
+      const cached = await readCache(key, { boxId, versionId });
+      if (cached !== undefined) return cached;
+      const published = await findPublicPublishedVersion(database, boxId, versionId);
+      if (published === undefined) throw new CatalogResourceNotFoundError();
+      const catalog = await buildPublishedCatalog(database, published.boxId, published.version);
+      await writeCache([key], catalog);
+      return catalog;
+    },
+
+    archiveBox: async (command) => {
+      await database.transaction(async (transaction) => {
+        await requireCreatorPermission(
+          transaction,
+          command.creatorId,
+          command.actorUserId,
+          'catalog.archive',
+          true,
+        );
+        const box = await requireBox(transaction, command, command.boxId, 'catalog.archive', true);
+        requireRevision(box.revision, command.expectedRevision);
+        await archiveBoxScoped(transaction, command.creatorId, command.boxId);
+      });
+      const box = await findBoxScoped(
+        database,
+        command.creatorId,
+        command.actorUserId,
+        command.boxId,
+      );
+      if (box === undefined) throw new Error('Archived box was not found.');
+      logger.info('catalog.audit', {
+        action: 'box.archived',
+        actorUserId: command.actorUserId,
+        boxId: command.boxId,
+        creatorId: command.creatorId,
+        requestId: command.requestId,
+        revision: box.revision,
+      });
+      await invalidateCurrent(command.boxId);
+      return box;
+    },
+
+    archiveReward: async (command) => {
+      await database.transaction(async (transaction) => {
+        await requireCreatorPermission(
+          transaction,
+          command.creatorId,
+          command.actorUserId,
+          'catalog.archive',
+          true,
+        );
+        const reward = await requireReward(
+          transaction,
+          command,
+          command.rewardId,
+          'catalog.archive',
+          true,
+        );
+        requireRevision(reward.revision, command.expectedRevision);
+        await archiveRewardScoped(transaction, command.creatorId, command.rewardId);
+      });
+      const reward = await findRewardScoped(
+        database,
+        command.creatorId,
+        command.actorUserId,
+        command.rewardId,
+      );
+      if (reward === undefined) throw new Error('Archived reward was not found.');
+      logger.info('catalog.audit', {
+        action: 'reward.archived',
+        actorUserId: command.actorUserId,
+        creatorId: command.creatorId,
+        requestId: command.requestId,
+        rewardId: command.rewardId,
+        revision: reward.revision,
+      });
+      return reward;
+    },
+  };
+};

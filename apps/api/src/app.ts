@@ -18,6 +18,8 @@ import { createFairnessRouter } from './modules/fairness/fairness.route.js';
 import type { FairnessService } from './modules/fairness/fairness.service.js';
 import { createFulfillmentRouter } from './modules/fulfillment/fulfillment.route.js';
 import type { FulfillmentService } from './modules/fulfillment/fulfillment.service.js';
+import { createLeaderboardRouter } from './modules/leaderboards/leaderboard.route.js';
+import type { LeaderboardService } from './modules/leaderboards/leaderboard.service.js';
 import { createOpeningRouter } from './modules/openings/opening.route.js';
 import type { OpeningService } from './modules/openings/opening.service.js';
 import {
@@ -41,6 +43,7 @@ export interface AppOptions {
   readonly fairnessService: FairnessService;
   readonly fulfillmentService?: FulfillmentService;
   readonly logger: Logger;
+  readonly leaderboardService?: LeaderboardService;
   readonly openingService?: OpeningService;
   readonly paymentService?: PaymentService;
   readonly runtime: {
@@ -69,6 +72,7 @@ export const createApp = ({
   creatorService,
   fairnessService,
   fulfillmentService,
+  leaderboardService,
   logger,
   openingService,
   paymentService,
@@ -95,6 +99,9 @@ export const createApp = ({
   app.use(express.json({ limit: security.requestBodyLimitBytes }));
   app.get('/health', sendStatus('ok'));
   app.get('/ready', sendStatus('ready'));
+  if (leaderboardService !== undefined) {
+    app.use('/v1', createLeaderboardRouter(leaderboardService));
+  }
   app.use(
     '/v1/auth',
     createAuthRouter({

@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { parseDatabaseEnvironment, parseMigrationEnvironment } from '@creatordrop/config';
 import { createDatabasePool, type Database } from '@creatordrop/database';
 import type { LogAttributes, Logger } from '@creatordrop/observability';
+import { publicCatalogCacheKeys, type RedisJsonCache } from '@creatordrop/redis-projections';
 
 import { createApp } from '../src/app.js';
 import { createAuthenticationMiddleware } from '../src/modules/auth/authentication.middleware.js';
@@ -91,6 +92,24 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
     DATABASE_MIGRATION_URL: process.env.DATABASE_MIGRATION_URL ?? localMigrationUrl,
   });
   const auditRecords: AuditRecord[] = [];
+  const cacheRecords = new Map<string, unknown>();
+  let cacheAvailable = true;
+  const catalogCache: RedisJsonCache = {
+    delete: (key) => {
+      if (!cacheAvailable) throw new Error('Synthetic Redis unavailable.');
+      cacheRecords.delete(key);
+      return Promise.resolve();
+    },
+    get: (key) => {
+      if (!cacheAvailable) throw new Error('Synthetic Redis unavailable.');
+      return Promise.resolve(cacheRecords.get(key));
+    },
+    set: (key, value) => {
+      if (!cacheAvailable) throw new Error('Synthetic Redis unavailable.');
+      cacheRecords.set(key, JSON.parse(JSON.stringify(value)) as unknown);
+      return Promise.resolve();
+    },
+  };
   const logger: Logger = {
     error: (message, attributes) => auditRecords.push({ attributes, message }),
     info: (message, attributes) => auditRecords.push({ attributes, message }),
@@ -175,6 +194,8 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
       `delete from auth.users where email like 'phase5-%@example.test'`,
     );
     auditRecords.length = 0;
+    cacheAvailable = true;
+    cacheRecords.clear();
   };
 
   const createLocalAuthIdentity = async (): Promise<LocalAuthIdentity> => {
@@ -343,7 +364,11 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
         bootstrapUsers: createUserBootstrapService({ database: applicationDatabase }),
         verifyAccessToken,
       }),
-      catalogService: createCatalogService({ database: applicationDatabase, logger }),
+      catalogService: createCatalogService({
+        cache: { redis: catalogCache, ttlSeconds: 300 },
+        database: applicationDatabase,
+        logger,
+      }),
       creatorService: createCreatorService({ database: applicationDatabase, logger }),
       fairnessService: createUnhandledFairnessService(),
       logger,
@@ -753,6 +778,89 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
       .map((record) => record.attributes?.action);
     expect(auditActions).toContain('box.published');
     expect(JSON.stringify(auditRecords)).not.toContain(owner.accessToken);
+  });
+
+  it('uses disposable cache-aside public reads without making catalog writes depend on Redis', async () => {
+    const owner = await createActor();
+    const creator = await createCreator(owner);
+    const box = await createBox(owner, creator.id, boxBody('Cached public box'));
+    const reward = await createReward(owner, creator.id, rewardBody('Cached public reward'));
+    expect(
+      (await configure(owner, creator.id, box, [{ rewardVersionId: reward.draftId, weight: '1' }]))
+        .status,
+    ).toBe(200);
+    const publication = await request(app)
+      .post(`/v1/creators/${creator.id}/boxes/${box.id}/publish`)
+      .set(authorization(owner))
+      .set('If-Match', '"2"');
+    expect(publication.status).toBe(200);
+
+    const currentKey = publicCatalogCacheKeys.currentBox(box.id);
+    const versionKey = publicCatalogCacheKeys.version(box.id, box.draftId);
+    expect(cacheRecords.has(currentKey)).toBe(true);
+    expect(cacheRecords.has(versionKey)).toBe(true);
+
+    cacheRecords.set(currentKey, { forged: true });
+    const corruptFallback = await request(app).get(`/v1/boxes/${box.id}`);
+    expect(corruptFallback.status).toBe(200);
+    expect(corruptFallback.body).toEqual(publication.body);
+    expect(cacheRecords.get(currentKey)).toEqual(publication.body);
+
+    cacheRecords.delete(currentKey);
+    const missFallback = await request(app).get(`/v1/boxes/${box.id}`);
+    expect(missFallback.status).toBe(200);
+    expect(cacheRecords.has(currentKey)).toBe(true);
+
+    const otherBox = await createBox(owner, creator.id, boxBody('Other cached public box'));
+    const otherReward = await createReward(
+      owner,
+      creator.id,
+      rewardBody('Other cached public reward'),
+    );
+    expect(
+      (
+        await configure(owner, creator.id, otherBox, [
+          { rewardVersionId: otherReward.draftId, weight: '1' },
+        ])
+      ).status,
+    ).toBe(200);
+    const otherPublication = await request(app)
+      .post(`/v1/creators/${creator.id}/boxes/${otherBox.id}/publish`)
+      .set(authorization(owner))
+      .set('If-Match', '"2"');
+    expect(otherPublication.status).toBe(200);
+
+    cacheRecords.set(currentKey, otherPublication.body as unknown);
+    const wrongCurrentIdentity = await request(app).get(`/v1/boxes/${box.id.toUpperCase()}`);
+    expect(wrongCurrentIdentity.status).toBe(200);
+    expect(wrongCurrentIdentity.body).toEqual(publication.body);
+    expect(cacheRecords.get(currentKey)).toEqual(publication.body);
+
+    cacheRecords.set(versionKey, otherPublication.body as unknown);
+    const wrongVersionIdentity = await request(app).get(
+      `/v1/boxes/${box.id.toUpperCase()}/versions/${box.draftId.toUpperCase()}`,
+    );
+    expect(wrongVersionIdentity.status).toBe(200);
+    expect(wrongVersionIdentity.body).toEqual(publication.body);
+    expect(cacheRecords.get(versionKey)).toEqual(publication.body);
+
+    cacheAvailable = false;
+    const unavailableFallback = await request(app).get(
+      `/v1/boxes/${box.id}/versions/${box.draftId}`,
+    );
+    expect(unavailableFallback.status).toBe(200);
+    cacheAvailable = true;
+
+    const archived = await request(app)
+      .post(`/v1/creators/${creator.id}/boxes/${box.id}/archive`)
+      .set(authorization(owner))
+      .set('If-Match', '"3"');
+    expect(archived.status).toBe(200);
+    expect(cacheRecords.has(currentKey)).toBe(false);
+    expect((await request(app).get(`/v1/boxes/${box.id}`)).status).toBe(404);
+    expect((await request(app).get(`/v1/boxes/${box.id}/versions/${box.draftId}`)).status).toBe(
+      200,
+    );
   });
 
   it('preserves immutable historical versions while later edits create new drafts', async () => {

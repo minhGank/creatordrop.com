@@ -34,6 +34,7 @@ import {
   consumeOpeningInventoryPool,
   findOpeningCatalog,
   insertOpeningHistory,
+  lockLeaderboardSeasonForOpening,
   lockCurrentBoxForOpening,
   lockOpeningInventoryPool,
   pauseBoxesForInventoryPool,
@@ -360,6 +361,8 @@ export const createOpeningService = ({
             throw new OpeningCurrencyUnavailableError();
           }
           const price = parsePositiveMoneyMinor(catalog.priceMinor.toString());
+          const timestamp = await readOpeningDatabaseTimestamp(transaction);
+          await lockLeaderboardSeasonForOpening(transaction, timestamp);
           const wallet = await lockBoxOpeningWallet(
             transaction,
             command.userId,
@@ -423,7 +426,6 @@ export const createOpeningService = ({
             price,
             platformFeeBps,
           );
-          const timestamp = await readOpeningDatabaseTimestamp(transaction);
           const earningsAvailableAt = new Date(
             new Date(timestamp).valueOf() + earningsHoldMs,
           ).toISOString();

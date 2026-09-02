@@ -6,6 +6,7 @@
     { "path": "./packages/database/tsconfig.json" },
     { "path": "./packages/domain/tsconfig.json" },
     { "path": "./packages/observability/tsconfig.json" },
+    { "path": "./packages/redis-projections/tsconfig.json" },
     { "path": "./packages/rng-verifier/tsconfig.json" },
     { "path": "./packages/test-support/tsconfig.json" },
     { "path": "./apps/api/tsconfig.json" },

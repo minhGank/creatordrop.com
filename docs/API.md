@@ -118,7 +118,12 @@ Phase 5 implements only immutable box reads, not discovery or a marketplace:
 | `GET`  | `/v1/boxes/:boxId`                     | Current active published box, exact ordered entries, reward snapshots, and manifest/hash |
 | `GET`  | `/v1/boxes/:boxId/versions/:versionId` | A specific immutable published version belonging to that box                             |
 
-`GET /v1/boxes`, public creator listings, and standalone public reward reads remain future catalog work. Cache headers/ETags may be added later for immutable versions. Eligibility, price, and availability returned by reads remain advisory until an opening transaction validates them again.
+`GET /v1/boxes`, public creator listings, and standalone public reward reads remain future catalog
+work. Phase 13 adds a bounded-TTL Redis cache-aside layer for these two reads: a cache
+miss/invalid value/outage falls back to PostgreSQL, publication and archival invalidate the
+current-version key after commit, and immutable version keys may live until TTL. Eligibility,
+price, and availability returned by reads remain advisory until an opening transaction validates
+them again.
 
 Public responses contain the published version snapshot, its ordered reward-version snapshots, the canonical manifest, and a lowercase hexadecimal SHA-256 `configurationHash`. Price, quantity, weight, and total fields are decimal strings. No floating-point odds are returned or accepted.
 
@@ -278,6 +283,30 @@ roles cannot decrypt. Restock accepts only a published/shared pool and changes o
 and history; it does not resolve an
 obligation or resume a box automatically.
 
+## Public leaderboards and achievements
+
+Phase 13 leaderboard/profile-badge reads are public and require no bearer token:
+
+| Method | Path                                                    | Purpose                                 |
+| ------ | ------------------------------------------------------- | --------------------------------------- |
+| `GET`  | `/v1/leaderboards/global`                               | Global all-time points ranking          |
+| `GET`  | `/v1/leaderboards/global/seasons/:seasonId`             | Global ranking for one explicit season  |
+| `GET`  | `/v1/creators/:creatorId/leaderboard`                   | Creator-specific all-time ranking       |
+| `GET`  | `/v1/creators/:creatorId/leaderboard/seasons/:seasonId` | Creator ranking for one explicit season |
+| `GET`  | `/v1/users/:username/achievements`                      | Permanent public champion badge history |
+
+Leaderboard responses contain `asOf`, `source` (`redis` or PostgreSQL fallback), optional season
+metadata, and entries with rank, `{ "username": "..." }`, points, total openings,
+base-reward wins, and score-reach timestamp. Numeric aggregates are decimal strings. The internal
+canonical UUID tie-break is deliberately absent from the public row. The username is the explicit
+authoritative `users.username`; it is never derived from email, legal name, payment, or fulfillment
+data.
+
+Participation is automatic for all eligible users and Phase 13 has no opt-out. Redis is a
+disposable read projection: `source: "postgres"` is a normal safe fallback, not degraded
+financial/opening state. Season IDs must be canonicalizable UUIDs and an absent season or username
+returns `404 LEADERBOARD_NOT_FOUND`.
+
 ## Creator dashboard
 
 | Method | Path                                                         | Auth                         | Purpose                                                              |
@@ -285,7 +314,6 @@ obligation or resume a box automatically.
 | `GET`  | `/v1/creators/:creatorId/dashboard/summary`                  | viewer+                      | PostgreSQL-derived/cached aggregate summary with freshness timestamp |
 | `GET`  | `/v1/creators/:creatorId/dashboard/openings`                 | viewer+                      | Paginated scoped openings without private fan data                   |
 | `GET`  | `/v1/creators/:creatorId/dashboard/rewards`                  | viewer+                      | Reward win/fulfillment aggregate                                     |
-| `GET`  | `/v1/creators/:creatorId/dashboard/leaderboard`              | viewer+                      | Redis projection plus `asOf`; fallback/rebuild semantics explicit    |
 | `GET`  | `/v1/creators/:creatorId/dashboard/fulfillments`             | permitted role               | Scoped fulfillment queue                                             |
 | `POST` | `/v1/creators/:creatorId/dashboard/fulfillments/:id/actions` | permitted role + idempotency | Typed transition, never arbitrary status overwrite                   |
 

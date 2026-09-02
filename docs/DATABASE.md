@@ -244,6 +244,48 @@ One row per unique `(provider, provider_event_id)`: exact event/object identity,
 
 `funding_deficits` immutably records the unrecovered user/currency shortfall and originating adjustment. Bidirectional deferred checks require exactly one matching deficit when the adjustment has an unrecovered amount and none otherwise; user, currency, amount, account, ledger entry, settlement, and intent lineage must all match. Phase 11 creates only `unresolved` rows; resolution/collections commands remain deferred and require new auditable history. Wallet balance remains nonnegative, and the payment lock order `wallet → funding_intent → provider_event → ledger/history inserts` serializes provider adjustments against spending without conflicting with opening's wallet-first order. An unresolved deficit blocks new funding plus ordinary debits/openings.
 
+## Leaderboard authority and projections
+
+### `leaderboard_seasons`
+
+Authoritative UUID/ordinal/name plus explicit UTC `starts_at`/`ends_at`, lifecycle status, creation,
+and finalization timestamps. Boundaries are non-overlapping half-open ranges and a partial unique
+index permits at most one active season. Windows are operator-provisioned (normally about three
+months), not inferred from worker time. Boundaries/history are immutable after activation and a
+finalized season cannot reopen.
+
+### `leaderboard_season_results` and `user_achievements`
+
+Finalization locks one ended active season, derives points/count/base-win/reach-time aggregates
+from immutable `box_opens`, and inserts at most one global winner plus one winner for each creator
+with qualifying openings. Winner order is points descending, reach time ascending, then stable
+user UUID. Deferred checks require every finalized scope to have exactly one matching permanent
+achievement and prohibit fabricated/duplicate results. Both tables are immutable; the application
+role cannot write them. Public display resolves the winner's explicit `users.username`; email,
+legal name, and other private fields are never username sources.
+
+Every season-bound opening first acquires the matching `leaderboard_seasons` row in shared mode;
+finalization takes that same row `FOR UPDATE`. This serializes the finalization boundary in both
+commit orderings. A database trigger applies the barrier to every `box_opens` insert, while the
+opening service acquires it before wallet, nonce, and RNG work so a finalized season fails early.
+
+### `leaderboard_projection_events`
+
+One independent delivery row per committed `opening.completed.v1` outbox UUID. Mutable claim state
+uses pending/processing/applied/dead, attempt/backoff, worker, token, and lease fields while the
+outbox/opening remain immutable authority. Worker-only functions claim with `SKIP LOCKED`, read an
+absolute PostgreSQL snapshot, and complete/fail only the matching active claim token. Redis is not
+a database invariant and these rows do not participate in opening, wallet, RNG, inventory,
+fulfillment, or payment transactions. An expired lease at the configured final attempt is moved
+to retained `dead` state by the next claim operation; attempts below the limit remain reclaimable.
+The application role has no direct CRUD privilege on the season, result, achievement, or
+projection-delivery tables.
+
+`app_private.leaderboard_authoritative_rows` is the common PostgreSQL aggregate used for rebuild,
+drift reconciliation, public fallback reads, and champion validation. It sums the snapshotted
+`points_awarded` and counts `bonus_points > 0`; it never recalculates the 5/20 policy from current
+configuration. Redis keys contain no financial, RNG, fulfillment, or payment state.
+
 ## Reliable events and auditing
 
 ### `event_outbox`
@@ -286,6 +328,7 @@ Append-only `id`, actor type/ID, action, resource type/ID, creator scope, reason
 9. Every newly published `opening-v1` version has exactly one explicit base reward; grandfathered null-marker versions stay valid history but cannot be opened.
 10. Every successful opening has matching balanced sale/allocation postings, one win/obligation/creator earning, one completed idempotency record, and both required outbox events at commit; every opening-kind posting links back to exactly one opening and cannot be reversed independently.
 11. Every in-stock finite opening has exactly one immutable one-unit consumption linked to its stable creator-owned pool, and each pool reconciles initial minus available quantity to those movements. Unlimited and zero-stock backorder openings have none.
+12. Finalized seasons have complete immutable PostgreSQL-derived global/creator results and exactly matching permanent champion achievements; application-role writes cannot forge either.
 
 Cross-row rules require deferred constraint triggers or narrowly permissioned database functions plus integration tests. Application checks alone are insufficient.
 

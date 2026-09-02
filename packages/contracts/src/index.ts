@@ -217,6 +217,51 @@ export interface PublishedBoxVersionResponse {
   readonly version: BoxVersionContract;
 }
 
+export interface PublicLeaderboardEntryContract {
+  readonly baseRewardWins: string;
+  readonly points: string;
+  readonly rank: number;
+  readonly scoreReachedAt: string;
+  readonly totalOpenings: string;
+  readonly user: {
+    readonly username: string;
+  };
+}
+
+export interface PublicLeaderboardSeasonContract {
+  readonly endsAt: string;
+  readonly finalizedAt: string | null;
+  readonly id: string;
+  readonly name: string;
+  readonly ordinal: number;
+  readonly startsAt: string;
+  readonly status: 'active' | 'finalized' | 'scheduled';
+}
+
+export interface PublicLeaderboardResponse {
+  readonly asOf: string;
+  readonly entries: readonly PublicLeaderboardEntryContract[];
+  readonly season: PublicLeaderboardSeasonContract | null;
+  readonly source: 'postgres' | 'redis';
+}
+
+export interface PublicAchievementContract {
+  readonly achievementType: 'creator_season_champion' | 'global_season_champion';
+  readonly awardedAt: string;
+  readonly creatorId: string | null;
+  readonly season: {
+    readonly id: string;
+    readonly name: string;
+  };
+}
+
+export interface PublicAchievementsResponse {
+  readonly achievements: readonly PublicAchievementContract[];
+  readonly user: {
+    readonly username: string;
+  };
+}
+
 export const rngSeedSetStatuses = ['active', 'retired', 'revealed', 'compromised'] as const;
 export type RngSeedSetStatus = (typeof rngSeedSetStatuses)[number];
 

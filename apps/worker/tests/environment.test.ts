@@ -29,9 +29,13 @@ describe('worker environment adapter', () => {
       maxAttempts: 8,
       nodeEnvironment: 'test',
       pollIntervalMs: 250,
+      projectionBatchSize: 25,
+      projectionLeaseMs: 30_000,
+      projectionMaxAttempts: 32,
       publishTimeoutMs: 5000,
       realtimeUrl: 'http://127.0.0.1:3000',
       realtimeWorkerToken: 'synthetic-realtime-worker-token-00000001',
+      redisUrl: null,
       retryBaseMs: 1000,
       retryMaxMs: 60_000,
     });

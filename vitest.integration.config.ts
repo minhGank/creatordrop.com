@@ -12,10 +12,12 @@ export default defineConfig({
       '@creatordrop/database': fromRoot('./packages/database/src/index.ts'),
       '@creatordrop/domain': fromRoot('./packages/domain/src/index.ts'),
       '@creatordrop/observability': fromRoot('./packages/observability/src/index.ts'),
+      '@creatordrop/redis-projections': fromRoot('./packages/redis-projections/src/index.ts'),
       '@creatordrop/test-support': fromRoot('./packages/test-support/src/index.ts'),
     },
   },
   test: {
+    fileParallelism: false,
     include: ['apps/**/*.integration.test.ts', 'packages/**/*.integration.test.ts'],
   },
 });

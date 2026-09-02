@@ -23,6 +23,11 @@ const browserOriginSchema = httpUrlSchema.refine(
 
 const realtimeWorkerTokenSchema = z.string().regex(/^[A-Za-z0-9._~-]{32,512}$/u);
 const localRealtimeWorkerToken = 'local-development-realtime-worker-token-00000001';
+const redisUrlSchema = z
+  .url()
+  .refine((value) => ['redis:', 'rediss:'].includes(new URL(value).protocol), {
+    message: 'Expected a redis:// or rediss:// URL.',
+  });
 
 const apiEnvironmentSchema = z
   .object({
@@ -49,6 +54,8 @@ const apiEnvironmentSchema = z
       .default(60_000),
     HOST: z.string().trim().min(1).default('127.0.0.1'),
     PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
+    PUBLIC_CATALOG_CACHE_TTL_SECONDS: z.coerce.number().int().min(1).max(86_400).default(300),
+    REDIS_URL: redisUrlSchema.optional(),
     REQUEST_BODY_LIMIT_BYTES: z.coerce.number().int().min(1_024).max(1_048_576).default(32_768),
     REALTIME_WORKER_TOKEN: realtimeWorkerTokenSchema,
     STRIPE_FUNDING_ENABLED: z.enum(['false', 'true']).default('false'),
@@ -144,6 +151,15 @@ const workerEnvironmentSchema = z
     DATABASE_CONNECTION_TIMEOUT_MS: z.coerce.number().int().min(100).max(60_000).default(5000),
     DATABASE_IDLE_TIMEOUT_MS: z.coerce.number().int().min(100).max(300_000).default(10_000),
     DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(50).default(10),
+    LEADERBOARD_PROJECTION_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(25),
+    LEADERBOARD_PROJECTION_LEASE_MS: z.coerce
+      .number()
+      .int()
+      .min(5_000)
+      .max(300_000)
+      .default(30_000),
+    LEADERBOARD_PROJECTION_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(100).default(32),
+    REDIS_URL: redisUrlSchema.optional(),
     OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(25),
     OUTBOX_LEASE_MS: z.coerce.number().int().min(5_000).max(300_000).default(30_000),
     OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(100).default(8),
@@ -439,6 +455,8 @@ export type ApiEnvironment = Readonly<{
   host: string;
   nodeEnvironment: z.infer<typeof runtimeModeSchema>;
   port: number;
+  publicCatalogCacheTtlSeconds: number;
+  redisUrl: string | null;
   realtimeWorkerToken: string;
   requestBodyLimitBytes: number;
   stripeFundingEnabled: boolean;
@@ -457,9 +475,13 @@ export type WorkerEnvironment = Readonly<{
   maxAttempts: number;
   nodeEnvironment: z.infer<typeof runtimeModeSchema>;
   pollIntervalMs: number;
+  projectionBatchSize: number;
+  projectionLeaseMs: number;
+  projectionMaxAttempts: number;
   publishTimeoutMs: number;
   realtimeUrl: string;
   realtimeWorkerToken: string;
+  redisUrl: string | null;
   retryBaseMs: number;
   retryMaxMs: number;
 }>;
@@ -518,6 +540,8 @@ export const parseApiEnvironment = (input: NodeJS.ProcessEnv): ApiEnvironment =>
     host: parsed.HOST,
     nodeEnvironment: parsed.NODE_ENV ?? 'development',
     port: parsed.PORT,
+    publicCatalogCacheTtlSeconds: parsed.PUBLIC_CATALOG_CACHE_TTL_SECONDS,
+    redisUrl: parsed.REDIS_URL ?? null,
     realtimeWorkerToken: parsed.REALTIME_WORKER_TOKEN,
     requestBodyLimitBytes: parsed.REQUEST_BODY_LIMIT_BYTES,
     stripeFundingEnabled: parsed.STRIPE_FUNDING_ENABLED === 'true',
@@ -546,9 +570,13 @@ export const parseWorkerEnvironment = (input: NodeJS.ProcessEnv): WorkerEnvironm
     maxAttempts: parsed.OUTBOX_MAX_ATTEMPTS,
     nodeEnvironment: parsed.NODE_ENV ?? 'development',
     pollIntervalMs: parsed.WORKER_POLL_INTERVAL_MS,
+    projectionBatchSize: parsed.LEADERBOARD_PROJECTION_BATCH_SIZE,
+    projectionLeaseMs: parsed.LEADERBOARD_PROJECTION_LEASE_MS,
+    projectionMaxAttempts: parsed.LEADERBOARD_PROJECTION_MAX_ATTEMPTS,
     publishTimeoutMs: parsed.REALTIME_PUBLISH_TIMEOUT_MS,
     realtimeUrl: parsed.REALTIME_URL,
     realtimeWorkerToken: parsed.REALTIME_WORKER_TOKEN,
+    redisUrl: parsed.REDIS_URL ?? null,
     retryBaseMs: parsed.OUTBOX_RETRY_BASE_MS,
     retryMaxMs: parsed.OUTBOX_RETRY_MAX_MS,
   };

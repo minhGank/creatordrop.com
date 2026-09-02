@@ -60,8 +60,9 @@ USD synthetic credits are enabled. Phase 9 adds atomic openings and transactiona
 Phase 10 adds durable outbox delivery and Socket.io only. Phase 11 adds Stripe test-mode USD
 funding, signed webhooks, provider compensation/deficits, and read-only reconciliation. Phase 12
 adds typed fulfillment, protected delivery data, audited creator access, and manual immutable
-restock events. Payout, carrier integration, automatic restock/box resume, Redis
-projections/leaderboards, and currency conversion remain absent.
+restock events. Phase 13 adds disposable Redis leaderboards/public catalog cache plus authoritative
+PostgreSQL seasons/champion achievements. Payout, carrier integration, automatic restock/box
+resume, currency conversion, and leaderboard UI remain absent.
 
 ## Database package
 
@@ -215,8 +216,42 @@ row means the realtime gateway acknowledged the broadcast, not that a browser wa
 Clients deduplicate durable event IDs and refetch/replay authoritative HTTP commands after every
 `realtime.ready.v1` reconnect signal. Current rooms are process-local; define a supported
 cross-node Socket.io adapter and sticky-connection policy before horizontally scaling the API.
-Redis projections and leaderboards are still Phase 13 and no Redis service is required for the
-Phase 10 worker.
+Phase 13 adds an independent leaderboard projection loop to this worker when `REDIS_URL` is set.
+Realtime outbox delivery continues when Redis is absent; leaderboard reads fall back to
+PostgreSQL, and no financial/opening/payment/fulfillment command uses Redis. Projection claims use
+`LEADERBOARD_PROJECTION_BATCH_SIZE`, `LEADERBOARD_PROJECTION_LEASE_MS`, and
+`LEADERBOARD_PROJECTION_MAX_ATTEMPTS`.
+
+## Local Redis and leaderboard maintenance
+
+Start/stop the disposable Redis 7.4 development container:
+
+```bash
+npm run redis:start
+npm run redis:stop
+```
+
+The local endpoint is `redis://127.0.0.1:56379`. The integration runner starts it when needed and
+uses real Redis; financial tests remain valid with Redis unavailable. `REDIS_URL` enables both the
+API's leaderboard/catalog reads and the worker projection. `PUBLIC_CATALOG_CACHE_TTL_SECONDS`
+defaults to 300. Cached catalog documents are accepted only when their canonical manifest box and
+version UUIDs match the requested cache identity; mismatches are discarded and reloaded from
+PostgreSQL.
+
+Rebuild all generations from PostgreSQL or report drift without changing PostgreSQL:
+
+```bash
+npm run leaderboards:rebuild
+npm run leaderboards:reconcile
+```
+
+Both commands require the restricted `WORKER_DATABASE_URL` plus `REDIS_URL`. Rebuild writes a new
+generation, dual-writes live events during the operation, atomically swaps it active, and is safe
+to repeat. Reconciliation reports missing/extra scopes, row/stat/tie drift, and freshness drift.
+Season windows are explicit operator-managed PostgreSQL rows (normally about three months):
+provision a scheduled row, activate it with the private migration/operator function, and let the
+worker reconcile and finalize after `ends_at`. Do not insert champion results or achievements
+manually.
 
 ## Full validation
 

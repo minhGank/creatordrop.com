@@ -13,6 +13,7 @@
     { "path": "../../packages/contracts/tsconfig.json" },
     { "path": "../../packages/database/tsconfig.json" },
     { "path": "../../packages/domain/tsconfig.json" },
-    { "path": "../../packages/observability/tsconfig.json" }
+    { "path": "../../packages/observability/tsconfig.json" },
+    { "path": "../../packages/redis-projections/tsconfig.json" }
   ]
 }

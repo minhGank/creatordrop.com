@@ -317,6 +317,20 @@ export const readOpeningDatabaseTimestamp = async (
   return value.toISOString();
 };
 
+export const lockLeaderboardSeasonForOpening = async (
+  transaction: TransactionExecutor,
+  openedAt: string,
+): Promise<string | null> => {
+  assertTransactionExecutor(transaction);
+  const result = await transaction.query<{ readonly seasonId: unknown }>(
+    `select app.lock_leaderboard_season_for_opening($1) as "seasonId"`,
+    [openedAt],
+  );
+  const seasonId = result.rows[0]?.seasonId;
+  if (seasonId === null) return null;
+  return requiredUuid(seasonId, 'leaderboard season ID');
+};
+
 export const insertOpeningHistory = async (
   transaction: TransactionExecutor,
   input: OpeningHistoryInsert,

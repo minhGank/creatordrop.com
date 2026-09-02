@@ -7,6 +7,8 @@
   "scripts": {
     "build": "tsc -b",
     "dev": "tsx watch src/main.ts",
+    "leaderboard:rebuild": "tsx src/leaderboards/rebuild.cli.ts",
+    "leaderboard:reconcile": "tsx src/leaderboards/reconcile.cli.ts",
     "start": "node dist/main.js",
     "typecheck": "tsc -b --pretty false",
     "typecheck:tests": "tsc --noEmit --pretty false --project tsconfig.test.json"
@@ -16,6 +18,7 @@
     "@creatordrop/contracts": "*",
     "@creatordrop/database": "*",
     "@creatordrop/observability": "*",
+    "@creatordrop/redis-projections": "*",
     "socket.io-client": "^4.8.3"
   }
 }

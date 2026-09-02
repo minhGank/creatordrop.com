@@ -44,7 +44,9 @@ describe('environment configuration', () => {
       host: '127.0.0.1',
       nodeEnvironment: 'development',
       port: 3000,
+      publicCatalogCacheTtlSeconds: 300,
       realtimeWorkerToken: 'synthetic-realtime-worker-token-00000001',
+      redisUrl: null,
       requestBodyLimitBytes: 32_768,
       stripeFundingEnabled: false,
       stripeSecretKey: null,
@@ -67,9 +69,13 @@ describe('environment configuration', () => {
       maxAttempts: 8,
       nodeEnvironment: 'test',
       pollIntervalMs: 1000,
+      projectionBatchSize: 25,
+      projectionLeaseMs: 30_000,
+      projectionMaxAttempts: 32,
       publishTimeoutMs: 5000,
       realtimeUrl: 'http://127.0.0.1:3000',
       realtimeWorkerToken: 'synthetic-realtime-worker-token-00000001',
+      redisUrl: null,
       retryBaseMs: 1000,
       retryMaxMs: 60_000,
     });
@@ -106,7 +112,9 @@ describe('environment configuration', () => {
       host: '0.0.0.0',
       nodeEnvironment: 'test',
       port: 4100,
+      publicCatalogCacheTtlSeconds: 300,
       realtimeWorkerToken: 'synthetic-realtime-worker-token-00000001',
+      redisUrl: null,
       requestBodyLimitBytes: 4096,
       stripeFundingEnabled: false,
       stripeSecretKey: null,
@@ -116,6 +124,42 @@ describe('environment configuration', () => {
       walletMutationRateLimitMax: 11,
       walletMutationRateLimitWindowMs: 9000,
     });
+  });
+
+  it('validates disposable Redis endpoints and projection/cache bounds', () => {
+    expect(
+      parseApiEnvironment({
+        ...requiredApiEnvironment,
+        PUBLIC_CATALOG_CACHE_TTL_SECONDS: '600',
+        REDIS_URL: 'rediss://cache.example.test:6380',
+      }),
+    ).toMatchObject({
+      publicCatalogCacheTtlSeconds: 600,
+      redisUrl: 'rediss://cache.example.test:6380',
+    });
+    expect(
+      parseWorkerEnvironment({
+        ...requiredWorkerEnvironment,
+        LEADERBOARD_PROJECTION_BATCH_SIZE: '7',
+        LEADERBOARD_PROJECTION_LEASE_MS: '45000',
+        LEADERBOARD_PROJECTION_MAX_ATTEMPTS: '12',
+        REDIS_URL: 'redis://127.0.0.1:56379',
+      }),
+    ).toMatchObject({
+      projectionBatchSize: 7,
+      projectionLeaseMs: 45_000,
+      projectionMaxAttempts: 12,
+      redisUrl: 'redis://127.0.0.1:56379',
+    });
+    expect(() =>
+      parseApiEnvironment({ ...requiredApiEnvironment, REDIS_URL: 'https://cache.example.test' }),
+    ).toThrow();
+    expect(() =>
+      parseWorkerEnvironment({
+        ...requiredWorkerEnvironment,
+        REDIS_URL: 'ftp://cache.example.test',
+      }),
+    ).toThrow();
   });
 
   it.each(['development', 'test'] as const)(

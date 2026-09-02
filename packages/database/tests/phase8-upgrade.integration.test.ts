@@ -37,6 +37,10 @@ const phase12Migrations = [
   '20260901090000_phase12_security_remediation.sql',
   '20260901130000_phase12_actor_binding_key_lifecycle.sql',
 ] as const;
+const phase13Migrations = [
+  '20260901180000_phase13_leaderboards.sql',
+  '20260902120000_phase13_high_remediation.sql',
+] as const;
 
 const migrationSql = (fileName: string): Promise<string> =>
   readFile(new URL(`../../../infra/supabase/migrations/${fileName}`, import.meta.url), 'utf8');
@@ -348,6 +352,7 @@ describe('Phase 8 to current forward migration', { concurrent: false }, () => {
       );
 
       for (const fileName of phase12Migrations) await database.query(await migrationSql(fileName));
+      for (const fileName of phase13Migrations) await database.query(await migrationSql(fileName));
 
       const after = await database.query<{
         readonly baseCount: string;
@@ -476,6 +481,25 @@ describe('Phase 8 to current forward migration', { concurrent: false }, () => {
           [identifiers.version],
         ),
       ).rejects.toThrow(/Published catalog versions are immutable/iu);
+      expect(
+        (
+          await database.query<{
+            readonly achievements: string | null;
+            readonly projectionQueue: string | null;
+            readonly seasons: string | null;
+          }>(
+            `select to_regclass('app.leaderboard_seasons')::text as seasons,
+                    to_regclass('app.user_achievements')::text as achievements,
+                    to_regclass('app.leaderboard_projection_events')::text as "projectionQueue"`,
+          )
+        ).rows,
+      ).toEqual([
+        {
+          achievements: 'app.user_achievements',
+          projectionQueue: 'app.leaderboard_projection_events',
+          seasons: 'app.leaderboard_seasons',
+        },
+      ]);
     } finally {
       await database.close();
       await admin.query(`drop database "${name}"`);

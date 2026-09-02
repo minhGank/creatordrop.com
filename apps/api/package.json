@@ -17,6 +17,7 @@
     "@creatordrop/database": "*",
     "@creatordrop/domain": "*",
     "@creatordrop/observability": "*",
+    "@creatordrop/redis-projections": "*",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "express-rate-limit": "^8.6.2",

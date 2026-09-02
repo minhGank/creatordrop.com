@@ -2,6 +2,11 @@ import { createServer } from 'node:http';
 
 import { createConsoleLogger } from '@creatordrop/observability';
 import { createDatabasePool } from '@creatordrop/database';
+import {
+  createLeaderboardProjectionStore,
+  createRedisConnection,
+  createRedisJsonCache,
+} from '@creatordrop/redis-projections';
 
 import { createApp } from './app.js';
 import {
@@ -25,6 +30,8 @@ import { createEnvironmentFulfillmentActorBindingProvider } from './modules/fulf
 import { createEnvironmentFulfillmentKeyProvider } from './modules/fulfillment/fulfillment.key-provider.js';
 import { createFulfillmentService } from './modules/fulfillment/fulfillment.service.js';
 import { createOpeningService } from './modules/openings/opening.service.js';
+import { createLeaderboardRepository } from './modules/leaderboards/leaderboard.repository.js';
+import { createLeaderboardService } from './modules/leaderboards/leaderboard.service.js';
 import { createPaymentService } from './modules/payments/payment.service.js';
 import { createStripeFundingProvider } from './modules/payments/stripe.provider.js';
 import { createWalletService } from './modules/wallet/wallet.service.js';
@@ -42,6 +49,13 @@ const database = createDatabasePool({
     logger.error('database.pool.failed', { errorName: error.name });
   },
 });
+const redis =
+  environment.redisUrl === null
+    ? null
+    : createRedisConnection({
+        onError: (error) => logger.error('redis.connection.failed', { errorName: error.name }),
+        url: environment.redisUrl,
+      });
 const verifyAccessToken = createJwtVerifier({
   audience: environment.authAudience,
   issuer: environment.authIssuer,
@@ -56,7 +70,23 @@ const authenticationOptions = {
 const authenticate = createAuthenticationMiddleware(authenticationOptions);
 const authenticateAccessToken = createAccessTokenAuthenticator(authenticationOptions);
 const creatorService = createCreatorService({ database, logger });
-const catalogService = createCatalogService({ database, logger });
+const catalogService = createCatalogService({
+  ...(redis === null
+    ? {}
+    : {
+        cache: {
+          redis: createRedisJsonCache(redis),
+          ttlSeconds: environment.publicCatalogCacheTtlSeconds,
+        },
+      }),
+  database,
+  logger,
+});
+const leaderboardService = createLeaderboardService({
+  logger,
+  repository: createLeaderboardRepository(database),
+  ...(redis === null ? {} : { store: createLeaderboardProjectionStore(redis) }),
+});
 const fairnessService = createFairnessService({
   database,
   keyProvider: createEnvironmentSeedEncryptionKeyProvider({
@@ -119,6 +149,7 @@ const app = createApp({
   creatorService,
   fairnessService,
   fulfillmentService,
+  leaderboardService,
   logger,
   openingService,
   paymentService,
@@ -155,7 +186,7 @@ const shutdown = (signal: NodeJS.Signals): void => {
   logger.info('api.shutdown.started', { signal });
   void realtime
     .close()
-    .then(() => database.close())
+    .then(() => Promise.all([database.close(), redis?.close()]))
     .catch((databaseError: unknown) => {
       logger.error('database.shutdown.failed', {
         errorName: databaseError instanceof Error ? databaseError.name : 'UnknownError',

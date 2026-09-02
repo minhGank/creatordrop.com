@@ -92,12 +92,18 @@ Creator authorization always scopes database access by both resource ID and crea
 The opening endpoint is a short PostgreSQL transaction at `READ COMMITTED` with explicit row locks. Lock order is fixed to reduce deadlocks:
 
 1. idempotency key claim;
-2. wallet row;
-3. fairness-profile row;
-4. active RNG seed-set row (allocates nonce);
-5. the selected shared inventory pool, if finite;
-6. affected box identity rows in UUID order (shared availability check, upgraded for atomic pause);
-7. ledger/open/fulfillment/outbox inserts.
+2. matching active leaderboard-season row in shared mode, when the database timestamp is in a season;
+3. wallet row;
+4. fairness-profile row;
+5. active RNG seed-set row (allocates nonce);
+6. the selected shared inventory pool, if finite;
+7. affected box identity rows in UUID order (shared availability check, upgraded for atomic pause);
+8. ledger/open/fulfillment/outbox inserts.
+
+Season finalization takes the same season row exclusively before deriving permanent results. An
+opening therefore commits into the authoritative season history before finalization can observe
+and freeze it, or waits for finalization and fails before wallet locking, nonce allocation, and
+RNG. The `box_opens` insert trigger enforces the same barrier for restricted-role writes.
 
 The `fairness_profiles` row is the authoritative per-user RNG-lifecycle lock. Every transaction
 that can create or activate a seed, change seed lifecycle state, allocate a nonce, or create or
@@ -114,7 +120,7 @@ Detailed flow:
 
 1. Require authenticated actor, `Idempotency-Key`, and a request body containing only `clientSeed` (or use the user's precommitted current client seed). Canonicalize and hash method, route, actor, box, and body as the request fingerprint.
 2. Begin a database transaction. Insert the user-scoped idempotency row. A unique conflict waits for the first transaction; replay the stored response if the fingerprint matches, otherwise return `409 IDEMPOTENCY_KEY_REUSED`.
-3. Load the active published version by box ID. Validate visibility, sales state, currency, price, opening limits, and eligibility on the server.
+3. Load the active published version by box ID. Validate visibility, sales state, currency, price, opening limits, and eligibility on the server. Read the transaction's authoritative database timestamp and acquire the matching leaderboard-season shared barrier before any selector work.
 4. Lock the user's currency wallet. Reject insufficient funds without consuming a nonce or leaving an idempotency record committed.
 5. Lock the user's active RNG seed-set, validate the client seed, allocate its next nonce, and increment the counter.
 6. Read the immutable ordered reward table, verify its stored total weight/checksum, compute HMAC-SHA256, and select the reward deterministically. The client never supplies or influences authoritative weights beyond choosing its client seed before the opening.
@@ -125,8 +131,8 @@ Detailed flow:
 11. Insert `opening.completed.v1` private and sanitized `drop.created.v1` public outbox rows in the same transaction. Phase 9 stores but does not deliver them and never exposes unrevealed server seed material.
 12. Store the exact successful response in the idempotency row and commit.
 13. Return the decided outcome. The Phase 10 worker consumes the outbox only after commit and
-    emits the two versioned realtime events. Redis projections remain Phase 13. The reel
-    animates the returned result only.
+    emits the two versioned realtime events. The independent Phase 13 projection queue consumes
+    only `opening.completed.v1` after commit. The reel animates the returned result only.
 
 Failures before commit leave no charge, nonce, opening, fulfillment, or event. If commit succeeds but the HTTP response is lost, retry returns the stored result.
 
@@ -154,9 +160,42 @@ clients refetch available authoritative HTTP resources after reconnect.
 
 Phase 10 uses process-local Socket.io rooms and an acknowledged worker-to-API connection; a
 horizontally scaled Socket.io deployment will need an approved cross-node adapter and sticky
-connection policy before production scaling. Redis leaderboards and Redis-backed projections
-remain Phase 13 work. Redis projections will be rebuilt from PostgreSQL ledger/open data and
-must never make a financial or eligibility decision.
+connection policy before production scaling.
+
+### Redis projections and leaderboards
+
+Phase 13 projects immutable `box_opens.points_awarded` into disposable Redis leaderboards. The
+private `opening.completed.v1` outbox UUID is the sole event identity/source; the public drop
+event never awards points. A separate PostgreSQL projection queue uses worker-only
+`FOR UPDATE SKIP LOCKED` claims, expiring claim tokens, and bounded retries so realtime delivery
+and leaderboard delivery remain independent. Redis Lua applies an event atomically to global,
+creator, and matching-season scopes and records the event UUID in the same operation. A crash
+after Redis mutation but before PostgreSQL acknowledgement therefore replays without incrementing
+again. No Redis call occurs in the opening transaction.
+
+Redis stores absolute PostgreSQL aggregates rather than authoritative deltas: points, opening
+count, base-reward-win count, username, and the committed timestamp/microsecond ordering point at
+which the score was reached. Rank is points descending, then earliest reach time, then canonical
+user UUID internally. Public responses expose the authoritative `users.username`, not that UUID
+as the user-facing identity. Participation is automatic for every eligible opening and public
+leaderboard reads require no authentication; Phase 13 has no opt-out. Future privacy controls may
+change presentation only and cannot rewrite finalized results or achievements.
+
+Explicit, non-overlapping PostgreSQL seasons have at most one active window. Season membership is
+derived from the committed opening timestamp and `[starts_at, ends_at)` boundaries. Before a
+season is finalized, the worker reconciles Redis against PostgreSQL and rebuilds on drift; the
+winner is then independently selected from PostgreSQL using the same ordering. Immutable global
+and per-creator results and permanent champion achievements are inserted atomically and
+idempotently. Redis loss cannot lose a champion.
+
+Rebuild writes a new Redis generation from all PostgreSQL opening history while live events are
+dual-written, then atomically swaps the active generation. Reconciliation never mutates
+PostgreSQL. Public reads prefer a ready Redis generation and fall back to PostgreSQL when Redis is
+missing, stale, evicted, or unavailable. Public catalog reads use a validated cache-aside value
+whose manifest box/version UUIDs must match the canonical requested identity, with bounded TTL
+and post-commit publish/archive invalidation. Any parse, hash, or identity mismatch is evicted and
+falls back to PostgreSQL; cache failure never blocks a catalog write or changes opening
+eligibility.
 
 ## Payment and fulfillment architecture
 

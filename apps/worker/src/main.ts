@@ -2,9 +2,19 @@ import { randomUUID } from 'node:crypto';
 
 import { createDatabasePool } from '@creatordrop/database';
 import { createConsoleLogger } from '@creatordrop/observability';
+import {
+  createLeaderboardProjectionStore,
+  createRedisConnection,
+} from '@creatordrop/redis-projections';
 
 import { createSocketRealtimePublisher } from './adapters/realtime.publisher.js';
 import { getWorkerEnvironment } from './config/environment.js';
+import {
+  createLeaderboardReconciler,
+  finalizeEndedSeasons,
+} from './leaderboards/leaderboard.maintenance.js';
+import { createLeaderboardProjectionProcessor } from './leaderboards/leaderboard.processor.js';
+import { createLeaderboardRepository } from './leaderboards/leaderboard.repository.js';
 import { createOutboxProcessor } from './outbox/outbox.processor.js';
 import { createOutboxRepository } from './outbox/outbox.repository.js';
 import { startWorkerRuntime } from './runtime.js';
@@ -23,6 +33,33 @@ const publisher = createSocketRealtimePublisher({
   workerToken: environment.realtimeWorkerToken,
 });
 const workerId = `worker:${randomUUID()}`;
+const redis =
+  environment.redisUrl === null
+    ? null
+    : createRedisConnection({
+        onError: (error) => logger.error('redis.connection.failed', { errorName: error.name }),
+        url: environment.redisUrl,
+      });
+const leaderboardRepository = createLeaderboardRepository(database);
+const leaderboardStore = redis === null ? null : createLeaderboardProjectionStore(redis);
+const leaderboardReconciler =
+  leaderboardStore === null
+    ? null
+    : createLeaderboardReconciler(leaderboardRepository, leaderboardStore);
+const leaderboardProcessor =
+  leaderboardStore === null
+    ? null
+    : createLeaderboardProjectionProcessor({
+        batchSize: environment.projectionBatchSize,
+        leaseMs: environment.projectionLeaseMs,
+        logger,
+        maxAttempts: environment.projectionMaxAttempts,
+        repository: leaderboardRepository,
+        retryBaseMs: environment.retryBaseMs,
+        retryMaxMs: environment.retryMaxMs,
+        store: leaderboardStore,
+        workerId,
+      });
 const processor = createOutboxProcessor({
   batchSize: environment.batchSize,
   leaseMs: environment.leaseMs,
@@ -37,12 +74,28 @@ const processor = createOutboxProcessor({
 const runtime = startWorkerRuntime({
   pollIntervalMs: environment.pollIntervalMs,
   runBatch: async () => {
-    try {
-      await processor.processBatch();
-    } catch (error) {
-      logger.error('outbox.batch.failed', {
-        errorName: error instanceof Error ? error.name : 'UnknownError',
-      });
+    const batches: Promise<unknown>[] = [processor.processBatch()];
+    if (leaderboardProcessor !== null) batches.push(leaderboardProcessor.processBatch());
+    const results = await Promise.allSettled(batches);
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        logger.error('worker.batch.failed', {
+          errorName: result.reason instanceof Error ? result.reason.name : 'UnknownError',
+        });
+      }
+    }
+    if (leaderboardReconciler !== null) {
+      try {
+        await finalizeEndedSeasons({
+          logger,
+          reconciler: leaderboardReconciler,
+          repository: leaderboardRepository,
+        });
+      } catch (error) {
+        logger.error('leaderboard.finalization.failed', {
+          errorName: error instanceof Error ? error.name : 'UnknownError',
+        });
+      }
     }
   },
 });
@@ -58,7 +111,7 @@ const shutdown = (signal: NodeJS.Signals): void => {
     .stop()
     .then(() => {
       publisher.close();
-      return database.close();
+      return Promise.all([database.close(), redis?.close()]);
     })
     .catch((error: unknown) => {
       logger.error('worker.shutdown.failed', {

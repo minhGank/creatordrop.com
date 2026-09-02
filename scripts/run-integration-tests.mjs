@@ -1,6 +1,8 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 
+import { ensureLocalRedis, localRedisUrl, stopLocalRedis } from './local-redis.mjs';
+
 const execFileAsync = promisify(execFile);
 
 const readLocalSupabaseEnvironment = async () => {
@@ -28,6 +30,7 @@ const readLocalSupabaseEnvironment = async () => {
 };
 
 const { apiUrl, publishableKey } = await readLocalSupabaseEnvironment();
+const redis = await ensureLocalRedis();
 const child = spawn(
   process.execPath,
   [
@@ -42,6 +45,7 @@ const child = spawn(
       ...process.env,
       LOCAL_SUPABASE_API_URL: apiUrl,
       LOCAL_SUPABASE_PUBLISHABLE_KEY: publishableKey,
+      REDIS_URL: localRedisUrl,
     },
     stdio: 'inherit',
   },
@@ -52,6 +56,7 @@ child.once('error', () => {
   process.exitCode = 1;
 });
 
-child.once('exit', (code) => {
+child.once('exit', async (code) => {
+  if (redis.started) await stopLocalRedis();
   process.exitCode = code ?? 1;
 });
