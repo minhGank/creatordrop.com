@@ -281,8 +281,9 @@ describe('Phase 13 PostgreSQL and Redis leaderboard lifecycle', () => {
   it('projects, replays, rebuilds, reconciles, and finalizes authoritative rankings', async () => {
     const firstRepository = createLeaderboardRepository(firstWorker);
     const secondRepository = createLeaderboardRepository(secondWorker);
-    const generation = await store.beginRebuild();
-    await store.completeRebuild(generation);
+    const reconciler = createLeaderboardReconciler(firstRepository, store);
+    // Other serial integration files may have durable applied history while Redis is disposable.
+    await reconciler.rebuild();
 
     const [firstClaims, secondClaims] = await Promise.all([
       firstRepository.claim({
@@ -398,7 +399,6 @@ describe('Phase 13 PostgreSQL and Redis leaderboard lifecycle', () => {
       ),
     ).toBe(true);
 
-    const reconciler = createLeaderboardReconciler(firstRepository, store);
     expect(await reconciler.reconcile()).toEqual([]);
     await store.apply({
       boards: [

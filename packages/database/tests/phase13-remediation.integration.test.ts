@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { parseDatabaseEnvironment, parseMigrationEnvironment } from '@creatordrop/config';
 
@@ -175,10 +175,66 @@ const insertProjectionFixture = async (database: Database): Promise<string> => {
   return eventId;
 };
 
+interface ParkedProjectionEvent {
+  readonly availableAt: Date;
+  readonly eventId: string;
+  readonly leaseExpiresAt: Date | null;
+}
+
+const parkClaimableProjectionEvents = async (
+  database: Database,
+): Promise<readonly ParkedProjectionEvent[]> =>
+  database.transaction(async (transaction) => {
+    // The integration suite shares one global queue; preserve unrelated work around this claim probe.
+    await transaction.query(`set local session_replication_role = replica`);
+    const parked = await transaction.query<ParkedProjectionEvent>(
+      `with candidates as materialized (
+         select outbox_event_id, status, available_at, lease_expires_at
+           from app.leaderboard_projection_events
+          where status in ('pending','processing')
+          for update
+       ), updated as (
+         update app.leaderboard_projection_events as projection
+            set available_at = case when candidates.status = 'pending'
+                  then '9999-12-31T23:59:59Z'::timestamptz
+                  else projection.available_at end,
+                lease_expires_at = case when candidates.status = 'processing'
+                  then '9999-12-31T23:59:59Z'::timestamptz
+                  else projection.lease_expires_at end
+           from candidates
+          where projection.outbox_event_id = candidates.outbox_event_id
+         returning candidates.outbox_event_id::text as "eventId",
+                   candidates.available_at as "availableAt",
+                   candidates.lease_expires_at as "leaseExpiresAt"
+       )
+       select * from updated order by "eventId"`,
+    );
+    return parked.rows;
+  });
+
+const restoreClaimableProjectionEvents = async (
+  database: Database,
+  parked: readonly ParkedProjectionEvent[],
+): Promise<void> => {
+  if (parked.length === 0) return;
+  await database.transaction(async (transaction) => {
+    await transaction.query(`set local session_replication_role = replica`);
+    for (const event of parked) {
+      await transaction.query(
+        `update app.leaderboard_projection_events
+            set available_at = $2, lease_expires_at = $3
+          where outbox_event_id = $1`,
+        [event.eventId, event.availableAt, event.leaseExpiresAt],
+      );
+    }
+  });
+};
+
 describe('Phase 13 High-severity remediation', { concurrent: false }, () => {
   let application: Database;
   let firstConnection: Database;
   let migration: Database;
+  let parkedProjectionEvents: readonly ParkedProjectionEvent[] = [];
   let secondConnection: Database;
   let worker: Database;
 
@@ -274,6 +330,15 @@ describe('Phase 13 High-severity remediation', { concurrent: false }, () => {
         [creatorId, userId],
       );
     });
+  });
+
+  beforeEach(async () => {
+    parkedProjectionEvents = await parkClaimableProjectionEvents(migration);
+  });
+
+  afterEach(async () => {
+    await restoreClaimableProjectionEvents(migration, parkedProjectionEvents);
+    parkedProjectionEvents = [];
   });
 
   afterAll(async () => {
