@@ -176,6 +176,22 @@ npm run dev:api
 
 Supabase Auth performs sign-up/sign-in. Send its access token as `Authorization: Bearer <token>` to `POST /v1/auth/session/exchange` with `{}` to create or retrieve the local user. The same token can use the creator/catalog/fairness APIs and `GET /v1/me/wallets`. With the explicit local `.env.example` opt-in `WALLET_TEST_CREDITS_ENABLED=true`, `POST /v1/me/wallets/USD/test-credits` accepts a canonical decimal-string `amountMinor` and `Idempotency-Key`. The flag defaults false and is rejected in production, where the route is absent and the service is disabled. Monetary amounts, inventory quantities, and weights are JSON decimal strings. The API needs only the public JWKS URL for verification; never add a Supabase service-role/secret key to browser code.
 
+For the Phase 14 web app, copy the local `API_URL` and `PUBLISHABLE_KEY` reported by
+`supabase status --workdir infra --output json` into `VITE_SUPABASE_URL` and
+`VITE_SUPABASE_PUBLISHABLE_KEY`. These values are intentionally public; never substitute a secret
+or service-role key. Start the API and web app in separate terminals:
+
+```bash
+npm run dev:api
+npm run dev:web
+```
+
+The web app uses per-tab `sessionStorage` for Supabase session restoration. Public catalog routes
+work without a session. All CreatorDrop requests flow through `apps/web/src/api/client.ts`, which
+validates shared contracts and error envelopes. UI code must keep catalog text in React's escaped
+text path, format money from decimal minor-unit strings, preserve exact integer odds alongside any
+percentage display, provide explicit loading/error/empty states, and respect reduced motion.
+
 For Stripe sandbox funding, set `STRIPE_FUNDING_ENABLED=true` only with explicit `NODE_ENV=development` or `test`, then supply a test-mode `STRIPE_SECRET_KEY` and the signing secret printed by `stripe listen --forward-to http://127.0.0.1:3000/v1/webhooks/stripe`. Never commit either value. Create a funding intent with `POST /v1/me/wallets/USD/funding-intents`, `{ "amountMinor": "2000" }`, and an `Idempotency-Key`; confirm the PaymentIntent using Stripe's client SDK/test payment methods. Only the signed webhook can credit the wallet. The configured limits are USD 500–50000 minor units. Local funding is closed-loop/nonwithdrawable, and no self-service refund route exists.
 
 Phase 11 integration tests mock only Stripe transport/event normalization; all intents, provider-event idempotency, ledger postings, wallet projections, refunds/disputes, deficits, rollback, and reconciliation assertions use real local PostgreSQL. `npm run test:integration` also applies the Phase 8 → current forward-upgrade harness. The application never stores raw webhook payloads or card data; only allowlisted identities/state and an exact raw-payload SHA-256 hash are retained.

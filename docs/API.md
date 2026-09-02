@@ -107,7 +107,35 @@ Authentication first resolves an active local user. Every private creator operat
 
 Membership bodies contain a local `userId` and an allowlisted role. The target must already be an active CreatorDrop user. This is intentionally direct membership management for local/API workflows; invitations, email delivery, and acceptance state are deferred. Successful creator creation and membership changes emit allowlisted `creator.audit` structured logs with IDs, action, roles/revision, and request ID only. A durable production audit subsystem remains a later concern.
 
-The future public creator profile by slug is not implemented in Phase 4; it belongs with the public catalog work after private tenancy is established.
+Phase 14 adds a separate public catalog surface; it does not reuse these authenticated workspace
+responses or authorization paths. `custom_slug` is the stable public route identity because it is
+case-insensitively unique and cannot be edited by the existing creator API.
+
+| Method | Path                                            | Purpose                                       |
+| ------ | ----------------------------------------------- | --------------------------------------------- |
+| `GET`  | `/v1/catalog/creators`                          | Discover active public creator summaries      |
+| `GET`  | `/v1/catalog/creators/:customSlug`              | Resolve one active public creator by slug     |
+| `GET`  | `/v1/catalog/creators/:customSlug/boxes`        | List that creator's active published boxes    |
+| `GET`  | `/v1/catalog/creators/:customSlug/boxes/:boxId` | Read the creator-scoped current published box |
+
+The two list endpoints accept only optional `limit` and `cursor` query fields. `limit` defaults to
+20 and is capped at 50. The cursor is an opaque versioned token and ordering is the repository-wide
+ascending `(created_at, id)` order. Creator summaries expose exactly `customSlug`, `displayName`,
+and `handle`. Box summaries expose only the stable box/current-version IDs, published display
+fields, price/currency, publication/version facts, configuration hash, compatibility marker, and
+derived `openable|legacy` availability. They never expose roles, memberships, revisions, drafts,
+inventory-pool identity, financial data, fulfillment data, or cryptographic secrets.
+
+Only active creators resolve publicly. Discovery/current box lists contain boxes whose stable
+identity is `active` and whose current version is published. Paused, archived, unpublished, and
+draft boxes are excluded. An active grandfathered version remains readable and is returned as
+`availability: "legacy"` with a null opening-compatibility marker, so clients cannot present it as
+openable. As before, an archived or paused box has no current public read, while a specifically
+addressed immutable published version remains available for historical audit.
+
+The creator-scoped detail endpoint resolves the slug, box ownership, active statuses, and current
+published-version pointer together. Cross-creator pairs and inactive or incomplete resources use
+the concealed `PUBLIC_CATALOG_RESOURCE_NOT_FOUND` response.
 
 ## Public boxes and rewards
 
@@ -118,12 +146,14 @@ Phase 5 implements only immutable box reads, not discovery or a marketplace:
 | `GET`  | `/v1/boxes/:boxId`                     | Current active published box, exact ordered entries, reward snapshots, and manifest/hash |
 | `GET`  | `/v1/boxes/:boxId/versions/:versionId` | A specific immutable published version belonging to that box                             |
 
-`GET /v1/boxes`, public creator listings, and standalone public reward reads remain future catalog
-work. Phase 13 adds a bounded-TTL Redis cache-aside layer for these two reads: a cache
-miss/invalid value/outage falls back to PostgreSQL, publication and archival invalidate the
-current-version key after commit, and immutable version keys may live until TTL. Eligibility,
-price, and availability returned by reads remain advisory until an opening transaction validates
-them again.
+There is no global `GET /v1/boxes` or standalone public reward endpoint in Phase 14; creator-first
+discovery is sufficient for the documented browse flow. Phase 13 adds a bounded-TTL Redis
+cache-aside layer for the two immutable/current box-detail reads. Every cache hit is hydrated and
+compared with PostgreSQL's immutable snapshot before it can be returned; a missing, invalid,
+unavailable, or divergent cache falls back to PostgreSQL and is best-effort repaired. Publication
+and archival invalidate the current-version key after commit, and immutable version keys may live
+until TTL. Eligibility, price, and availability returned by reads remain advisory until an opening
+transaction validates them again.
 
 Public responses contain the published version snapshot, its ordered reward-version snapshots, the canonical manifest, and a lowercase hexadecimal SHA-256 `configurationHash`. Price, quantity, weight, and total fields are decimal strings. No floating-point odds are returned or accepted.
 

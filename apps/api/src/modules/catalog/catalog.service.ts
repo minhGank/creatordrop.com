@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import { v7 as uuidv7 } from 'uuid';
 
 import type { Database, QueryExecutor } from '@creatordrop/database';
@@ -262,7 +264,7 @@ const createRewardDraftIfMissing = async (
   return versionId;
 };
 
-const buildPublishedCatalog = async (
+export const buildPublishedCatalog = async (
   executor: QueryExecutor,
   boxId: BoxId,
   version: BoxVersion,
@@ -372,15 +374,26 @@ export const createCatalogService = ({
       });
     }
   };
-  const invalidateCurrent = async (boxId: BoxId): Promise<void> => {
+  const deleteCacheKeys = async (keys: readonly string[]): Promise<void> => {
     if (cache === undefined) return;
     try {
-      await cache.redis.delete(publicCatalogCacheKeys.currentBox(boxId));
+      await Promise.all(keys.map((key) => cache.redis.delete(key)));
     } catch (error) {
       logger.info('catalog.cache.invalidation_failed', {
         errorName: error instanceof Error ? error.name : 'UnknownError',
       });
     }
+  };
+  const invalidateCurrent = (boxId: BoxId): Promise<void> =>
+    deleteCacheKeys([publicCatalogCacheKeys.currentBox(boxId)]);
+  const returnAuthoritativeCatalog = async (
+    keys: readonly string[],
+    cached: PublishedCatalogVersion | undefined,
+    authoritative: PublishedCatalogVersion,
+  ): Promise<PublishedCatalogVersion> => {
+    if (cached !== undefined && isDeepStrictEqual(cached, authoritative)) return cached;
+    await writeCache(keys, authoritative);
+    return authoritative;
   };
 
   return {
@@ -734,27 +747,42 @@ export const createCatalogService = ({
 
     getPublicBox: async (boxId) => {
       const key = publicCatalogCacheKeys.currentBox(boxId);
-      const cached = await readCache(key, { boxId });
-      if (cached !== undefined) return cached;
-      const published = await findPublicCurrentVersion(database, boxId);
-      if (published === undefined) throw new CatalogResourceNotFoundError();
-      const catalog = await buildPublishedCatalog(database, published.boxId, published.version);
-      await writeCache(
-        [key, publicCatalogCacheKeys.version(published.boxId, published.version.id)],
-        catalog,
+      const [cached, published] = await Promise.all([
+        readCache(key, { boxId }),
+        findPublicCurrentVersion(database, boxId),
+      ]);
+      if (published === undefined) {
+        await deleteCacheKeys([key]);
+        throw new CatalogResourceNotFoundError();
+      }
+      const authoritative = await buildPublishedCatalog(
+        database,
+        published.boxId,
+        published.version,
       );
-      return catalog;
+      return returnAuthoritativeCatalog(
+        [key, publicCatalogCacheKeys.version(published.boxId, published.version.id)],
+        cached,
+        authoritative,
+      );
     },
 
     getPublicBoxVersion: async (boxId, versionId) => {
       const key = publicCatalogCacheKeys.version(boxId, versionId);
-      const cached = await readCache(key, { boxId, versionId });
-      if (cached !== undefined) return cached;
-      const published = await findPublicPublishedVersion(database, boxId, versionId);
-      if (published === undefined) throw new CatalogResourceNotFoundError();
-      const catalog = await buildPublishedCatalog(database, published.boxId, published.version);
-      await writeCache([key], catalog);
-      return catalog;
+      const [cached, published] = await Promise.all([
+        readCache(key, { boxId, versionId }),
+        findPublicPublishedVersion(database, boxId, versionId),
+      ]);
+      if (published === undefined) {
+        await deleteCacheKeys([key]);
+        throw new CatalogResourceNotFoundError();
+      }
+      const authoritative = await buildPublishedCatalog(
+        database,
+        published.boxId,
+        published.version,
+      );
+      return returnAuthoritativeCatalog([key], cached, authoritative);
     },
 
     archiveBox: async (command) => {

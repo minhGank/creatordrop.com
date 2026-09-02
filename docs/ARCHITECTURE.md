@@ -72,6 +72,34 @@ route -> middleware -> controller -> application service -> repository -> Postgr
 
 Modules must not import another module's repository directly. They call its application interface or pure public domain types. In particular, opening coordinates published boxes, RNG, wallet, fulfillment, idempotency, and outbox through explicit interfaces.
 
+## Phase 14 web boundary
+
+The React/Vite application uses one typed CreatorDrop HTTP client. Components never scatter raw
+`fetch` calls or duplicate package contract types. The client adds a bearer token when a Supabase
+session exists, validates success and stable error envelopes at the network boundary, supports
+request cancellation, and never automatically retries mutations. A backend `401` initiates local
+provider-session cleanup; React visibility is never treated as authorization.
+
+Supabase Auth remains the only credential ceremony. The browser client persists its refreshable
+session in per-tab `sessionStorage`, not long-lived `localStorage`; reload restoration completes
+the idempotent `/v1/auth/session/exchange` before protected content renders. Browser configuration
+contains only the Supabase URL and publishable key. Service-role keys and application/database
+secrets never enter the web build. Vite configuration rejects modern Supabase secret keys and
+legacy service-role JWTs before emitting browser assets; runtime parsing repeats the browser-key
+classification as defense in depth.
+
+Phase 14 routes are `/`, `/auth`, `/account`, `/creators`, `/creators/:customSlug`, and
+`/creators/:customSlug/boxes/:boxId`. Public pages use allowlisted catalog APIs without
+authentication. The protected account shell demonstrates session gating but adds no creator
+dashboard or product mutation. React text escaping is the catalog XSS boundary; no catalog field
+is rendered as raw HTML. Creator box-detail routes use one creator-scoped backend lookup rather
+than composing a slug with a globally addressed box. Money formatting starts from integer
+minor-unit strings, and probability
+display starts from immutable integer weights using `BigInt`, always retaining the exact
+`weight / totalWeight` pair. Shared loading/error/empty states, semantic headings/forms, visible
+focus, skip navigation, responsive layouts, and `prefers-reduced-motion` support form the
+accessibility baseline for later phases.
+
 ## Authentication and authorization
 
 Use Supabase Auth as the initial identity provider. The API verifies JWT signature, issuer, audience, expiry, and not-before against trusted configuration/JWKS, then maps `(auth_provider, auth_subject)` to a local user. Never trust client-supplied user, creator, role, price, weight, balance, or reward IDs as authority.

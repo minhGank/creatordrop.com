@@ -22,6 +22,7 @@ import {
 } from './modules/auth/authentication.middleware.js';
 import { createJwtVerifier } from './modules/auth/jwt-verifier.js';
 import { createCatalogService } from './modules/catalog/catalog.service.js';
+import { createPublicCatalogService } from './modules/catalog/public-catalog.service.js';
 import { createUserBootstrapService } from './modules/users/bootstrap-user.service.js';
 import { createCreatorService } from './modules/creators/creator.service.js';
 import { createEnvironmentSeedEncryptionKeyProvider } from './modules/fairness/fairness.key-provider.js';
@@ -82,6 +83,7 @@ const catalogService = createCatalogService({
   database,
   logger,
 });
+const publicCatalogService = createPublicCatalogService({ database });
 const leaderboardService = createLeaderboardService({
   logger,
   repository: createLeaderboardRepository(database),
@@ -153,6 +155,7 @@ const app = createApp({
   logger,
   openingService,
   paymentService,
+  publicCatalogService,
   runtime: { stripeFundingEnabled: environment.stripeFundingEnabled, testCreditsEnabled },
   security: {
     allowedOrigins: environment.corsAllowedOrigins,

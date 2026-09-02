@@ -25,5 +25,6 @@ export default defineConfig({
     include: ['apps/**/*.test.{ts,tsx}', 'packages/**/*.test.ts', 'tests/**/*.test.ts'],
     exclude: ['**/*.integration.test.ts', '**/dist/**', '**/node_modules/**'],
     passWithNoTests: false,
+    setupFiles: ['./apps/web/tests/setup.ts'],
   },
 });

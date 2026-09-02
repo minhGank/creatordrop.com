@@ -120,7 +120,12 @@ rebuild/drift, finalization/idempotency, public fallback, and financial independ
 
 Depends on: Phases 3 and 5.
 
-Implement typed API client, auth/session UI, public creator/box catalog, exact odds display, accessibility baseline, and error/retry primitives. Tests cover token handling, XSS-safe rendering, loading/error states, currency formatting from integer strings, keyboard/screen-reader behavior, and contract fixtures.
+Completed: a separate PostgreSQL-authoritative public creator catalog API, typed web API client,
+Supabase auth/session UI, public creator/box catalog, exact integer-weight odds display,
+minor-unit money formatting, responsive routing shell, accessibility/reduced-motion baseline, and
+standard loading/error/empty primitives. Tests cover token/session handling, protected-route
+gating, XSS-safe rendering, catalog visibility/pagination, currency and tiny-probability
+formatting, keyboard/screen-reader semantics, cache fallback, and real contract fixtures.
 
 ## Phase 15 — Opening UX and fairness verifier UI
 

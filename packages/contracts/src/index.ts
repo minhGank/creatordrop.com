@@ -217,6 +217,46 @@ export interface PublishedBoxVersionResponse {
   readonly version: BoxVersionContract;
 }
 
+export interface PublicCreatorSummaryContract {
+  readonly customSlug: string;
+  readonly displayName: string;
+  readonly handle: string;
+}
+
+export interface PublicBoxSummaryContract {
+  readonly availability: 'legacy' | 'openable';
+  readonly configurationHash: string;
+  readonly currency: string;
+  readonly currentPublishedVersionId: string;
+  readonly description: string;
+  readonly id: string;
+  readonly imageUrl: string | null;
+  readonly name: string;
+  readonly openingCompatibilityVersion: 'opening-v1' | null;
+  readonly priceMinor: string;
+  readonly publishedAt: string;
+  readonly versionNumber: number;
+}
+
+export interface PublicCreatorsResponse {
+  readonly creators: readonly PublicCreatorSummaryContract[];
+  readonly nextCursor: string | null;
+}
+
+export interface PublicCreatorResponse {
+  readonly creator: PublicCreatorSummaryContract;
+}
+
+export interface PublicCreatorBoxResponse {
+  readonly box: PublishedBoxVersionResponse;
+  readonly creator: PublicCreatorSummaryContract;
+}
+
+export interface PublicCreatorBoxesResponse {
+  readonly boxes: readonly PublicBoxSummaryContract[];
+  readonly nextCursor: string | null;
+}
+
 export interface PublicLeaderboardEntryContract {
   readonly baseRewardWins: string;
   readonly points: string;

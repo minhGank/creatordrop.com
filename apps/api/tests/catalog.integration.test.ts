@@ -5,6 +5,7 @@ import { v7 as uuidv7 } from 'uuid';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { parseDatabaseEnvironment, parseMigrationEnvironment } from '@creatordrop/config';
+import type { PublishedBoxVersionResponse } from '@creatordrop/contracts';
 import { createDatabasePool, type Database } from '@creatordrop/database';
 import type { LogAttributes, Logger } from '@creatordrop/observability';
 import { publicCatalogCacheKeys, type RedisJsonCache } from '@creatordrop/redis-projections';
@@ -13,6 +14,8 @@ import { createApp } from '../src/app.js';
 import { createAuthenticationMiddleware } from '../src/modules/auth/authentication.middleware.js';
 import { createJwtVerifier } from '../src/modules/auth/jwt-verifier.js';
 import { createCatalogService } from '../src/modules/catalog/catalog.service.js';
+import { hashPublishedManifest } from '../src/modules/catalog/catalog.manifest.js';
+import { createPublicCatalogService } from '../src/modules/catalog/public-catalog.service.js';
 import { createCreatorService } from '../src/modules/creators/creator.service.js';
 import { createUserBootstrapService } from '../src/modules/users/bootstrap-user.service.js';
 import {
@@ -45,6 +48,8 @@ interface TestActor extends LocalAuthIdentity {
 }
 
 interface TestCreator {
+  readonly customSlug: string;
+  readonly handle: string;
   readonly id: string;
 }
 
@@ -229,16 +234,21 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
     return { ...identity, userId: persisted.rows[0].id };
   };
 
-  const createCreator = async (owner: TestActor): Promise<TestCreator> => {
+  const createCreator = async (
+    owner: TestActor,
+    displayName = 'Phase 5 Creator',
+  ): Promise<TestCreator> => {
     const suffix = randomUUID().replaceAll('-', '').slice(0, 12);
     const handle = `p5_${suffix}`;
+    const customSlug = `p5-${suffix}`;
     const response = await request(app)
       .post('/v1/creators')
       .set(authorization(owner))
-      .send({ customSlug: `p5-${suffix}`, displayName: 'Phase 5 Creator', handle });
+      .send({ customSlug, displayName, handle });
     expect(response.status).toBe(201);
     const persisted = await applicationDatabase.query<TestCreator>(
-      `select id::text as id from app.creators where handle = $1`,
+      `select id::text as id, handle::text as handle, custom_slug::text as "customSlug"
+         from app.creators where handle = $1`,
       [handle],
     );
     if (persisted.rows[0] === undefined) throw new Error('Creator was not persisted.');
@@ -359,16 +369,18 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
       jwksUrl: `${authIssuer}/.well-known/jwks.json`,
       provider: 'supabase',
     });
+    const catalogService = createCatalogService({
+      cache: { redis: catalogCache, ttlSeconds: 300 },
+      database: applicationDatabase,
+      logger,
+    });
     app = createApp({
       authenticate: createAuthenticationMiddleware({
         bootstrapUsers: createUserBootstrapService({ database: applicationDatabase }),
         verifyAccessToken,
       }),
-      catalogService: createCatalogService({
-        cache: { redis: catalogCache, ttlSeconds: 300 },
-        database: applicationDatabase,
-        logger,
-      }),
+      catalogService,
+      publicCatalogService: createPublicCatalogService({ database: applicationDatabase }),
       creatorService: createCreatorService({ database: applicationDatabase, logger }),
       fairnessService: createUnhandledFairnessService(),
       logger,
@@ -780,6 +792,278 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
     expect(JSON.stringify(auditRecords)).not.toContain(owner.accessToken);
   });
 
+  it('serves a paginated allowlisted public creator catalog with explicit box visibility', async () => {
+    const owner = await createActor();
+    const otherOwner = await createActor();
+    const hiddenOwner = await createActor();
+    const creator = await createCreator(owner, 'Public Creator One');
+    const otherCreator = await createCreator(otherOwner, 'Public Creator Two');
+    const hiddenCreator = await createCreator(hiddenOwner, 'Suspended Creator');
+
+    await migrationDatabase.transaction(async (transaction) => {
+      await transaction.query(`set local session_replication_role = replica`);
+      await transaction.query(
+        `update app.creators
+            set created_at = case id
+              when $1 then '1900-01-01T00:00:00Z'::timestamptz
+              when $2 then '1900-01-02T00:00:00Z'::timestamptz
+              when $3 then '1900-01-03T00:00:00Z'::timestamptz
+            end,
+            status = case when id = $3 then 'suspended' else status end
+          where id in ($1, $2, $3)`,
+        [creator.id, otherCreator.id, hiddenCreator.id],
+      );
+    });
+
+    const firstCreators = await request(app).get('/v1/catalog/creators?limit=1');
+    expect(firstCreators.status).toBe(200);
+    const firstCreatorsBody = firstCreators.body as unknown;
+    if (!isRecord(firstCreatorsBody) || !Array.isArray(firstCreatorsBody.creators)) {
+      throw new Error('Public creator list returned an unexpected response.');
+    }
+    const firstCreatorBody = firstCreatorsBody.creators[0] as unknown;
+    if (!isRecord(firstCreatorBody) || typeof firstCreatorsBody.nextCursor !== 'string') {
+      throw new Error('Public creator page returned an invalid cursor or creator.');
+    }
+    expect(firstCreatorsBody.creators).toEqual([
+      {
+        customSlug: creator.customSlug,
+        displayName: 'Public Creator One',
+        handle: creator.handle,
+      },
+    ]);
+    expect(Object.keys(firstCreatorBody).sort()).toEqual(['customSlug', 'displayName', 'handle']);
+
+    const secondCreators = await request(app).get('/v1/catalog/creators').query({
+      cursor: firstCreatorsBody.nextCursor,
+      limit: '1',
+    });
+    expect(secondCreators.status).toBe(200);
+    expect(secondCreators.body as unknown).toMatchObject({
+      creators: [
+        {
+          customSlug: otherCreator.customSlug,
+          displayName: 'Public Creator Two',
+          handle: otherCreator.handle,
+        },
+      ],
+    });
+
+    const creatorDetail = await request(app).get(
+      `/v1/catalog/creators/${creator.customSlug.toUpperCase()}`,
+    );
+    expect(creatorDetail.status).toBe(200);
+    expect(creatorDetail.body as unknown).toEqual({ creator: firstCreatorBody });
+    expect(
+      (await request(app).get(`/v1/catalog/creators/${hiddenCreator.customSlug}`)).status,
+    ).toBe(404);
+    expect((await request(app).get('/v1/catalog/creators?limit=01')).status).toBe(400);
+    expect((await request(app).get('/v1/catalog/creators?role=owner')).status).toBe(400);
+
+    const reward = await createReward(owner, creator.id, rewardBody('Public summary reward'));
+    const activeBox = await createBox(owner, creator.id, boxBody('Active public box'));
+    const legacyBox = await createBox(owner, creator.id, boxBody('Legacy public box'));
+    const pausedBox = await createBox(owner, creator.id, boxBody('Paused public box'));
+    const archivedBox = await createBox(owner, creator.id, boxBody('Archived public box'));
+    const unpublishedBox = await createBox(owner, creator.id, boxBody('Unpublished private draft'));
+
+    const publish = async (box: TestBox): Promise<void> => {
+      expect(
+        (
+          await configure(owner, creator.id, box, [
+            { rewardVersionId: reward.draftId, weight: '1' },
+          ])
+        ).status,
+      ).toBe(200);
+      expect(
+        (
+          await request(app)
+            .post(`/v1/creators/${creator.id}/boxes/${box.id}/publish`)
+            .set(authorization(owner))
+            .set('If-Match', '"2"')
+        ).status,
+      ).toBe(200);
+    };
+
+    await publish(activeBox);
+    await publish(legacyBox);
+    await publish(pausedBox);
+    await publish(archivedBox);
+    expect(
+      (
+        await request(app)
+          .post(`/v1/creators/${creator.id}/boxes/${archivedBox.id}/archive`)
+          .set(authorization(owner))
+          .set('If-Match', '"3"')
+      ).status,
+    ).toBe(200);
+
+    await migrationDatabase.transaction(async (transaction) => {
+      await transaction.query(`set local session_replication_role = replica`);
+      await transaction.query(`update app.boxes set status = 'paused' where id = $1`, [
+        pausedBox.id,
+      ]);
+      await transaction.query(
+        `delete from app.box_version_base_rewards where box_version_id = $1`,
+        [legacyBox.draftId],
+      );
+      await transaction.query(
+        `update app.box_versions set opening_compatibility_version = null where id = $1`,
+        [legacyBox.draftId],
+      );
+      await transaction.query(
+        `update app.boxes
+            set created_at = case id
+              when $1 then '1900-01-01T00:00:00Z'::timestamptz
+              when $2 then '1900-01-02T00:00:00Z'::timestamptz
+              else created_at
+            end
+          where id in ($1, $2)`,
+        [activeBox.id, legacyBox.id],
+      );
+    });
+
+    const otherReward = await createReward(
+      otherOwner,
+      otherCreator.id,
+      rewardBody('Cross-creator reward'),
+    );
+    const otherBox = await createBox(
+      otherOwner,
+      otherCreator.id,
+      boxBody('Cross-creator public box'),
+    );
+    expect(
+      (
+        await configure(otherOwner, otherCreator.id, otherBox, [
+          { rewardVersionId: otherReward.draftId, weight: '1' },
+        ])
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await request(app)
+          .post(`/v1/creators/${otherCreator.id}/boxes/${otherBox.id}/publish`)
+          .set(authorization(otherOwner))
+          .set('If-Match', '"2"')
+      ).status,
+    ).toBe(200);
+
+    const scopedActive = await request(app).get(
+      `/v1/catalog/creators/${creator.customSlug}/boxes/${activeBox.id}`,
+    );
+    expect(scopedActive.status).toBe(200);
+    expect(scopedActive.body as unknown).toMatchObject({
+      box: {
+        manifest: { boxId: activeBox.id },
+        version: { id: activeBox.draftId, openingCompatibilityVersion: 'opening-v1' },
+      },
+      creator: {
+        customSlug: creator.customSlug,
+        displayName: 'Public Creator One',
+        handle: creator.handle,
+      },
+    });
+    expect(Object.keys(scopedActive.body as Record<string, unknown>).sort()).toEqual([
+      'box',
+      'creator',
+    ]);
+    const crossCreatorDetail = await request(app).get(
+      `/v1/catalog/creators/${creator.customSlug}/boxes/${otherBox.id}`,
+    );
+    expect(crossCreatorDetail.status).toBe(404);
+    expect(crossCreatorDetail.body as unknown).toMatchObject({
+      error: { code: 'PUBLIC_CATALOG_RESOURCE_NOT_FOUND' },
+    });
+    for (const hiddenBox of [pausedBox, archivedBox, unpublishedBox]) {
+      expect(
+        (await request(app).get(`/v1/catalog/creators/${creator.customSlug}/boxes/${hiddenBox.id}`))
+          .status,
+      ).toBe(404);
+    }
+    const scopedLegacy = await request(app).get(
+      `/v1/catalog/creators/${creator.customSlug}/boxes/${legacyBox.id}`,
+    );
+    expect(scopedLegacy.status).toBe(200);
+    expect(scopedLegacy.body as unknown).toMatchObject({
+      box: { version: { openingCompatibilityVersion: null } },
+    });
+    await migrationDatabase.query(`update app.creators set status = 'suspended' where id = $1`, [
+      otherCreator.id,
+    ]);
+    expect(
+      (
+        await request(app).get(
+          `/v1/catalog/creators/${otherCreator.customSlug}/boxes/${otherBox.id}`,
+        )
+      ).status,
+    ).toBe(404);
+
+    const firstBoxes = await request(app).get(
+      `/v1/catalog/creators/${creator.customSlug}/boxes?limit=1`,
+    );
+    expect(firstBoxes.status).toBe(200);
+    const firstBoxesBody = firstBoxes.body as unknown;
+    if (
+      !isRecord(firstBoxesBody) ||
+      !Array.isArray(firstBoxesBody.boxes) ||
+      typeof firstBoxesBody.nextCursor !== 'string'
+    ) {
+      throw new Error('Public box list returned an unexpected response.');
+    }
+    const firstBoxBody = firstBoxesBody.boxes[0] as unknown;
+    if (!isRecord(firstBoxBody)) throw new Error('Public box summary was invalid.');
+    expect(firstBoxesBody.boxes).toHaveLength(1);
+    expect(firstBoxBody).toMatchObject({
+      availability: 'openable',
+      id: activeBox.id,
+      name: 'Active public box',
+      openingCompatibilityVersion: 'opening-v1',
+    });
+    expect(Object.keys(firstBoxBody).sort()).toEqual([
+      'availability',
+      'configurationHash',
+      'currency',
+      'currentPublishedVersionId',
+      'description',
+      'id',
+      'imageUrl',
+      'name',
+      'openingCompatibilityVersion',
+      'priceMinor',
+      'publishedAt',
+      'versionNumber',
+    ]);
+
+    const secondBoxes = await request(app)
+      .get(`/v1/catalog/creators/${creator.customSlug}/boxes`)
+      .query({ cursor: firstBoxesBody.nextCursor, limit: '1' });
+    expect(secondBoxes.status).toBe(200);
+    const secondBoxesBody = secondBoxes.body as unknown;
+    expect(secondBoxesBody).toMatchObject({
+      boxes: [
+        {
+          availability: 'legacy',
+          id: legacyBox.id,
+          name: 'Legacy public box',
+          openingCompatibilityVersion: null,
+        },
+      ],
+      nextCursor: null,
+    });
+    expect(JSON.stringify([firstBoxesBody, secondBoxesBody])).not.toMatch(
+      /Archived public box|Paused public box|Unpublished private draft|Cross-creator public box|role|revision|membership|inventoryPool/iu,
+    );
+    cacheRecords.delete(publicCatalogCacheKeys.currentBox(pausedBox.id));
+    expect((await request(app).get(`/v1/boxes/${pausedBox.id}`)).status).toBe(404);
+    expect((await request(app).get(`/v1/boxes/${archivedBox.id}`)).status).toBe(404);
+    expect((await request(app).get(`/v1/boxes/${legacyBox.id}`)).status).toBe(200);
+    expect(
+      (await request(app).get(`/v1/boxes/${archivedBox.id}/versions/${archivedBox.draftId}`))
+        .status,
+    ).toBe(200);
+  });
+
   it('uses disposable cache-aside public reads without making catalog writes depend on Redis', async () => {
     const owner = await createActor();
     const creator = await createCreator(owner);
@@ -799,6 +1083,69 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
     const versionKey = publicCatalogCacheKeys.version(box.id, box.draftId);
     expect(cacheRecords.has(currentKey)).toBe(true);
     expect(cacheRecords.has(versionKey)).toBe(true);
+
+    const authoritative = publication.body as unknown as PublishedBoxVersionResponse;
+    const forgedOddsManifest = {
+      ...authoritative.manifest,
+      entries: authoritative.manifest.entries.map((entry) => ({ ...entry, weight: '500' })),
+      totalWeight: '500',
+    };
+    const forgedOddsHash = hashPublishedManifest(forgedOddsManifest);
+    cacheRecords.set(currentKey, {
+      ...authoritative,
+      configurationHash: forgedOddsHash,
+      entries: authoritative.entries.map((entry) => ({ ...entry, weight: '500' })),
+      manifest: forgedOddsManifest,
+      version: {
+        ...authoritative.version,
+        configurationHash: forgedOddsHash,
+        totalWeight: '500',
+      },
+    });
+    const forgedOddsFallback = await request(app).get(`/v1/boxes/${box.id}`);
+    expect(forgedOddsFallback.status).toBe(200);
+    expect(forgedOddsFallback.body).toEqual(publication.body);
+    expect(cacheRecords.get(currentKey)).toEqual(publication.body);
+
+    const forgedPriceManifest = { ...authoritative.manifest, priceMinor: '123456789' };
+    const forgedPriceHash = hashPublishedManifest(forgedPriceManifest);
+    cacheRecords.set(currentKey, {
+      ...authoritative,
+      configurationHash: forgedPriceHash,
+      manifest: forgedPriceManifest,
+      version: {
+        ...authoritative.version,
+        configurationHash: forgedPriceHash,
+        priceMinor: '123456789',
+      },
+    });
+    const forgedPriceFallback = await request(app).get(`/v1/boxes/${box.id}`);
+    expect(forgedPriceFallback.status).toBe(200);
+    expect(forgedPriceFallback.body).toEqual(publication.body);
+
+    cacheRecords.set(versionKey, {
+      ...authoritative,
+      entries: authoritative.entries.map((entry, index) =>
+        index === 0
+          ? {
+              ...entry,
+              isBaseReward: false,
+              rewardVersion: {
+                ...entry.rewardVersion,
+                description: 'Redis-forged reward description',
+                imageUrl: 'https://attacker.invalid/forged.png',
+                name: 'Redis-forged reward name',
+              },
+            }
+          : entry,
+      ),
+    });
+    const forgedPresentationFallback = await request(app).get(
+      `/v1/boxes/${box.id}/versions/${box.draftId}`,
+    );
+    expect(forgedPresentationFallback.status).toBe(200);
+    expect(forgedPresentationFallback.body).toEqual(publication.body);
+    expect(cacheRecords.get(versionKey)).toEqual(publication.body);
 
     cacheRecords.set(currentKey, { forged: true });
     const corruptFallback = await request(app).get(`/v1/boxes/${box.id}`);

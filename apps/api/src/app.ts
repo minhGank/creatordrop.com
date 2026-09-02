@@ -12,6 +12,8 @@ import { requestLoggingMiddleware } from './http/request-logging.js';
 import { createAuthRouter } from './modules/auth/auth.route.js';
 import { createCatalogRouter } from './modules/catalog/catalog.route.js';
 import type { CatalogService } from './modules/catalog/catalog.service.js';
+import { createPublicCatalogRouter } from './modules/catalog/public-catalog.route.js';
+import type { PublicCatalogService } from './modules/catalog/public-catalog.service.js';
 import { createCreatorRouter } from './modules/creators/creator.route.js';
 import type { CreatorService } from './modules/creators/creator.service.js';
 import { createFairnessRouter } from './modules/fairness/fairness.route.js';
@@ -46,6 +48,7 @@ export interface AppOptions {
   readonly leaderboardService?: LeaderboardService;
   readonly openingService?: OpeningService;
   readonly paymentService?: PaymentService;
+  readonly publicCatalogService?: PublicCatalogService;
   readonly runtime: {
     readonly testCreditsEnabled: boolean;
     readonly stripeFundingEnabled?: boolean;
@@ -76,6 +79,7 @@ export const createApp = ({
   logger,
   openingService,
   paymentService,
+  publicCatalogService,
   runtime,
   security,
   walletService,
@@ -101,6 +105,9 @@ export const createApp = ({
   app.get('/ready', sendStatus('ready'));
   if (leaderboardService !== undefined) {
     app.use('/v1', createLeaderboardRouter(leaderboardService));
+  }
+  if (publicCatalogService !== undefined) {
+    app.use('/v1', createPublicCatalogRouter(publicCatalogService));
   }
   app.use(
     '/v1/auth',
