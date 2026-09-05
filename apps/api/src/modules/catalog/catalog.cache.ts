@@ -203,14 +203,27 @@ const rewardVersion = (value: unknown): RewardVersion => {
 const draftEntry = (value: unknown): DraftRewardEntry => {
   const row = record(
     value,
-    ['id', 'isBaseReward', 'position', 'rewardVersion', 'weight'],
+    ['id', 'isBaseReward', 'position', 'rarity', 'rarityPolicyVersion', 'rewardVersion', 'weight'],
     'catalog entry',
   );
   if (typeof row.isBaseReward !== 'boolean') throw new Error('Redis returned invalid base flag.');
+  const rarity =
+    row.rarity === null
+      ? null
+      : oneOf(row.rarity, ['common', 'uncommon', 'rare', 'epic', 'legendary'] as const, 'rarity');
+  const rarityPolicyVersion =
+    row.rarityPolicyVersion === null
+      ? null
+      : oneOf(row.rarityPolicyVersion, ['rarity-v1'] as const, 'rarity policy version');
+  if ((rarity === null) !== (rarityPolicyVersion === null)) {
+    throw new Error('Redis returned an incomplete rarity snapshot.');
+  }
   return {
     id: uuid(row.id, 'entry ID') as BoxVersionRewardId,
     isBaseReward: row.isBaseReward,
     position: integer(row.position, 'entry position'),
+    rarity,
+    rarityPolicyVersion,
     rewardVersion: rewardVersion(row.rewardVersion),
     weight: decimal(row.weight, 'entry weight'),
   };

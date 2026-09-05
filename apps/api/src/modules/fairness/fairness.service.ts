@@ -8,7 +8,13 @@ import {
   type QueryExecutor,
   type TransactionExecutor,
 } from '@creatordrop/database';
-import { rngAlgorithmVersion, selectReward } from '@creatordrop/domain';
+import type { OpeningFairnessProofResponse } from '@creatordrop/contracts';
+import {
+  parsePublishedManifest,
+  rngAlgorithmVersion,
+  selectReward,
+  verifyPublishedManifestHash,
+} from '@creatordrop/domain';
 import type { PublishedManifest } from '@creatordrop/domain';
 import type { Logger } from '@creatordrop/observability';
 
@@ -32,6 +38,7 @@ import {
   FairnessClientSeedMismatchError,
   FairnessNotInitializedError,
   FairnessRevisionConflictError,
+  OpeningFairnessProofNotFoundError,
   SeedCryptographyError,
   SeedEncryptionKeyUnavailableError,
   SeedReplacementKeyUnsafeError,
@@ -42,6 +49,10 @@ import {
   SeedSetNotFoundError,
   SeedSetUnavailableError,
 } from './fairness.errors.js';
+import {
+  findOpeningProofHeader,
+  listOpeningProofManifestEntries,
+} from './opening-proof.repository.js';
 import {
   allocateSeedSetNonce,
   completeRotation,
@@ -134,6 +145,7 @@ export interface ReplaceCompromisedSeedCommand extends RotationCommandIdentity {
 
 export interface FairnessService {
   getCurrent(userId: UserId): Promise<CurrentFairnessState>;
+  getOpeningProof(publicOpeningId: string): Promise<OpeningFairnessProofResponse['proof']>;
   getPublicSeedSet(seedSetId: RngSeedSetId): Promise<PublicSeedSet>;
   initialize(command: InitializeFairnessCommand): Promise<{
     readonly created: boolean;
@@ -726,6 +738,76 @@ export const createFairnessService = ({
 
   return {
     getCurrent: loadCurrent,
+
+    getOpeningProof: async (publicOpeningId) =>
+      database.transaction(
+        async (transaction) => {
+          const header = await findOpeningProofHeader(transaction, publicOpeningId);
+          if (header === undefined) throw new OpeningFairnessProofNotFoundError();
+          const entries = await listOpeningProofManifestEntries(transaction, header.boxVersionId);
+          const manifest = parsePublishedManifest({
+            algorithmVersion: header.algorithmVersion,
+            boxId: header.boxId,
+            boxVersionId: header.boxVersionId,
+            currency: header.currency,
+            entries,
+            priceMinor: header.priceMinor,
+            totalWeight: header.totalWeight,
+          });
+          verifyPublishedManifestHash(manifest, header.configurationHash);
+
+          const selected = manifest.entries[header.position];
+          if (selected?.boxVersionRewardId !== header.selectedBoxVersionRewardId) {
+            throw new Error('Opening proof has an inconsistent recorded reward.');
+          }
+          if (selected.rewardVersionId !== header.rewardVersionId) {
+            throw new Error('Opening proof has an inconsistent recorded reward.');
+          }
+          let intervalStart = 0n;
+          for (const entry of manifest.entries.slice(0, header.position)) {
+            intervalStart += BigInt(entry.weight);
+          }
+          const selectionValue = BigInt(header.selectionValue);
+          if (
+            selectionValue < intervalStart ||
+            selectionValue >= intervalStart + BigInt(selected.weight)
+          ) {
+            throw new Error('Opening proof has an inconsistent selection value.');
+          }
+
+          const verificationStatus =
+            header.seedStatus === 'revealed'
+              ? ('ready' as const)
+              : header.seedStatus === 'compromised'
+                ? ('unverifiable' as const)
+                : ('pending_reveal' as const);
+          return {
+            algorithmVersion: header.algorithmVersion,
+            clientSeed: header.clientSeed,
+            configurationHash: header.configurationHash,
+            manifest,
+            nonce: header.nonce,
+            openedAt: header.openedAt,
+            openingId: header.openingId,
+            recorded: {
+              acceptedDigestHex: header.acceptedDigestHex,
+              acceptedRound: header.acceptedRound,
+              boxVersionRewardId: header.selectedBoxVersionRewardId,
+              position: header.position,
+              rewardVersionId: header.rewardVersionId,
+              selectionValue: header.selectionValue,
+            },
+            seedSetId: header.seedSetId,
+            serverSeedCommitment: header.serverSeedCommitment,
+            ...(verificationStatus === 'ready' && header.revealedServerSeedHex !== null
+              ? { serverSeedHex: header.revealedServerSeedHex }
+              : {}),
+            specificationId: 'creatordrop-rng-hmac-sha256-rejection-v1',
+            verificationStatus,
+          };
+        },
+        { isolationLevel: 'repeatable-read', readOnly: true },
+      ),
 
     getPublicSeedSet: async (seedSetId) => {
       const seedSet = await findPublicSeedSet(database, seedSetId);

@@ -7,6 +7,7 @@ const fromRoot = (path: string): string => fileURLToPath(new URL(path, import.me
 export default defineConfig({
   resolve: {
     alias: {
+      '@creatordrop/rng-verifier/browser': fromRoot('./packages/rng-verifier/src/browser.ts'),
       '@creatordrop/config': fromRoot('./packages/config/src/index.ts'),
       '@creatordrop/contracts': fromRoot('./packages/contracts/src/index.ts'),
       '@creatordrop/database': fromRoot('./packages/database/src/index.ts'),

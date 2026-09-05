@@ -80,3 +80,12 @@ export const parseSeedSetId = (value: string | undefined): RngSeedSetId => {
   }
   return value.toLowerCase() as RngSeedSetId;
 };
+
+export const parsePublicOpeningId = (value: string | undefined): string => {
+  if (value === undefined || !isUuid(value)) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'publicOpeningId must be a UUID.', {
+      field: 'publicOpeningId',
+    });
+  }
+  return value.toLowerCase();
+};

@@ -19,6 +19,13 @@ export class OpeningCurrencyUnavailableError extends Error {
   }
 }
 
+export class OpeningConfirmationStaleError extends Error {
+  constructor() {
+    super('The confirmed box version is no longer current.');
+    this.name = 'OpeningConfirmationStaleError';
+  }
+}
+
 export class OpeningRetryableError extends Error {
   constructor() {
     super('The opening transaction must be retried by the client.');

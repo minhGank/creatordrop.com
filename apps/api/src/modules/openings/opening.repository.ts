@@ -12,6 +12,7 @@ import type {
   InventoryPoolId,
   RewardVersionId,
 } from '../catalog/catalog.js';
+import { rarityPolicyVersions, rewardRarities } from '../catalog/catalog.js';
 import type { CreatorId, UserId } from '../creators/creator.js';
 import type { OpeningFairnessSelection } from '../fairness/fairness.service.js';
 import type { IdempotencyRecordId, LedgerTransactionId } from '../wallet/wallet.js';
@@ -38,6 +39,8 @@ interface CatalogEntryRow {
   readonly isBaseReward: unknown;
   readonly name: unknown;
   readonly position: unknown;
+  readonly rarity: unknown;
+  readonly rarityPolicyVersion: unknown;
   readonly rewardId: unknown;
   readonly rewardVersionId: unknown;
   readonly stockoutPolicy: unknown;
@@ -59,6 +62,8 @@ export interface OpeningCatalogEntry {
   readonly isBaseReward: boolean;
   readonly name: string;
   readonly position: number;
+  readonly rarity: (typeof rewardRarities)[number] | null;
+  readonly rarityPolicyVersion: (typeof rarityPolicyVersions)[number] | null;
   readonly rewardId: string;
   readonly rewardVersionId: RewardVersionId;
   readonly stockoutPolicy: 'backorder' | 'pause_box' | null;
@@ -144,6 +149,18 @@ const requiredHex256 = (value: unknown, label: string): string => {
   return parsed;
 };
 
+const nullableOneOf = <T extends string>(
+  value: unknown,
+  values: readonly T[],
+  label: string,
+): T | null => {
+  if (value === null) return null;
+  if (typeof value !== 'string' || !values.includes(value as T)) {
+    throw new Error(`Database returned an invalid ${label}.`);
+  }
+  return value as T;
+};
+
 export const findOpeningCatalog = async (
   executor: QueryExecutor,
   boxId: BoxId,
@@ -171,6 +188,7 @@ export const findOpeningCatalog = async (
   const entryResult = await executor.query<CatalogEntryRow>(
     `select entry.id::text as "entryId", entry.position,
             entry.weight::text as weight, entry.reward_version_id::text as "rewardVersionId",
+            entry.rarity, entry.rarity_policy_version as "rarityPolicyVersion",
             reward.id::text as "rewardId", reward_version.name,
             reward_version.image_url as "imageUrl",
             reward_version.inventory_mode as "inventoryMode",
@@ -201,6 +219,15 @@ export const findOpeningCatalog = async (
     ) {
       throw new Error('Database returned an invalid stockout policy.');
     }
+    const rarity = nullableOneOf(row.rarity, rewardRarities, 'reward rarity');
+    const rarityPolicyVersion = nullableOneOf(
+      row.rarityPolicyVersion,
+      rarityPolicyVersions,
+      'rarity policy version',
+    );
+    if ((rarity === null) !== (rarityPolicyVersion === null)) {
+      throw new Error('Database returned an incomplete rarity snapshot.');
+    }
     return {
       id: requiredUuid(row.entryId, 'box reward entry ID') as BoxVersionRewardId,
       imageUrl: row.imageUrl === null ? null : requiredString(row.imageUrl, 'reward image URL'),
@@ -212,6 +239,8 @@ export const findOpeningCatalog = async (
       isBaseReward: row.isBaseReward === true,
       name: requiredString(row.name, 'reward name'),
       position: requiredNumber(row.position, 'reward position'),
+      rarity,
+      rarityPolicyVersion,
       rewardId: requiredUuid(row.rewardId, 'reward ID'),
       rewardVersionId: requiredUuid(row.rewardVersionId, 'reward version ID') as RewardVersionId,
       stockoutPolicy,

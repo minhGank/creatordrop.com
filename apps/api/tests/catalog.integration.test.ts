@@ -585,6 +585,74 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
       [box.draftId],
     );
     expect(remaining.rows).toEqual([{ count: '1' }]);
+
+    const clientRarity = await request(app)
+      .put(`/v1/creators/${creator.id}/boxes/${box.id}/draft/rewards`)
+      .set(authorization(owner))
+      .set('If-Match', '"3"')
+      .send({
+        entries: [
+          {
+            isBaseReward: true,
+            rarity: 'legendary',
+            rewardVersionId: second.draftId,
+            weight: '100',
+          },
+        ],
+      });
+    expect(clientRarity.status).toBe(400);
+  });
+
+  it('snapshots rarity per published box entry rather than per reward version', async () => {
+    const owner = await createActor();
+    const creator = await createCreator(owner);
+    const shared = await createReward(owner, creator.id, rewardBody('Shared reward'));
+    const filler = await createReward(owner, creator.id, rewardBody('Filler reward'));
+    const first = await createBox(owner, creator.id, boxBody('Twenty percent box'));
+    const second = await createBox(owner, creator.id, boxBody('Below twenty box'));
+
+    await configure(owner, creator.id, first, [
+      { rewardVersionId: shared.draftId, weight: '1' },
+      { rewardVersionId: filler.draftId, weight: '4' },
+    ]);
+    await configure(owner, creator.id, second, [
+      { rewardVersionId: shared.draftId, weight: '1' },
+      { rewardVersionId: filler.draftId, weight: '5' },
+    ]);
+    for (const box of [first, second]) {
+      expect(
+        (
+          await request(app)
+            .post(`/v1/creators/${creator.id}/boxes/${box.id}/publish`)
+            .set(authorization(owner))
+            .set('If-Match', '"2"')
+        ).status,
+      ).toBe(200);
+    }
+
+    const snapshots = await applicationDatabase.query<{
+      readonly boxId: string;
+      readonly rarity: string;
+      readonly rarityPolicyVersion: string;
+    }>(
+      `select version.box_id::text as "boxId", entry.rarity,
+              entry.rarity_policy_version as "rarityPolicyVersion"
+         from app.box_version_rewards as entry
+         join app.box_versions as version on version.id = entry.box_version_id
+        where version.box_id in ($1, $2) and entry.reward_version_id = $3
+        order by version.box_id`,
+      [first.id, second.id, shared.draftId],
+    );
+    expect(snapshots.rows.find((row) => row.boxId === first.id)).toEqual({
+      boxId: first.id,
+      rarity: 'common',
+      rarityPolicyVersion: 'rarity-v1',
+    });
+    expect(snapshots.rows.find((row) => row.boxId === second.id)).toEqual({
+      boxId: second.id,
+      rarity: 'uncommon',
+      rarityPolicyVersion: 'rarity-v1',
+    });
   });
 
   it('publishes atomically with manager/owner permission and stable conflicts', async () => {
@@ -743,6 +811,7 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
     expect(published.status).toBe(200);
     expect(published.headers.etag).toBe('"3"');
     expect(published.body).toMatchObject({
+      entries: [{ rarity: 'common', rarityPolicyVersion: 'rarity-v1' }],
       manifest: { priceMinor: '1000', totalWeight: '5' },
       version: { state: 'published' },
     });
@@ -1242,6 +1311,12 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
       applicationDatabase.query(
         `update app.box_version_rewards set reward_version_id = $2 where box_version_id = $1`,
         [box.draftId, alternateReward.draftId],
+      ),
+    ).rejects.toThrow(/immutable/iu);
+    await expect(
+      applicationDatabase.query(
+        `update app.box_version_rewards set rarity = 'legendary' where box_version_id = $1`,
+        [box.draftId],
       ),
     ).rejects.toThrow(/immutable/iu);
     await expect(

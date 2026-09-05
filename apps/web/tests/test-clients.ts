@@ -6,6 +6,9 @@ import type {
 } from '../src/auth/auth-client.js';
 import {
   authSessionResponseFixture,
+  boxOpeningFixture,
+  currentFairnessFixture,
+  pendingOpeningProofFixture,
   publicCreatorBoxesResponseFixture,
   publicCreatorResponseFixture,
   publicCreatorsResponseFixture,
@@ -16,14 +19,23 @@ export const createTestApiClient = (
   overrides: Partial<CreatorDropApiClient> = {},
 ): CreatorDropApiClient => ({
   exchangeSession: overrides.exchangeSession ?? (() => Promise.resolve(authSessionResponseFixture)),
+  getCurrentFairness:
+    overrides.getCurrentFairness ?? (() => Promise.resolve(currentFairnessFixture)),
   getCreator: overrides.getCreator ?? (() => Promise.resolve(publicCreatorResponseFixture)),
   getCreatorBox:
     overrides.getCreatorBox ??
     (() =>
       Promise.resolve({ box: publishedBoxFixture, creator: publicCreatorResponseFixture.creator })),
+  getOpeningFairnessProof:
+    overrides.getOpeningFairnessProof ?? (() => Promise.resolve(pendingOpeningProofFixture)),
+  getPublishedBoxVersion:
+    overrides.getPublishedBoxVersion ?? (() => Promise.resolve(publishedBoxFixture)),
   listCreatorBoxes:
     overrides.listCreatorBoxes ?? (() => Promise.resolve(publicCreatorBoxesResponseFixture)),
   listCreators: overrides.listCreators ?? (() => Promise.resolve(publicCreatorsResponseFixture)),
+  openBox: overrides.openBox ?? (() => Promise.resolve(boxOpeningFixture)),
+  updateCurrentClientSeed:
+    overrides.updateCurrentClientSeed ?? (() => Promise.resolve(currentFairnessFixture)),
 });
 
 export const createTestAuthClient = (

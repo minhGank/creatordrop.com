@@ -5,6 +5,13 @@ export class FairnessNotInitializedError extends Error {
   }
 }
 
+export class OpeningFairnessProofNotFoundError extends Error {
+  constructor() {
+    super('The opening fairness proof was not found.');
+    this.name = 'OpeningFairnessProofNotFoundError';
+  }
+}
+
 export class FairnessAlreadyInitializedError extends Error {
   constructor() {
     super('Fairness state was initialized with a different client seed.');

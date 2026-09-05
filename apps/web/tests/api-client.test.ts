@@ -7,6 +7,9 @@ import {
 } from '../src/api/client.js';
 import {
   authSessionResponseFixture,
+  boxOpeningFixture,
+  currentFairnessFixture,
+  pendingOpeningProofFixture,
   publicCreatorResponseFixture,
   publicCreatorsResponseFixture,
   publishedBoxFixture,
@@ -64,6 +67,57 @@ describe('CreatorDrop API client', () => {
     expect(fetcher.mock.calls[0]?.[0]).toBe(
       `https://api.example.test/v1/catalog/creators/creator-one/boxes/${publishedBoxFixture.manifest.boxId}`,
     );
+  });
+
+  it('sends one opening idempotency key and parses the public proof lifecycle', async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(boxOpeningFixture))
+      .mockResolvedValueOnce(jsonResponse(pendingOpeningProofFixture))
+      .mockResolvedValueOnce(jsonResponse(publishedBoxFixture))
+      .mockResolvedValueOnce(jsonResponse(currentFairnessFixture));
+    const client = createApiClient({ baseUrl: 'https://api.example.test', fetcher });
+
+    await expect(
+      client.openBox(
+        publishedBoxFixture.manifest.boxId,
+        currentFairnessFixture.fairness.clientSeed,
+        'opening_stable-key',
+        publishedBoxFixture.version.id,
+        publishedBoxFixture.configurationHash,
+      ),
+    ).resolves.toEqual(boxOpeningFixture);
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({
+      body: JSON.stringify({
+        clientSeed: currentFairnessFixture.fairness.clientSeed,
+        expectedBoxVersionId: publishedBoxFixture.version.id,
+        expectedConfigurationHash: publishedBoxFixture.configurationHash,
+      }),
+      headers: { 'Idempotency-Key': 'opening_stable-key' },
+      method: 'POST',
+    });
+    await expect(client.getOpeningFairnessProof(boxOpeningFixture.opening.id)).resolves.toEqual(
+      pendingOpeningProofFixture,
+    );
+    expect(fetcher.mock.calls[1]?.[0]).toBe(
+      `https://api.example.test/v1/fairness/openings/${boxOpeningFixture.opening.id}`,
+    );
+    await expect(
+      client.getPublishedBoxVersion(
+        publishedBoxFixture.manifest.boxId,
+        publishedBoxFixture.manifest.boxVersionId,
+      ),
+    ).resolves.toEqual(publishedBoxFixture);
+    expect(fetcher.mock.calls[2]?.[0]).toBe(
+      `https://api.example.test/v1/boxes/${publishedBoxFixture.manifest.boxId}/versions/${publishedBoxFixture.manifest.boxVersionId}`,
+    );
+    await expect(
+      client.updateCurrentClientSeed(currentFairnessFixture.fairness.clientSeed, 1),
+    ).resolves.toEqual(currentFairnessFixture);
+    expect(fetcher.mock.calls[3]?.[1]).toMatchObject({
+      headers: { 'If-Match': '"1"' },
+      method: 'PUT',
+    });
   });
 
   it('parses stable API errors, handles 401 cleanup, and rejects malformed success data', async () => {

@@ -23,6 +23,7 @@ import {
 } from '../src/modules/catalog/catalog.service.js';
 import type {
   BoxId,
+  BoxVersionId,
   InventoryPoolId,
   ProbabilityWeight,
   RewardId,
@@ -45,7 +46,10 @@ import {
   type FulfillmentService,
 } from '../src/modules/fulfillment/fulfillment.service.js';
 import type { ClientSeed } from '../src/modules/fairness/fairness.js';
-import { OpeningRetryableError } from '../src/modules/openings/opening.errors.js';
+import {
+  OpeningConfirmationStaleError,
+  OpeningRetryableError,
+} from '../src/modules/openings/opening.errors.js';
 import {
   FulfillmentDataUnavailableError,
   FulfillmentKeyUnavailableError,
@@ -177,6 +181,8 @@ interface TestUser {
 
 interface TestCatalog {
   readonly boxId: BoxId;
+  readonly configurationHash: string;
+  readonly boxVersionId: BoxVersionId;
   readonly rewardVersionId: RewardVersionId;
 }
 
@@ -439,14 +445,19 @@ describe('atomic box opening', { concurrent: false }, () => {
       expectedRevision: 1,
       requestId: randomUUID(),
     });
-    await catalog.publishBox({
+    const published = await catalog.publishBox({
       actorUserId: ownerId,
       boxId: box.id,
       creatorId,
       expectedRevision: 2,
       requestId: randomUUID(),
     });
-    return { boxId: box.id, rewardVersionId };
+    return {
+      boxId: box.id,
+      boxVersionId: published.version.id,
+      configurationHash: published.configurationHash,
+      rewardVersionId,
+    };
   };
 
   const createWeightedBox = async (
@@ -487,10 +498,24 @@ describe('atomic box opening', { concurrent: false }, () => {
     return box.id;
   };
 
-  const open = (user: TestUser, boxId: BoxId, idempotencyKey = `open_${randomUUID()}`) =>
+  const openingExpectation = async (
+    boxId: BoxId,
+  ): Promise<{
+    readonly expectedBoxVersionId: BoxVersionId;
+    readonly expectedConfigurationHash: string;
+  }> => {
+    const published = await catalog.getPublicBox(boxId);
+    return {
+      expectedBoxVersionId: published.version.id,
+      expectedConfigurationHash: published.configurationHash,
+    };
+  };
+
+  const open = async (user: TestUser, boxId: BoxId, idempotencyKey = `open_${randomUUID()}`) =>
     openings.openBox({
       boxId,
       clientSeed: user.clientSeed,
+      ...(await openingExpectation(boxId)),
       idempotencyKey,
       requestId: randomUUID(),
       userId: user.id,
@@ -547,6 +572,16 @@ describe('atomic box opening', { concurrent: false }, () => {
     expect(replay).toEqual({ ...first, replayed: true });
     expect(first.body.opening.pointsAwarded).toBe(20);
     expect(first.body.opening.wallet.balanceMinor).toBe('0');
+    const proof = await fairness.getOpeningProof(first.body.opening.id);
+    expect(proof).toMatchObject({
+      configurationHash: first.body.opening.fairness.configurationHash,
+      nonce: first.body.opening.fairness.nonce,
+      openingId: first.body.opening.id,
+      recorded: { rewardVersionId },
+      seedSetId: first.body.opening.fairness.seedSetId,
+      verificationStatus: 'pending_reveal',
+    });
+    expect(proof).not.toHaveProperty('serverSeedHex');
 
     const persisted = await database.query<{
       readonly creatorShare: string;
@@ -597,6 +632,7 @@ describe('atomic box opening', { concurrent: false }, () => {
     }).openBox({
       boxId: box.boxId,
       clientSeed: changedFeeUser.clientSeed,
+      ...(await openingExpectation(box.boxId)),
       idempotencyKey: `opening_${randomUUID()}`,
       requestId: randomUUID(),
       userId: changedFeeUser.id,
@@ -646,6 +682,7 @@ describe('atomic box opening', { concurrent: false }, () => {
       openings.openBox({
         boxId: box.boxId,
         clientSeed: 'ff'.repeat(32) as ClientSeed,
+        ...(await openingExpectation(box.boxId)),
         idempotencyKey: key,
         requestId: randomUUID(),
         userId: user.id,
@@ -676,6 +713,7 @@ describe('atomic box opening', { concurrent: false }, () => {
       failingOpenings.openBox({
         boxId: box.boxId,
         clientSeed: user.clientSeed,
+        ...(await openingExpectation(box.boxId)),
         idempotencyKey: `open_${randomUUID()}`,
         requestId: randomUUID(),
         userId: user.id,
@@ -749,6 +787,7 @@ describe('atomic box opening', { concurrent: false }, () => {
       guardedOpenings.openBox({
         boxId: box.boxId,
         clientSeed: user.clientSeed,
+        ...(await openingExpectation(box.boxId)),
         idempotencyKey: `open_${randomUUID()}`,
         requestId: randomUUID(),
         userId: user.id,
@@ -772,6 +811,172 @@ describe('atomic box opening', { concurrent: false }, () => {
       [user.id, poolId],
     );
     expect(state.rows).toEqual([{ claims: '0', consumptions: '0', nextNonce: '0', quantity: '1' }]);
+  });
+
+  it('rejects a stale confirmed version before wallet, nonce, RNG, or inventory mutation', async () => {
+    const creatorId = await createCreator();
+    const ownerId = await creatorOwner(creatorId);
+    const rewardVersionId = await createReward(creatorId, { mode: 'finite', quantity: '1' });
+    const box = await createBox(creatorId, rewardVersionId, '1000');
+    const originalExpectation = await openingExpectation(box.boxId);
+    const user = await createUser('20000');
+    const poolId = await inventoryPoolForVersion(rewardVersionId);
+    let selectorCalls = 0;
+    const guardedOpenings = createOpeningService({
+      database,
+      fairnessService: {
+        selectForOpening: async (transaction, input) => {
+          selectorCalls += 1;
+          return fairness.selectForOpening(transaction, input);
+        },
+      },
+      logger,
+    });
+    const mismatchedConfigurationHash =
+      originalExpectation.expectedConfigurationHash === '0'.repeat(64)
+        ? '1'.repeat(64)
+        : '0'.repeat(64);
+    await expect(
+      guardedOpenings.openBox({
+        boxId: box.boxId,
+        clientSeed: user.clientSeed,
+        ...originalExpectation,
+        expectedConfigurationHash: mismatchedConfigurationHash,
+        idempotencyKey: `open_${randomUUID()}`,
+        requestId: randomUUID(),
+        userId: user.id,
+      }),
+    ).rejects.toBeInstanceOf(OpeningConfirmationStaleError);
+    expect(selectorCalls).toBe(0);
+
+    const beforeUpdate = await catalog.getBox({ actorUserId: ownerId, creatorId }, box.boxId);
+    await catalog.updateBox({
+      actorUserId: ownerId,
+      boxId: box.boxId,
+      creatorId,
+      ...parseBoxDraftInput({
+        currency: 'USD',
+        description: 'Updated authoritative configuration.',
+        name: 'Updated box version',
+        priceMinor: '10000',
+      }),
+      expectedRevision: beforeUpdate.revision,
+      requestId: randomUUID(),
+    });
+    const updated = await catalog.getBox({ actorUserId: ownerId, creatorId }, box.boxId);
+    const replacement = await catalog.publishBox({
+      actorUserId: ownerId,
+      boxId: box.boxId,
+      creatorId,
+      expectedRevision: updated.revision,
+      requestId: randomUUID(),
+    });
+    expect(replacement.version.id).not.toBe(originalExpectation.expectedBoxVersionId);
+    expect(replacement.configurationHash).not.toBe(originalExpectation.expectedConfigurationHash);
+
+    await expect(
+      guardedOpenings.openBox({
+        boxId: box.boxId,
+        clientSeed: user.clientSeed,
+        ...originalExpectation,
+        idempotencyKey: `open_${randomUUID()}`,
+        requestId: randomUUID(),
+        userId: user.id,
+      }),
+    ).rejects.toBeInstanceOf(OpeningConfirmationStaleError);
+    expect(selectorCalls).toBe(0);
+
+    const state = await database.query<{
+      readonly balance: string;
+      readonly claims: string;
+      readonly consumptions: string;
+      readonly nextNonce: string;
+      readonly openings: string;
+      readonly quantity: string;
+    }>(
+      `select
+         (select available_balance_minor::text from app.wallets
+           where user_id = $1 and currency = 'USD') as balance,
+         (select next_nonce::text from app.rng_seed_sets
+           where user_id = $1 and status = 'active') as "nextNonce",
+         (select count(*)::text from app.idempotency_records
+           where actor_user_id = $1 and operation = 'box.open') as claims,
+         (select count(*)::text from app.box_opens where user_id = $1) as openings,
+         (select count(*)::text from app.inventory_consumptions
+           where inventory_pool_id = $2) as consumptions,
+         (select available_quantity::text from app.inventory_pools where id = $2) as quantity`,
+      [user.id, poolId],
+    );
+    expect(state.rows).toEqual([
+      {
+        balance: '20000',
+        claims: '0',
+        consumptions: '0',
+        nextNonce: '0',
+        openings: '0',
+        quantity: '1',
+      },
+    ]);
+  });
+
+  it('replays one committed historical version after a newer version is published', async () => {
+    const creatorId = await createCreator();
+    const ownerId = await creatorOwner(creatorId);
+    const rewardVersionId = await createReward(creatorId, { mode: 'unlimited' });
+    const box = await createBox(creatorId, rewardVersionId, '999');
+    const confirmed = await openingExpectation(box.boxId);
+    const user = await createUser('1998');
+    const idempotencyKey = `open_${randomUUID()}`;
+    const command = {
+      boxId: box.boxId,
+      clientSeed: user.clientSeed,
+      ...confirmed,
+      idempotencyKey,
+      requestId: randomUUID(),
+      userId: user.id,
+    };
+    const first = await openings.openBox(command);
+
+    const beforeUpdate = await catalog.getBox({ actorUserId: ownerId, creatorId }, box.boxId);
+    await catalog.updateBox({
+      actorUserId: ownerId,
+      boxId: box.boxId,
+      creatorId,
+      ...parseBoxDraftInput({
+        currency: 'USD',
+        description: 'A newer version published after the committed opening.',
+        name: 'New current version',
+        priceMinor: '10000',
+      }),
+      expectedRevision: beforeUpdate.revision,
+      requestId: randomUUID(),
+    });
+    const updated = await catalog.getBox({ actorUserId: ownerId, creatorId }, box.boxId);
+    const replacement = await catalog.publishBox({
+      actorUserId: ownerId,
+      boxId: box.boxId,
+      creatorId,
+      expectedRevision: updated.revision,
+      requestId: randomUUID(),
+    });
+    expect(replacement.version.id).not.toBe(first.body.opening.boxVersionId);
+
+    const replay = await openings.openBox({ ...command, requestId: randomUUID() });
+    expect(replay).toEqual({ ...first, replayed: true });
+    const state = await database.query<{
+      readonly balance: string;
+      readonly nextNonce: string;
+      readonly openings: string;
+    }>(
+      `select
+         (select available_balance_minor::text from app.wallets
+           where user_id = $1 and currency = 'USD') as balance,
+         (select next_nonce::text from app.rng_seed_sets
+           where user_id = $1 and status = 'active') as "nextNonce",
+         (select count(*)::text from app.box_opens where user_id = $1) as openings`,
+      [user.id],
+    );
+    expect(state.rows).toEqual([{ balance: '999', nextNonce: '1', openings: '1' }]);
   });
 
   it('rolls back transactional outbox data with its caller-owned transaction', async () => {
@@ -2037,9 +2242,14 @@ describe('atomic box opening', { concurrent: false }, () => {
       fairnessService: coordinatedFairness(1, secondSelection),
       logger,
     });
+    const [firstExpectation, secondExpectation] = await Promise.all([
+      openingExpectation(firstBoxId),
+      openingExpectation(secondBoxId),
+    ]);
     const firstOperation = firstOpenings.openBox({
       boxId: firstBoxId,
       clientSeed: firstUser.clientSeed,
+      ...firstExpectation,
       idempotencyKey: `open_${randomUUID()}`,
       requestId: randomUUID(),
       userId: firstUser.id,
@@ -2047,6 +2257,7 @@ describe('atomic box opening', { concurrent: false }, () => {
     const secondOperation = secondOpenings.openBox({
       boxId: secondBoxId,
       clientSeed: secondUser.clientSeed,
+      ...secondExpectation,
       idempotencyKey: `open_${randomUUID()}`,
       requestId: randomUUID(),
       userId: secondUser.id,

@@ -137,7 +137,8 @@ describe('PostgreSQL foundation', { concurrent: false }, () => {
         '20260901090000',
         '20260901130000',
         '20260901180000',
-        '20260902120000'
+        '20260902120000',
+        '20260905065856'
       )
       order by version
     `);
@@ -193,6 +194,7 @@ describe('PostgreSQL foundation', { concurrent: false }, () => {
       { version: '20260901130000' },
       { version: '20260901180000' },
       { version: '20260902120000' },
+      { version: '20260905065856' },
     ]);
     expect(foundationResult.rows).toEqual([
       {

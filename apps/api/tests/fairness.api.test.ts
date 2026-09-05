@@ -46,6 +46,68 @@ const serviceWith = (overrides: Partial<FairnessService>): FairnessService => ({
 });
 
 describe('fairness lifecycle API', () => {
+  it('serves an allowlisted opening proof without authentication and omits hidden seeds', async () => {
+    const openingId = '019c0000-0000-7000-8000-000000000031';
+    const proof = {
+      algorithmVersion: 'hmac-sha256-rejection-v1' as const,
+      clientSeed: 'ab'.repeat(32),
+      configurationHash: '02'.repeat(32),
+      manifest: {
+        algorithmVersion: 'hmac-sha256-rejection-v1' as const,
+        boxId: '019c0000-0000-7000-8000-000000000032',
+        boxVersionId: '019c0000-0000-7000-8000-000000000033',
+        currency: 'USD',
+        entries: [
+          {
+            boxVersionRewardId: '019c0000-0000-7000-8000-000000000034',
+            position: 0,
+            rewardVersionId: '019c0000-0000-7000-8000-000000000035',
+            weight: '1',
+          },
+        ],
+        priceMinor: '999',
+        totalWeight: '1',
+      },
+      nonce: '0',
+      openedAt: '2026-09-05T00:00:00.000Z',
+      openingId,
+      recorded: {
+        acceptedDigestHex: '03'.repeat(32),
+        acceptedRound: '0',
+        boxVersionRewardId: '019c0000-0000-7000-8000-000000000034',
+        position: 0,
+        rewardVersionId: '019c0000-0000-7000-8000-000000000035',
+        selectionValue: '0',
+      },
+      seedSetId: seedSet.id,
+      serverSeedCommitment: seedSet.commitment,
+      specificationId: 'creatordrop-rng-hmac-sha256-rejection-v1' as const,
+      verificationStatus: 'pending_reveal' as const,
+    };
+    const leakyProof: typeof proof & {
+      readonly internalCiphertext: string;
+      readonly serverSeedHex: string;
+    } = {
+      ...proof,
+      internalCiphertext: 'must-not-leak',
+      serverSeedHex: 'ff'.repeat(32),
+    };
+    const getOpeningProof = vi
+      .fn<FairnessService['getOpeningProof']>()
+      .mockResolvedValue(leakyProof);
+    const options = createTestAppOptions({ fairnessService: serviceWith({ getOpeningProof }) });
+    const authenticate = vi.fn(options.authenticate);
+    const response = await request(createTestApp({ ...options, authenticate })).get(
+      `/v1/fairness/openings/${openingId.toUpperCase()}`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ proof });
+    expect(JSON.stringify(response.body)).not.toContain('serverSeedHex');
+    expect(getOpeningProof).toHaveBeenCalledWith(openingId);
+    expect(authenticate).not.toHaveBeenCalled();
+  });
+
   it('returns only allowlisted active fairness state for the authenticated actor', async () => {
     const leakyFairness = {
       ...fairness,

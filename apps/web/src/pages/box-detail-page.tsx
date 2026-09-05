@@ -1,8 +1,14 @@
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
+import type { PublicCreatorBoxResponse } from '@creatordrop/contracts';
+
+import type { CreatorDropApiClient } from '../api/client.js';
 import { useApi } from '../api/use-api.js';
 import { useApiResource } from '../api/use-api-resource.js';
+import type { SessionState } from '../auth/session-context-value.js';
+import { useSession } from '../auth/use-session.js';
+import { OpeningExperience } from '../components/opening-experience.js';
 import { ErrorState, LoadingState } from '../components/page-states.js';
 import { formatMinorUnits } from '../formatting/money.js';
 import { formatProbability } from '../formatting/probability.js';
@@ -12,6 +18,7 @@ export const BoxDetailPage = () => {
   const boxId = parameters.boxId ?? '';
   const customSlug = parameters.customSlug ?? '';
   const api = useApi();
+  const session = useSession();
   const load = useCallback(
     (signal: AbortSignal) => api.getCreatorBox(customSlug, boxId, signal),
     [api, boxId, customSlug],
@@ -21,7 +28,27 @@ export const BoxDetailPage = () => {
   if (state.status === 'loading') return <LoadingState label="Loading published box" />;
   if (state.status === 'error') return <ErrorState error={state.error} onRetry={reload} />;
 
-  const { box, creator } = state.data;
+  return (
+    <BoxDetailContent
+      api={api}
+      initial={state.data}
+      key={`${state.data.creator.customSlug}:${state.data.box.version.id}`}
+      session={session.state}
+    />
+  );
+};
+
+const BoxDetailContent = ({
+  api,
+  initial,
+  session,
+}: {
+  readonly api: CreatorDropApiClient;
+  readonly initial: PublicCreatorBoxResponse;
+  readonly session: SessionState;
+}) => {
+  const [box, setBox] = useState(initial.box);
+  const creator = initial.creator;
   const openable = box.version.openingCompatibilityVersion === 'opening-v1';
   return (
     <article className="page box-detail">
@@ -73,6 +100,11 @@ export const BoxDetailPage = () => {
                 <div>
                   <h3>{entry.rewardVersion.name}</h3>
                   {entry.isBaseReward ? <span className="base-label">Base reward</span> : null}
+                  <span className={`rarity-label rarity-${entry.rarity ?? 'unspecified'}`}>
+                    {entry.rarity === null
+                      ? 'Unspecified'
+                      : `${entry.rarity[0]?.toUpperCase() ?? ''}${entry.rarity.slice(1)}`}
+                  </span>
                 </div>
                 <p>{entry.rewardVersion.description}</p>
               </div>
@@ -86,6 +118,16 @@ export const BoxDetailPage = () => {
           ))}
         </ol>
       </section>
+
+      {openable ? (
+        <OpeningExperience
+          api={api}
+          box={box}
+          customSlug={creator.customSlug}
+          onCatalogChange={setBox}
+          session={session}
+        />
+      ) : null}
 
       <section className="fairness-card" aria-labelledby="fairness-heading">
         <p className="eyebrow">Fairness snapshot</p>

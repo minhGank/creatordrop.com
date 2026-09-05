@@ -26,6 +26,7 @@ import {
   FairnessClientSeedMismatchError,
   FairnessNotInitializedError,
   FairnessRevisionConflictError,
+  OpeningFairnessProofNotFoundError,
   SeedRevealNotAllowedError,
   SeedEncryptionKeyUnavailableError,
   SeedReplacementKeyUnsafeError,
@@ -47,6 +48,7 @@ import {
 import {
   BoxNotOpenableError,
   InventoryUnavailableError,
+  OpeningConfirmationStaleError,
   OpeningCurrencyUnavailableError,
   OpeningRetryableError,
 } from '../modules/openings/opening.errors.js';
@@ -172,6 +174,10 @@ const normalizeError = (error: unknown): ApiError => {
     );
   }
 
+  if (error instanceof OpeningFairnessProofNotFoundError) {
+    return new ApiError(404, 'FAIRNESS_OPENING_NOT_FOUND', 'The opening proof was not found.');
+  }
+
   if (error instanceof FairnessAlreadyInitializedError) {
     return new ApiError(
       409,
@@ -196,6 +202,14 @@ const normalizeError = (error: unknown): ApiError => {
 
   if (error instanceof InventoryUnavailableError) {
     return new ApiError(409, 'INVENTORY_UNAVAILABLE', 'The selected reward is out of stock.');
+  }
+
+  if (error instanceof OpeningConfirmationStaleError) {
+    return new ApiError(
+      409,
+      'OPENING_CONFIRMATION_STALE',
+      'The box changed after it was loaded. Review the current version and confirm again.',
+    );
   }
 
   if (error instanceof OpeningCurrencyUnavailableError) {

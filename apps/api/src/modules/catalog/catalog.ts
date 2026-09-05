@@ -3,6 +3,8 @@ import {
   boxVersionStates,
   inventoryModes,
   inventoryStockoutPolicies,
+  rarityPolicyVersions,
+  rewardRarities,
   rewardStatuses,
   rewardTypes,
   rewardVersionStates,
@@ -12,6 +14,8 @@ import type {
   BoxVersionState,
   InventoryMode,
   InventoryStockoutPolicy,
+  RarityPolicyVersion,
+  RewardRarity,
   RewardStatus,
   RewardType,
   RewardVersionState,
@@ -24,6 +28,8 @@ export {
   boxVersionStates,
   inventoryModes,
   inventoryStockoutPolicies,
+  rarityPolicyVersions,
+  rewardRarities,
   rewardStatuses,
   rewardTypes,
   rewardVersionStates,
@@ -33,6 +39,8 @@ export type {
   BoxVersionState,
   InventoryMode,
   InventoryStockoutPolicy,
+  RarityPolicyVersion,
+  RewardRarity,
   RewardStatus,
   RewardType,
   RewardVersionState,
@@ -125,6 +133,8 @@ export interface DraftRewardEntry {
   readonly id: BoxVersionRewardId;
   readonly isBaseReward: boolean;
   readonly position: number;
+  readonly rarity: RewardRarity | null;
+  readonly rarityPolicyVersion: RarityPolicyVersion | null;
   readonly rewardVersion: RewardVersion;
   readonly weight: string;
 }

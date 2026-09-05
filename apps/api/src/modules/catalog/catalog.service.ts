@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { v7 as uuidv7 } from 'uuid';
 
 import type { Database, QueryExecutor } from '@creatordrop/database';
+import { deriveRarityV1 } from '@creatordrop/domain';
 import type { Logger } from '@creatordrop/observability';
 import { publicCatalogCacheKeys } from '@creatordrop/redis-projections';
 
@@ -52,6 +53,7 @@ import {
   markConfigurationRewardsPublished,
   publishBoxVersion,
   replaceDraftConfiguration,
+  snapshotConfigurationRarities,
   updateBoxDraft,
   updateRewardDraft,
   type ConfigurationEntryRecord,
@@ -694,6 +696,14 @@ export const createCatalogService = ({
           })),
         );
         const configurationHash = hashPublishedManifest(manifest);
+        await snapshotConfigurationRarities(
+          transaction,
+          lockedDraft.id,
+          records.map(({ entry }) => ({
+            entryId: entry.id,
+            rarity: deriveRarityV1(BigInt(entry.weight), totalWeight),
+          })),
+        );
         await markConfigurationRewardsPublished(transaction, lockedDraft.id);
         await publishBoxVersion(
           transaction,

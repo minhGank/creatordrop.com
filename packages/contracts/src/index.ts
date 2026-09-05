@@ -96,6 +96,11 @@ export type InventoryMode = (typeof inventoryModes)[number];
 export const inventoryStockoutPolicies = ['pause_box', 'backorder'] as const;
 export type InventoryStockoutPolicy = (typeof inventoryStockoutPolicies)[number];
 
+export const rewardRarities = ['common', 'uncommon', 'rare', 'epic', 'legendary'] as const;
+export type RewardRarity = (typeof rewardRarities)[number];
+export const rarityPolicyVersions = ['rarity-v1'] as const;
+export type RarityPolicyVersion = (typeof rarityPolicyVersions)[number];
+
 export interface BoxVersionContract {
   readonly configurationHash: string | null;
   readonly createdAt: string;
@@ -187,6 +192,8 @@ export interface BoxDraftRewardContract {
   readonly id: string;
   readonly isBaseReward: boolean;
   readonly position: number;
+  readonly rarity: RewardRarity | null;
+  readonly rarityPolicyVersion: RarityPolicyVersion | null;
   readonly rewardVersion: RewardVersionContract;
   readonly weight: string;
 }
@@ -388,9 +395,36 @@ export interface BoxOpeningResponse {
       readonly id: string;
       readonly imageUrl: string | null;
       readonly name: string;
+      readonly rarity: RewardRarity | null;
+      readonly rarityPolicyVersion: RarityPolicyVersion | null;
       readonly rewardVersionId: string;
     };
     readonly wallet: WalletContract;
+  };
+}
+
+export interface OpeningFairnessProofResponse {
+  readonly proof: {
+    readonly algorithmVersion: 'hmac-sha256-rejection-v1';
+    readonly clientSeed: string;
+    readonly configurationHash: string;
+    readonly manifest: PublishedManifestContract;
+    readonly nonce: string;
+    readonly openedAt: string;
+    readonly openingId: string;
+    readonly recorded: {
+      readonly acceptedDigestHex: string;
+      readonly acceptedRound: string;
+      readonly boxVersionRewardId: string;
+      readonly position: number;
+      readonly rewardVersionId: string;
+      readonly selectionValue: string;
+    };
+    readonly seedSetId: string;
+    readonly serverSeedCommitment: string;
+    readonly serverSeedHex?: string;
+    readonly specificationId: 'creatordrop-rng-hmac-sha256-rejection-v1';
+    readonly verificationStatus: 'pending_reveal' | 'ready' | 'unverifiable';
   };
 }
 

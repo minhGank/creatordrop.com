@@ -133,6 +133,8 @@ Depends on: Phases 9, 10, and 14.
 
 Build confirmation, client-seed controls, idempotent submission, result-driven Framer Motion reel, reconnect/replay behavior, and verifier UI. Tests prove the animation cannot choose/change reward, duplicate clicks reuse one key, retry shows the committed result, reduced-motion support, boundary proof rendering, and verification before/after reveal.
 
+Completed: immutable server-derived per-entry `rarity-v1` snapshots with legacy-null preservation, the public PostgreSQL-authoritative opening-proof endpoint, a separate Web Crypto independent verifier, and the authenticated opening confirmation/reel/result flow. Confirmation refreshes and binds the exact current version/configuration while PostgreSQL retains price authority; a changed version fails before debit/RNG and requires fresh confirmation. One session-stored command key and expectation automatically recover only ambiguous lost responses; definitive failures clear them and retry-required responses wait for explicit user action. Reel/result data is bound to the committed immutable version, measured reel geometry centers that winner across font and viewport changes, and skip/reduced-motion paths reveal the same committed outcome.
+
 ## Phase 16 — Creator management UI
 
 Depends on: Phases 4, 5, 12, and 14.

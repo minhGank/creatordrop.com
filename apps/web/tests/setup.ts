@@ -3,11 +3,10 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup } from '@testing-library/react';
 import { afterEach, vi } from 'vitest';
 
-afterEach(() => cleanup());
-
 const runtimeGlobal: { readonly window?: Window } = globalThis;
 
-if (runtimeGlobal.window !== undefined) {
+const installDefaultMatchMedia = (): void => {
+  if (runtimeGlobal.window === undefined) return;
   Object.defineProperty(runtimeGlobal.window, 'matchMedia', {
     configurable: true,
     value: vi.fn().mockImplementation((query: string) => ({
@@ -20,4 +19,12 @@ if (runtimeGlobal.window !== undefined) {
     })),
     writable: true,
   });
-}
+};
+
+installDefaultMatchMedia();
+
+afterEach(() => {
+  cleanup();
+  if (typeof window !== 'undefined') window.sessionStorage.clear();
+  installDefaultMatchMedia();
+});

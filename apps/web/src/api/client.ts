@@ -3,6 +3,10 @@ import { z } from 'zod';
 import type {
   ApiErrorResponse,
   AuthSessionResponse,
+  BoxOpeningResponse,
+  CurrentFairnessResponse,
+  OpeningFairnessProofResponse,
+  PublishedBoxVersionResponse,
   PublicCreatorBoxResponse,
   PublicCreatorBoxesResponse,
   PublicCreatorResponse,
@@ -11,7 +15,10 @@ import type {
 
 const nullableHttpsUrlSchema = z.union([z.url({ protocol: /^https:$/u }), z.null()]);
 const canonicalDecimalSchema = z.string().regex(/^(?:0|[1-9][0-9]*)$/u);
+const positiveDecimalSchema = z.string().regex(/^[1-9][0-9]*$/u);
+const hex256Schema = z.string().regex(/^[0-9a-f]{64}$/u);
 const uuidSchema = z.uuid();
+const raritySchema = z.enum(['common', 'uncommon', 'rare', 'epic', 'legendary']);
 
 const authSessionSchema = z
   .object({
@@ -110,10 +117,13 @@ const publishedEntrySchema = z
     id: uuidSchema,
     isBaseReward: z.boolean(),
     position: z.number().int().nonnegative(),
+    rarity: z.union([raritySchema, z.null()]),
+    rarityPolicyVersion: z.union([z.literal('rarity-v1'), z.null()]),
     rewardVersion: rewardVersionSchema,
     weight: canonicalDecimalSchema,
   })
-  .strict();
+  .strict()
+  .refine((entry) => (entry.rarity === null) === (entry.rarityPolicyVersion === null));
 
 const publishedManifestSchema = z
   .object({
@@ -147,6 +157,119 @@ const publishedBoxSchema = z
 
 const publicCreatorBoxResponseSchema = z
   .object({ box: publishedBoxSchema, creator: publicCreatorSchema })
+  .strict();
+
+const walletSchema = z
+  .object({
+    balanceMinor: canonicalDecimalSchema,
+    currency: z.string().regex(/^[A-Z]{3}$/u),
+    id: uuidSchema,
+    revision: canonicalDecimalSchema,
+  })
+  .strict();
+
+const boxOpeningResponseSchema = z
+  .object({
+    opening: z
+      .object({
+        boxId: uuidSchema,
+        boxVersionId: uuidSchema,
+        cost: z
+          .object({ currency: z.string().regex(/^[A-Z]{3}$/u), priceMinor: positiveDecimalSchema })
+          .strict(),
+        fairness: z
+          .object({
+            clientSeed: hex256Schema,
+            commitment: hex256Schema,
+            configurationHash: hex256Schema,
+            nonce: canonicalDecimalSchema,
+            seedSetId: uuidSchema,
+          })
+          .strict(),
+        fulfillmentStatus: z.enum(['awaiting_restock', 'pending_fulfillment']),
+        id: uuidSchema,
+        pointsAwarded: z.union([z.literal(5), z.literal(20)]),
+        reward: z
+          .object({
+            id: uuidSchema,
+            imageUrl: nullableHttpsUrlSchema,
+            name: z.string().min(1).max(120),
+            rarity: z.union([raritySchema, z.null()]),
+            rarityPolicyVersion: z.union([z.literal('rarity-v1'), z.null()]),
+            rewardVersionId: uuidSchema,
+          })
+          .strict()
+          .refine((reward) => (reward.rarity === null) === (reward.rarityPolicyVersion === null)),
+        wallet: walletSchema,
+      })
+      .strict(),
+  })
+  .strict();
+
+const currentFairnessResponseSchema = z
+  .object({
+    fairness: z
+      .object({
+        activeSeedSet: z
+          .object({
+            algorithmVersion: z.literal('hmac-sha256-rejection-v1'),
+            commitment: hex256Schema,
+            compromisedAt: z.union([z.iso.datetime({ offset: true }), z.null()]),
+            createdAt: z.iso.datetime({ offset: true }),
+            id: uuidSchema,
+            maxNonceExclusive: positiveDecimalSchema,
+            nextNonce: canonicalDecimalSchema,
+            retiredAt: z.union([z.iso.datetime({ offset: true }), z.null()]),
+            revealedAt: z.union([z.iso.datetime({ offset: true }), z.null()]),
+            revealedServerSeed: z.union([hex256Schema, z.null()]),
+            rotateAfter: z.iso.datetime({ offset: true }),
+            status: z.enum(['active', 'retired', 'revealed', 'compromised']),
+          })
+          .strict(),
+        clientSeed: hex256Schema,
+        revision: z.number().int().positive(),
+        rotationPolicy: z
+          .object({ maxAgeMs: z.number().int().positive(), maxOpenings: positiveDecimalSchema })
+          .strict(),
+      })
+      .strict(),
+  })
+  .strict();
+
+const openingFairnessProofResponseSchema = z
+  .object({
+    proof: z
+      .object({
+        algorithmVersion: z.literal('hmac-sha256-rejection-v1'),
+        clientSeed: hex256Schema,
+        configurationHash: hex256Schema,
+        manifest: publishedManifestSchema,
+        nonce: canonicalDecimalSchema,
+        openedAt: z.iso.datetime({ offset: true }),
+        openingId: uuidSchema,
+        recorded: z
+          .object({
+            acceptedDigestHex: hex256Schema,
+            acceptedRound: canonicalDecimalSchema,
+            boxVersionRewardId: uuidSchema,
+            position: z.number().int().nonnegative(),
+            rewardVersionId: uuidSchema,
+            selectionValue: canonicalDecimalSchema,
+          })
+          .strict(),
+        seedSetId: uuidSchema,
+        serverSeedCommitment: hex256Schema,
+        serverSeedHex: hex256Schema.optional(),
+        specificationId: z.literal('creatordrop-rng-hmac-sha256-rejection-v1'),
+        verificationStatus: z.enum(['pending_reveal', 'ready', 'unverifiable']),
+      })
+      .strict()
+      .superRefine((proof, context) => {
+        if ((proof.verificationStatus === 'ready') !== (proof.serverSeedHex !== undefined)) {
+          context.addIssue({ code: 'custom', message: 'The proof reveal state is inconsistent.' });
+        }
+      }),
+  })
   .strict();
 
 const errorEnvelopeSchema = z
@@ -194,18 +317,39 @@ export class CreatorDropProtocolError extends Error {
 
 export interface CreatorDropApiClient {
   exchangeSession(accessToken: string): Promise<AuthSessionResponse>;
+  getCurrentFairness(signal?: AbortSignal): Promise<CurrentFairnessResponse>;
   getCreator(customSlug: string, signal?: AbortSignal): Promise<PublicCreatorResponse>;
   getCreatorBox(
     customSlug: string,
     boxId: string,
     signal?: AbortSignal,
   ): Promise<PublicCreatorBoxResponse>;
+  getOpeningFairnessProof(
+    publicOpeningId: string,
+    signal?: AbortSignal,
+  ): Promise<OpeningFairnessProofResponse>;
+  getPublishedBoxVersion(
+    boxId: string,
+    versionId: string,
+    signal?: AbortSignal,
+  ): Promise<PublishedBoxVersionResponse>;
   listCreatorBoxes(
     customSlug: string,
     cursor?: string,
     signal?: AbortSignal,
   ): Promise<PublicCreatorBoxesResponse>;
   listCreators(cursor?: string, signal?: AbortSignal): Promise<PublicCreatorsResponse>;
+  openBox(
+    boxId: string,
+    clientSeed: string,
+    idempotencyKey: string,
+    expectedBoxVersionId: string,
+    expectedConfigurationHash: string,
+  ): Promise<BoxOpeningResponse>;
+  updateCurrentClientSeed(
+    clientSeed: string,
+    expectedRevision: number,
+  ): Promise<CurrentFairnessResponse>;
 }
 
 export interface ApiClientOptions {
@@ -241,7 +385,9 @@ export const createApiClient = ({
     options: {
       readonly accessToken?: string;
       readonly body?: Readonly<Record<string, unknown>>;
-      readonly method?: 'GET' | 'POST';
+      readonly idempotencyKey?: string;
+      readonly ifMatch?: number;
+      readonly method?: 'GET' | 'POST' | 'PUT';
       readonly signal?: AbortSignal;
     } = {},
   ): Promise<T> => {
@@ -253,6 +399,12 @@ export const createApiClient = ({
           Accept: 'application/json',
           ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }),
           ...(accessToken === null ? {} : { Authorization: `Bearer ${accessToken}` }),
+          ...(options.idempotencyKey === undefined
+            ? {}
+            : { 'Idempotency-Key': options.idempotencyKey }),
+          ...(options.ifMatch === undefined
+            ? {}
+            : { 'If-Match': `"${options.ifMatch.toString()}"` }),
         },
         method: options.method ?? 'GET',
         ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -286,6 +438,12 @@ export const createApiClient = ({
         body: {},
         method: 'POST',
       }),
+    getCurrentFairness: (signal) =>
+      request(
+        '/v1/me/fairness',
+        currentFairnessResponseSchema,
+        signal === undefined ? {} : { signal },
+      ),
     getCreator: (customSlug, signal) =>
       request(
         `/v1/catalog/creators/${encodeURIComponent(customSlug)}`,
@@ -296,6 +454,18 @@ export const createApiClient = ({
       request(
         `/v1/catalog/creators/${encodeURIComponent(customSlug)}/boxes/${encodeURIComponent(boxId)}`,
         publicCreatorBoxResponseSchema,
+        signal === undefined ? {} : { signal },
+      ),
+    getOpeningFairnessProof: (publicOpeningId, signal) =>
+      request(
+        `/v1/fairness/openings/${encodeURIComponent(publicOpeningId)}`,
+        openingFairnessProofResponseSchema,
+        signal === undefined ? {} : { signal },
+      ) as Promise<OpeningFairnessProofResponse>,
+    getPublishedBoxVersion: (boxId, versionId, signal) =>
+      request(
+        `/v1/boxes/${encodeURIComponent(boxId)}/versions/${encodeURIComponent(versionId)}`,
+        publishedBoxSchema,
         signal === undefined ? {} : { signal },
       ),
     listCreatorBoxes: (customSlug, cursor, signal) =>
@@ -310,5 +480,17 @@ export const createApiClient = ({
         publicCreatorsSchema,
         signal === undefined ? {} : { signal },
       ),
+    openBox: (boxId, clientSeed, idempotencyKey, expectedBoxVersionId, expectedConfigurationHash) =>
+      request(`/v1/boxes/${encodeURIComponent(boxId)}/open`, boxOpeningResponseSchema, {
+        body: { clientSeed, expectedBoxVersionId, expectedConfigurationHash },
+        idempotencyKey,
+        method: 'POST',
+      }),
+    updateCurrentClientSeed: (clientSeed, expectedRevision) =>
+      request('/v1/me/fairness/client-seed', currentFairnessResponseSchema, {
+        body: { clientSeed },
+        ifMatch: expectedRevision,
+        method: 'PUT',
+      }),
   };
 };

@@ -6,6 +6,8 @@ import {
   boxStatuses,
   boxVersionStates,
   inventoryModes,
+  rarityPolicyVersions,
+  rewardRarities,
   rewardStatuses,
   rewardTypes,
   rewardVersionStates,
@@ -17,9 +19,11 @@ import {
   type DraftRewardEntry,
   type InventoryPoolId,
   type ProbabilityWeight,
+  type RarityPolicyVersion,
   type Reward,
   type RewardId,
   type RewardStatus,
+  type RewardRarity,
   type RewardVersion,
   type RewardVersionId,
 } from './catalog.js';
@@ -120,6 +124,8 @@ interface ConfigurationRow extends RewardVersionRow {
   readonly entryId: unknown;
   readonly isBaseReward: unknown;
   readonly position: unknown;
+  readonly rarity: unknown;
+  readonly rarityPolicyVersion: unknown;
   readonly rewardId: unknown;
   readonly rewardStatus: unknown;
   readonly weight: unknown;
@@ -167,6 +173,34 @@ const requiredNumber = (value: unknown, name: string): number => {
     throw new Error(`Database returned invalid ${name}.`);
   }
   return value;
+};
+
+const nullableRarity = (value: unknown): RewardRarity | null => {
+  if (value === null) return null;
+  if (!isOneOf(value, rewardRarities)) throw new Error('Database returned invalid rarity.');
+  return value;
+};
+
+const nullableRarityPolicyVersion = (value: unknown): RarityPolicyVersion | null => {
+  if (value === null) return null;
+  if (!isOneOf(value, rarityPolicyVersions)) {
+    throw new Error('Database returned invalid rarity policy version.');
+  }
+  return value;
+};
+
+const raritySnapshot = (
+  row: Pick<ConfigurationRow, 'rarity' | 'rarityPolicyVersion'>,
+): {
+  readonly rarity: RewardRarity | null;
+  readonly rarityPolicyVersion: RarityPolicyVersion | null;
+} => {
+  const rarity = nullableRarity(row.rarity);
+  const rarityPolicyVersion = nullableRarityPolicyVersion(row.rarityPolicyVersion);
+  if ((rarity === null) !== (rarityPolicyVersion === null)) {
+    throw new Error('Database returned an incomplete rarity snapshot.');
+  }
+  return { rarity, rarityPolicyVersion };
 };
 
 const timestamp = (value: unknown, name: string): string => {
@@ -706,6 +740,7 @@ export const listDraftConfiguration = async (
   const result = await executor.query<ConfigurationRow>(
     `select
        bvr.id::text as "entryId", bvr.position, bvr.weight::text as weight,
+       bvr.rarity, bvr.rarity_policy_version as "rarityPolicyVersion",
        (base.id is not null) as "isBaseReward",
        r.id::text as "rewardId", r.status as "rewardStatus",
        ${rewardVersionColumns}
@@ -729,6 +764,7 @@ export const listDraftConfiguration = async (
         id: requiredString(row.entryId, 'configuration entry ID') as BoxVersionRewardId,
         isBaseReward: row.isBaseReward === true,
         position: requiredNumber(row.position, 'configuration position'),
+        ...raritySnapshot(row),
         rewardVersion: parseRewardVersion(row),
         weight: requiredString(row.weight, 'configuration weight'),
       },
@@ -952,6 +988,26 @@ export const markConfigurationRewardsPublished = async (
   );
 };
 
+export const snapshotConfigurationRarities = async (
+  executor: QueryExecutor,
+  boxVersionId: BoxVersionId,
+  snapshots: readonly {
+    readonly entryId: BoxVersionRewardId;
+    readonly rarity: RewardRarity;
+  }[],
+): Promise<void> => {
+  for (const snapshot of snapshots) {
+    const result = await executor.query(
+      `update app.box_version_rewards
+          set rarity = $3, rarity_policy_version = 'rarity-v1'
+        where id = $1 and box_version_id = $2
+          and rarity is null and rarity_policy_version is null`,
+      [snapshot.entryId, boxVersionId, snapshot.rarity],
+    );
+    if (result.rowCount !== 1) throw new Error('Expected one draft rarity snapshot update.');
+  }
+};
+
 export const publishBoxVersion = async (
   executor: QueryExecutor,
   creatorId: CreatorId,
@@ -1048,6 +1104,7 @@ export const listPublishedConfiguration = async (
   const result = await executor.query<ConfigurationRow>(
     `select
        bvr.id::text as "entryId", bvr.position, bvr.weight::text as weight,
+       bvr.rarity, bvr.rarity_policy_version as "rarityPolicyVersion",
        (base.id is not null) as "isBaseReward",
        r.id::text as "rewardId", r.status as "rewardStatus",
        ${rewardVersionColumns}
@@ -1065,6 +1122,7 @@ export const listPublishedConfiguration = async (
       id: requiredString(row.entryId, 'configuration entry ID') as BoxVersionRewardId,
       isBaseReward: row.isBaseReward === true,
       position: requiredNumber(row.position, 'configuration position'),
+      ...raritySnapshot(row),
       rewardVersion: parseRewardVersion(row),
       weight: requiredString(row.weight, 'configuration weight'),
     },

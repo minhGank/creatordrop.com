@@ -146,9 +146,9 @@ Phase 8 establishes the first two locks and the financial composition boundary. 
 
 Detailed flow:
 
-1. Require authenticated actor, `Idempotency-Key`, and a request body containing only `clientSeed` (or use the user's precommitted current client seed). Canonicalize and hash method, route, actor, box, and body as the request fingerprint.
+1. Require authenticated actor, `Idempotency-Key`, and a request body containing `clientSeed` plus the immutable box-version ID and configuration hash explicitly confirmed by the user. Canonicalize and hash method, route, actor, box, and the complete body as the request fingerprint. Price and currency remain PostgreSQL-authoritative rather than client inputs.
 2. Begin a database transaction. Insert the user-scoped idempotency row. A unique conflict waits for the first transaction; replay the stored response if the fingerprint matches, otherwise return `409 IDEMPOTENCY_KEY_REUSED`.
-3. Load the active published version by box ID. Validate visibility, sales state, currency, price, opening limits, and eligibility on the server. Read the transaction's authoritative database timestamp and acquire the matching leaderboard-season shared barrier before any selector work.
+3. Load the active published version by box ID. Validate visibility, sales state, currency, price, opening limits, and eligibility on the server, then require its immutable version ID and configuration hash to equal the user's confirmed expectation. A mismatch rolls back with `OPENING_CONFIRMATION_STALE` before wallet, nonce, RNG, or inventory work. Read the transaction's authoritative database timestamp and acquire the matching leaderboard-season shared barrier before any selector work.
 4. Lock the user's currency wallet. Reject insufficient funds without consuming a nonce or leaving an idempotency record committed.
 5. Lock the user's active RNG seed-set, validate the client seed, allocate its next nonce, and increment the counter.
 6. Read the immutable ordered reward table, verify its stored total weight/checksum, compute HMAC-SHA256, and select the reward deterministically. The client never supplies or influences authoritative weights beyond choosing its client seed before the opening.
@@ -163,6 +163,8 @@ Detailed flow:
     only `opening.completed.v1` after commit. The reel animates the returned result only.
 
 Failures before commit leave no charge, nonce, opening, fulfillment, or event. If commit succeeds but the HTTP response is lost, retry returns the stored result.
+
+Phase 15 stores a server-derived `rarity-v1` tier on each immutable published box/reward association using exact weight/total comparisons; it does not change the RNG manifest or selection semantics. Before confirmation, the web opening experience refreshes the current authoritative catalog and binds the command to its immutable version/configuration identity; a later mismatch cannot silently switch versions and instead requires the refreshed price and configuration to be explicitly confirmed. It persists one user-intended idempotency key and that complete expectation in session storage and retries only the same command. Only an ambiguous transport outcome is recovered automatically; a definitive server rejection clears recovery, while `OPENING_RETRY_REQUIRED` preserves the command for an explicit user retry. The result UI binds the committed box-version/configuration identity to the exact immutable published snapshot before deriving reel content, price, currency, or odds, and the reel measures the already committed winner's rendered geometry rather than assuming a pixel size. The independent browser verifier consumes the public proof endpoint after reveal and never imports the production selector. A ready proof is not described as verified until that independent recomputation succeeds.
 
 ## Realtime and cache architecture
 

@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { Link, NavLink } from 'react-router-dom';
 
+import creatorDropLogoUrl from '../assets/creator-drop-logo.svg';
 import { useSession } from '../auth/use-session.js';
 
 export const AppLayout = ({ children }: { readonly children: ReactNode }) => {
@@ -21,10 +22,7 @@ export const AppLayout = ({ children }: { readonly children: ReactNode }) => {
       </a>
       <header className="site-header">
         <Link className="brand" to="/" aria-label="CreatorDrop home">
-          <span className="brand-mark" aria-hidden="true">
-            C
-          </span>
-          <span>CreatorDrop</span>
+          <img className="brand-logo" src={creatorDropLogoUrl} alt="" aria-hidden="true" />
         </Link>
         <nav aria-label="Primary navigation">
           <NavLink to="/creators">Creators</NavLink>

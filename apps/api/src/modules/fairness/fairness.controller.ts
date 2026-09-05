@@ -2,6 +2,7 @@ import type { NextFunction, Request, RequestHandler, Response } from 'express';
 
 import type {
   CurrentFairnessResponse,
+  OpeningFairnessProofResponse,
   PublicRngSeedSetResponse,
   RngSeedRotationResponse,
 } from '@creatordrop/contracts';
@@ -13,6 +14,7 @@ import {
   parseClientSeedInput,
   parseEmptyRotationInput,
   parseFairnessRevision,
+  parsePublicOpeningId,
   parseRotationIdempotencyKey,
   parseSeedSetId,
 } from './fairness.schema.js';
@@ -59,8 +61,36 @@ const publicRotation = (result: SeedRotationResult): RngSeedRotationResponse => 
   replayed: result.replayed,
 });
 
+const publicOpeningProof = (
+  proof: OpeningFairnessProofResponse['proof'],
+): OpeningFairnessProofResponse['proof'] => ({
+  algorithmVersion: proof.algorithmVersion,
+  clientSeed: proof.clientSeed,
+  configurationHash: proof.configurationHash,
+  manifest: proof.manifest,
+  nonce: proof.nonce,
+  openedAt: proof.openedAt,
+  openingId: proof.openingId,
+  recorded: {
+    acceptedDigestHex: proof.recorded.acceptedDigestHex,
+    acceptedRound: proof.recorded.acceptedRound,
+    boxVersionRewardId: proof.recorded.boxVersionRewardId,
+    position: proof.recorded.position,
+    rewardVersionId: proof.recorded.rewardVersionId,
+    selectionValue: proof.recorded.selectionValue,
+  },
+  seedSetId: proof.seedSetId,
+  serverSeedCommitment: proof.serverSeedCommitment,
+  ...(proof.verificationStatus === 'ready' && proof.serverSeedHex !== undefined
+    ? { serverSeedHex: proof.serverSeedHex }
+    : {}),
+  specificationId: proof.specificationId,
+  verificationStatus: proof.verificationStatus,
+});
+
 export interface FairnessControllers {
   readonly getCurrent: RequestHandler;
+  readonly getOpeningProof: RequestHandler;
   readonly getPublicSeedSet: RequestHandler;
   readonly initialize: RequestHandler;
   readonly rotate: RequestHandler;
@@ -73,6 +103,15 @@ export const createFairnessControllers = (service: FairnessService): FairnessCon
       const fairness = await service.getCurrent(requireActorUserId(request));
       setRevisionEtag(response, fairness.revision);
       response.status(200).json({ fairness: publicFairness(fairness) });
+    }, next);
+  },
+
+  getOpeningProof: (request, response: Response<OpeningFairnessProofResponse>, next) => {
+    run(async () => {
+      const proof = await service.getOpeningProof(
+        parsePublicOpeningId(parameter(request.params.publicOpeningId)),
+      );
+      response.status(200).json({ proof: publicOpeningProof(proof) });
     }, next);
   },
 

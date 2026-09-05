@@ -12,6 +12,7 @@ export {
   type MoneyMinor,
   type PositiveMoneyMinor,
 } from './money.js';
+export { deriveRarityV1, rarityPolicyVersion, rarityTiers, type RarityTier } from './rarity.js';
 export { maximumSignedBigint, rngAlgorithmVersion, unsigned256Range } from './rng/constants.js';
 export {
   buildHmacMessage,

@@ -195,11 +195,19 @@ Requires user authentication and `Idempotency-Key`. Request:
 
 ```json
 {
-  "clientSeed": "64-lowercase-hex-characters"
+  "clientSeed": "64-lowercase-hex-characters",
+  "expectedBoxVersionId": "uuid",
+  "expectedConfigurationHash": "64-lowercase-hex-characters"
 }
 ```
 
-The seed must match the chosen/current seed policy. There is intentionally no price, currency, weight, probability, balance, reward, nonce, or server commitment field in the request.
+The seed must match the chosen/current seed policy. The expected version and configuration hash
+bind the command to the immutable catalog snapshot the user explicitly confirmed. PostgreSQL
+still supplies the authoritative price and currency; the client does not submit or control either
+financial value. If the current openable version no longer matches, the transaction returns
+`409 OPENING_CONFIRMATION_STALE` before wallet, nonce, RNG, or inventory work and the client must
+show the new version for fresh confirmation. There is intentionally no client-authoritative
+price, currency, weight, probability, balance, reward, nonce, or server commitment field.
 
 Successful `201` (or replayed original response):
 
@@ -235,21 +243,67 @@ Successful `201` (or replayed original response):
 }
 ```
 
-The server has already decided and committed the reward when this response is generated. The frontend reel must land on that reward. Grandfathered versions without `opening-v1` and exactly one base designation return `BOX_NOT_OPENABLE`. Other stable errors include `CLIENT_SEED_MISMATCH`, `INVENTORY_UNAVAILABLE`, `INSUFFICIENT_BALANCE`, `OPENING_CURRENCY_NOT_ENABLED`, `SEED_ROTATION_REQUIRED`, `OPENING_RETRY_REQUIRED`, and `IDEMPOTENCY_KEY_REUSED`. `OPENING_RETRY_REQUIRED` means PostgreSQL aborted the transaction after RNG may have run; all state rolled back and the client may retry with the same idempotency key.
+The reward object also contains the immutable per-entry `rarity` and `rarityPolicyVersion` snapshots. Both are null only for historical pre-rarity publications. New publications contain one of `common`, `uncommon`, `rare`, `epic`, or `legendary` with `rarityPolicyVersion: "rarity-v1"`.
+
+The server has already decided and committed the reward when this response is generated. The frontend reel must land on that reward. Grandfathered versions without `opening-v1` and exactly one base designation return `BOX_NOT_OPENABLE`. Other stable errors include `OPENING_CONFIRMATION_STALE`, `CLIENT_SEED_MISMATCH`, `INVENTORY_UNAVAILABLE`, `INSUFFICIENT_BALANCE`, `OPENING_CURRENCY_NOT_ENABLED`, `SEED_ROTATION_REQUIRED`, `OPENING_RETRY_REQUIRED`, and `IDEMPOTENCY_KEY_REUSED`. `OPENING_CONFIRMATION_STALE` is a definitive non-commit response that requires the current version to be shown and explicitly confirmed. `OPENING_RETRY_REQUIRED` means PostgreSQL aborted the transaction after RNG may have run; all state rolled back and the client may retry with the same idempotency key.
 
 Opening-receipt reads and private fulfillment-list endpoints remain deferred. Phase 9 adds only the authenticated opening command; it does not add public wallet, fulfillment, or delivery-data reads.
 
 ## Fairness verification
 
-Phase 7 implements the public seed-set lifecycle route below. Opening proof and machine-readable algorithm routes remain future HTTP contract direction. No route accepts a server seed through the production API.
+Phase 7 implements the public seed-set lifecycle route, and Phase 15 implements the immutable opening-proof route. No route accepts a server seed through the production API. Phase 15 does not add a separate machine-readable algorithm route; `specificationId`, the repository specification, independent verifier, and fixed vectors identify the normative protocol.
 
-| Method | Path                                               | Auth   | Purpose                                                           |
-| ------ | -------------------------------------------------- | ------ | ----------------------------------------------------------------- |
-| `GET`  | `/v1/fairness/openings/:publicOpeningId`           | public | Proof inputs, manifest, computed fields, and reveal state         |
-| `GET`  | `/v1/fairness/seed-sets/:seedSetId`                | public | Commitment, lifecycle dates, reveal if retired, algorithm version |
-| `GET`  | `/v1/fairness/algorithms/hmac-sha256-rejection-v1` | public | Versioned machine-readable specification/test-vector link         |
+| Method | Path                                     | Auth   | Purpose                                                           |
+| ------ | ---------------------------------------- | ------ | ----------------------------------------------------------------- |
+| `GET`  | `/v1/fairness/openings/:publicOpeningId` | public | Proof inputs, manifest, computed fields, and reveal state         |
+| `GET`  | `/v1/fairness/seed-sets/:seedSetId`      | public | Commitment, lifecycle dates, reveal if retired, algorithm version |
 
-`GET /v1/fairness/seed-sets/:seedSetId` returns only the commitment, algorithm, nonce/rotation metadata, lifecycle timestamps/status, and `revealedServerSeed`. That field is a lowercase seed only for `revealed` status and is `null` for active, retired, or compromised state; encryption metadata is never returned. If an opening's seed is active, the future proof endpoint returns `verificationStatus: "pending_reveal"` and omits `serverSeed`. Old algorithms and manifests remain accessible for the full required retention period.
+`GET /v1/fairness/seed-sets/:seedSetId` returns only the commitment, algorithm, nonce/rotation metadata, lifecycle timestamps/status, and `revealedServerSeed`. That field is a lowercase seed only for `revealed` status and is `null` for active, retired, or compromised state; encryption metadata is never returned.
+
+`GET /v1/fairness/openings/:publicOpeningId` reconstructs this allowlisted proof from immutable PostgreSQL history:
+
+```json
+{
+  "proof": {
+    "algorithmVersion": "hmac-sha256-rejection-v1",
+    "specificationId": "creatordrop-rng-hmac-sha256-rejection-v1",
+    "verificationStatus": "pending_reveal",
+    "openingId": "uuid",
+    "openedAt": "timestamp",
+    "seedSetId": "uuid",
+    "serverSeedCommitment": "64-hex",
+    "clientSeed": "64-hex",
+    "nonce": "7",
+    "configurationHash": "64-hex",
+    "manifest": {
+      "algorithmVersion": "hmac-sha256-rejection-v1",
+      "boxId": "uuid",
+      "boxVersionId": "uuid",
+      "currency": "USD",
+      "entries": [
+        {
+          "boxVersionRewardId": "uuid",
+          "position": 0,
+          "rewardVersionId": "uuid",
+          "weight": "100"
+        }
+      ],
+      "priceMinor": "1000",
+      "totalWeight": "100"
+    },
+    "recorded": {
+      "acceptedDigestHex": "64-hex",
+      "acceptedRound": "0",
+      "selectionValue": "42",
+      "boxVersionRewardId": "uuid",
+      "rewardVersionId": "uuid",
+      "position": 0
+    }
+  }
+}
+```
+
+Active and retired seed sets map to `pending_reveal`; compromised sets map to `unverifiable`; revealed sets map to `ready`. `serverSeedHex` is omitted for active, retired, and compromised sets and included only for revealed sets. `ready` means sufficient proof material is available—it never claims verification. Only the independent browser verifier may display a successful verification after recomputing the commitment, manifest hash, HMAC rejection rounds, selection value, and winner.
 
 ## Wallet, funding, and ledger receipts
 

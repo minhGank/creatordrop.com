@@ -90,7 +90,9 @@ Each successful in-stock finite opening has exactly one immutable `inventory_con
 
 ### `box_version_rewards`
 
-The exact ordered probability table: `id`, `box_version_id`, `reward_version_id`, `position integer CHECK (position >= 0)`, `weight bigint CHECK (weight > 0)`, optional immutable public label metadata. Unique `(box_version_id, position)` and `(box_version_id, reward_version_id)`. Index `(box_version_id, position)`. The canonical selection order is `position`, then ID as a corruption-detection tie breaker.
+The exact ordered probability table: `id`, `box_version_id`, `reward_version_id`, `position integer CHECK (position >= 0)`, `weight bigint CHECK (weight > 0)`, plus nullable immutable `rarity` and `rarity_policy_version` snapshots. Unique `(box_version_id, position)` and `(box_version_id, reward_version_id)`. Index `(box_version_id, position)`. The canonical selection order is `position`, then ID as a corruption-detection tie breaker.
+
+For publications created after the Phase 15 migration, the server and a database publication guard derive every entry's tier using exact integer comparisons under `rarity-v1`: common at 20% or above, uncommon at 8% through below 20%, rare at 2% through below 8%, epic at 0.5% through below 2%, and legendary above zero through below 0.5%. Rarity is specific to the immutable box/reward association, not the reward version. Pre-rarity published history is not backfilled and retains both fields as null.
 
 The Phase 5 publish transaction verifies at least one association, positive weights, a nonoverflowing total, contiguous positions, same-creator ownership, active reward identities, and valid publication inventory. Database triggers repeat the cross-row ownership/publication checks and require `sum(weight) = box_versions.total_weight`. Triggers also prevent inserting, updating, or deleting associations after publication and prevent mutation of any referenced published reward version. The application reconstructs public output and verifies the stored total and canonical hash before returning it.
 

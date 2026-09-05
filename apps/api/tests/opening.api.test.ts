@@ -2,9 +2,12 @@ import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { OpeningService } from '../src/modules/openings/opening.service.js';
+import { OpeningConfirmationStaleError } from '../src/modules/openings/opening.errors.js';
 import { createTestApp } from './support/test-app.js';
 
 const boxId = '019c0000-0000-7000-8000-000000000010';
+const expectedBoxVersionId = '019c0000-0000-7000-8000-000000000011';
+const expectedConfigurationHash = '33'.repeat(32);
 const clientSeed = 'ab'.repeat(32);
 
 describe('box opening API boundary', () => {
@@ -12,12 +15,12 @@ describe('box opening API boundary', () => {
     const body = {
       opening: {
         boxId,
-        boxVersionId: '019c0000-0000-7000-8000-000000000011',
+        boxVersionId: expectedBoxVersionId,
         cost: { currency: 'USD', priceMinor: '999' },
         fairness: {
           clientSeed,
           commitment: '22'.repeat(32),
-          configurationHash: '33'.repeat(32),
+          configurationHash: expectedConfigurationHash,
           nonce: '0',
           seedSetId: '019c0000-0000-7000-8000-000000000012',
         },
@@ -28,6 +31,8 @@ describe('box opening API boundary', () => {
           id: '019c0000-0000-7000-8000-000000000014',
           imageUrl: null,
           name: 'Reward',
+          rarity: 'common' as const,
+          rarityPolicyVersion: 'rarity-v1' as const,
           rewardVersionId: '019c0000-0000-7000-8000-000000000015',
         },
         wallet: {
@@ -47,7 +52,7 @@ describe('box opening API boundary', () => {
       .post(`/v1/boxes/${boxId}/open`)
       .set('Authorization', 'Bearer synthetic')
       .set('Idempotency-Key', 'opening-key-1')
-      .send({ clientSeed });
+      .send({ clientSeed, expectedBoxVersionId, expectedConfigurationHash });
 
     expect(response.status).toBe(201);
     expect(response.body).toEqual(body);
@@ -56,6 +61,8 @@ describe('box opening API boundary', () => {
     expect(openBox).toHaveBeenCalledWith({
       boxId,
       clientSeed,
+      expectedBoxVersionId,
+      expectedConfigurationHash,
       idempotencyKey: 'opening-key-1',
       requestId: command.requestId,
       userId: '019c0000-0000-7000-8000-000000000001',
@@ -64,9 +71,39 @@ describe('box opening API boundary', () => {
   });
 
   it.each([
-    { body: { clientSeed, userId: '019c0000-0000-7000-8000-000000000099' }, key: 'opening-key-2' },
-    { body: { clientSeed: clientSeed.toUpperCase() }, key: 'opening-key-3' },
-    { body: { clientSeed }, key: undefined },
+    {
+      body: {
+        clientSeed,
+        expectedBoxVersionId,
+        expectedConfigurationHash,
+        userId: '019c0000-0000-7000-8000-000000000099',
+      },
+      key: 'opening-key-2',
+    },
+    {
+      body: {
+        clientSeed,
+        currency: 'USD',
+        expectedBoxVersionId,
+        expectedConfigurationHash,
+        priceMinor: '1',
+      },
+      key: 'opening-key-client-price',
+    },
+    {
+      body: {
+        clientSeed: clientSeed.toUpperCase(),
+        expectedBoxVersionId,
+        expectedConfigurationHash,
+      },
+      key: 'opening-key-3',
+    },
+    { body: { clientSeed, expectedBoxVersionId, expectedConfigurationHash }, key: undefined },
+    { body: { clientSeed, expectedConfigurationHash }, key: 'opening-key-4' },
+    {
+      body: { clientSeed, expectedBoxVersionId, expectedConfigurationHash: 'FF'.repeat(32) },
+      key: 'opening-key-5',
+    },
   ])('rejects noncanonical or client-authoritative requests: %o', async ({ body, key }) => {
     const openBox = vi.fn<OpeningService['openBox']>();
     let operation = request(createTestApp({ openingService: { openBox } }))
@@ -76,5 +113,25 @@ describe('box opening API boundary', () => {
     const response = await operation.send(body);
     expect(response.status).toBe(400);
     expect(openBox).not.toHaveBeenCalled();
+  });
+
+  it('returns a stable stale-confirmation error without opening a different version', async () => {
+    const openBox = vi
+      .fn<OpeningService['openBox']>()
+      .mockRejectedValue(new OpeningConfirmationStaleError());
+    const response = await request(createTestApp({ openingService: { openBox } }))
+      .post(`/v1/boxes/${boxId}/open`)
+      .set('Authorization', 'Bearer synthetic')
+      .set('Idempotency-Key', 'opening-key-stale')
+      .send({ clientSeed, expectedBoxVersionId, expectedConfigurationHash });
+
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({
+      error: {
+        code: 'OPENING_CONFIRMATION_STALE',
+        message:
+          'The box changed after it was loaded. Review the current version and confirm again.',
+      },
+    });
   });
 });

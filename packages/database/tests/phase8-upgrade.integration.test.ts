@@ -41,6 +41,7 @@ const phase13Migrations = [
   '20260901180000_phase13_leaderboards.sql',
   '20260902120000_phase13_high_remediation.sql',
 ] as const;
+const phase15Migrations = ['20260905065856_phase15_rarity_and_fairness_proof.sql'] as const;
 
 const migrationSql = (fileName: string): Promise<string> =>
   readFile(new URL(`../../../infra/supabase/migrations/${fileName}`, import.meta.url), 'utf8');
@@ -353,6 +354,7 @@ describe('Phase 8 to current forward migration', { concurrent: false }, () => {
 
       for (const fileName of phase12Migrations) await database.query(await migrationSql(fileName));
       for (const fileName of phase13Migrations) await database.query(await migrationSql(fileName));
+      for (const fileName of phase15Migrations) await database.query(await migrationSql(fileName));
 
       const after = await database.query<{
         readonly baseCount: string;
@@ -360,6 +362,8 @@ describe('Phase 8 to current forward migration', { concurrent: false }, () => {
         readonly compatibility: string | null;
         readonly entryXmin: string;
         readonly priceMinor: string;
+        readonly rarity: string | null;
+        readonly rarityPolicyVersion: string | null;
         readonly rewardVersionId: string;
         readonly weight: string;
       }>(
@@ -367,6 +371,8 @@ describe('Phase 8 to current forward migration', { concurrent: false }, () => {
                 version.price_minor::text as "priceMinor",
                 entry.reward_version_id::text as "rewardVersionId",
                 entry.weight::text as weight,
+                entry.rarity,
+                entry.rarity_policy_version as "rarityPolicyVersion",
                 version.opening_compatibility_version as compatibility,
                 (select count(*)::text from app.box_version_base_rewards as base
                   where base.box_version_id = version.id) as "baseCount"
@@ -375,7 +381,15 @@ describe('Phase 8 to current forward migration', { concurrent: false }, () => {
           where version.id = $1`,
         [identifiers.version],
       );
-      expect(after.rows).toEqual([{ ...beforeRow, baseCount: '0', compatibility: null }]);
+      expect(after.rows).toEqual([
+        {
+          ...beforeRow,
+          baseCount: '0',
+          compatibility: null,
+          rarity: null,
+          rarityPolicyVersion: null,
+        },
+      ]);
       const inventoryAfter = await database.query<{
         readonly available: string;
         readonly initial: string;

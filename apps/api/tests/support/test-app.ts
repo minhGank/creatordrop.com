@@ -73,6 +73,7 @@ export const createUnhandledFairnessService = (): FairnessService => {
 
   return {
     getCurrent: unhandled,
+    getOpeningProof: unhandled,
     getPublicSeedSet: unhandled,
     initialize: unhandled,
     replaceCompromisedActiveSeed: unhandled,

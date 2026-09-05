@@ -39,6 +39,7 @@ export const createFairnessRouter = ({
   const publicReadLimit = createLimit(Math.max(100, mutationRateLimitMax * 10));
 
   router.get('/fairness/seed-sets/:seedSetId', publicReadLimit, controllers.getPublicSeedSet);
+  router.get('/fairness/openings/:publicOpeningId', publicReadLimit, controllers.getOpeningProof);
   router.get('/me/fairness', authenticate, controllers.getCurrent);
   router.post(
     '/me/fairness',

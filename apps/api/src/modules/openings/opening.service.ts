@@ -8,10 +8,13 @@ import type { Currency, MoneyMinor } from '@creatordrop/domain';
 import type { Logger } from '@creatordrop/observability';
 
 import { createPublishedManifest } from '../catalog/catalog.manifest.js';
-import type {
-  BoxId,
-  MoneyMinor as CatalogMoneyMinor,
-  ProbabilityWeight,
+import {
+  rarityPolicyVersions,
+  rewardRarities,
+  type BoxId,
+  type BoxVersionId,
+  type MoneyMinor as CatalogMoneyMinor,
+  type ProbabilityWeight,
 } from '../catalog/catalog.js';
 import type { UserId } from '../creators/creator.js';
 import type { FairnessService } from '../fairness/fairness.service.js';
@@ -27,6 +30,7 @@ import { toPublicWallet, type IdempotencyRecordId } from '../wallet/wallet.js';
 import {
   BoxNotOpenableError,
   InventoryUnavailableError,
+  OpeningConfirmationStaleError,
   OpeningCurrencyUnavailableError,
   OpeningRetryableError,
 } from './opening.errors.js';
@@ -52,6 +56,8 @@ const defaultEarningsHoldMs = 14 * 24 * 60 * 60 * 1000;
 export interface OpenBoxCommand {
   readonly boxId: BoxId;
   readonly clientSeed: ClientSeed;
+  readonly expectedBoxVersionId: BoxVersionId;
+  readonly expectedConfigurationHash: string;
   readonly idempotencyKey: string;
   readonly requestId: string;
   readonly userId: UserId;
@@ -149,11 +155,23 @@ const storedOpeningBody = (value: unknown): BoxOpeningBody => {
     ['clientSeed', 'commitment', 'configurationHash', 'nonce', 'seedSetId'],
     'opening fairness proof',
   );
-  const reward = record(
-    opening.reward,
-    ['id', 'imageUrl', 'name', 'rewardVersionId'],
-    'opening reward',
-  );
+  const rewardValue = opening.reward;
+  if (typeof rewardValue !== 'object' || rewardValue === null || Array.isArray(rewardValue)) {
+    throw new Error('Stored opening reward has an invalid shape.');
+  }
+  const reward = rewardValue as Record<string, unknown>;
+  const currentRewardShape = exactKeys(reward, [
+    'id',
+    'imageUrl',
+    'name',
+    'rarity',
+    'rarityPolicyVersion',
+    'rewardVersionId',
+  ]);
+  const legacyRewardShape = exactKeys(reward, ['id', 'imageUrl', 'name', 'rewardVersionId']);
+  if (!currentRewardShape && !legacyRewardShape) {
+    throw new Error('Stored opening reward has an invalid shape.');
+  }
   const wallet = record(
     opening.wallet,
     ['balanceMinor', 'currency', 'id', 'revision'],
@@ -161,10 +179,18 @@ const storedOpeningBody = (value: unknown): BoxOpeningBody => {
   );
   const fulfillmentStatus = opening.fulfillmentStatus;
   const pointsAwarded = opening.pointsAwarded;
+  const rarity = legacyRewardShape ? null : reward.rarity;
+  const rarityPolicyVersion = legacyRewardShape ? null : reward.rarityPolicyVersion;
   if (
     (fulfillmentStatus !== 'pending_fulfillment' && fulfillmentStatus !== 'awaiting_restock') ||
     (pointsAwarded !== 5 && pointsAwarded !== 20) ||
-    (reward.imageUrl !== null && typeof reward.imageUrl !== 'string')
+    (reward.imageUrl !== null && typeof reward.imageUrl !== 'string') ||
+    (rarity !== null && !rewardRarities.includes(rarity as (typeof rewardRarities)[number])) ||
+    (rarityPolicyVersion !== null &&
+      !rarityPolicyVersions.includes(
+        rarityPolicyVersion as (typeof rarityPolicyVersions)[number],
+      )) ||
+    (rarity === null) !== (rarityPolicyVersion === null)
   ) {
     throw new Error('Stored opening response contains invalid values.');
   }
@@ -200,6 +226,9 @@ const storedOpeningBody = (value: unknown): BoxOpeningBody => {
         id: uuidValue(reward.id, 'opening reward ID'),
         imageUrl: reward.imageUrl,
         name: stringValue(reward.name, 'opening reward name'),
+        rarity: rarity as BoxOpeningBody['opening']['reward']['rarity'],
+        rarityPolicyVersion:
+          rarityPolicyVersion as BoxOpeningBody['opening']['reward']['rarityPolicyVersion'],
         rewardVersionId: uuidValue(reward.rewardVersionId, 'opening reward version ID'),
       },
       wallet: {
@@ -234,6 +263,20 @@ export const calculateOpeningFinancialSplit = (
 export const calculateOpeningPoints = (isBaseReward: boolean): 5 | 20 => (isBaseReward ? 20 : 5);
 
 export const buildOpeningFingerprint = (input: {
+  readonly boxId: BoxId;
+  readonly clientSeed: ClientSeed;
+  readonly expectedBoxVersionId: BoxVersionId;
+  readonly expectedConfigurationHash: string;
+  readonly userId: UserId;
+}): string =>
+  createHash('sha256')
+    .update(
+      `creatordrop:idempotency:v2|${openingOperation}|${input.userId}|${input.boxId}|${input.clientSeed}|${input.expectedBoxVersionId}|${input.expectedConfigurationHash}`,
+      'utf8',
+    )
+    .digest('hex');
+
+const buildLegacyOpeningFingerprint = (input: {
   readonly boxId: BoxId;
   readonly clientSeed: ClientSeed;
   readonly userId: UserId;
@@ -343,7 +386,6 @@ export const createOpeningService = ({
             idempotencyKey: command.idempotencyKey,
           });
           if (!claim.created) {
-            if (claim.record.fingerprint !== fingerprint) throw new IdempotencyKeyReusedError();
             if (
               claim.record.status !== 'completed' ||
               claim.record.httpStatus !== openingStatusCode ||
@@ -351,12 +393,28 @@ export const createOpeningService = ({
             ) {
               throw new Error('Committed opening idempotency replay is incomplete.');
             }
-            return { body: storedOpeningBody(claim.record.responseBody), replayed: true };
+            const storedBody = storedOpeningBody(claim.record.responseBody);
+            const exactFingerprint = claim.record.fingerprint === fingerprint;
+            const compatibleLegacyFingerprint =
+              claim.record.fingerprint === buildLegacyOpeningFingerprint(command) &&
+              storedBody.opening.boxId === command.boxId &&
+              storedBody.opening.boxVersionId === command.expectedBoxVersionId &&
+              storedBody.opening.fairness.configurationHash === command.expectedConfigurationHash;
+            if (!exactFingerprint && !compatibleLegacyFingerprint) {
+              throw new IdempotencyKeyReusedError();
+            }
+            return { body: storedBody, replayed: true };
           }
 
           const catalog = requireOpeningCatalog(
             await findOpeningCatalog(transaction, command.boxId),
           );
+          if (
+            catalog.boxVersionId !== command.expectedBoxVersionId ||
+            catalog.configurationHash !== command.expectedConfigurationHash
+          ) {
+            throw new OpeningConfirmationStaleError();
+          }
           if (!enabledCurrencies.includes(catalog.currency)) {
             throw new OpeningCurrencyUnavailableError();
           }
@@ -458,6 +516,8 @@ export const createOpeningService = ({
                 id: selectedEntry.rewardId,
                 imageUrl: selectedEntry.imageUrl,
                 name: selectedEntry.name,
+                rarity: selectedEntry.rarity,
+                rarityPolicyVersion: selectedEntry.rarityPolicyVersion,
                 rewardVersionId: selectedEntry.rewardVersionId,
               },
               wallet: toPublicWallet(financials.wallet),
