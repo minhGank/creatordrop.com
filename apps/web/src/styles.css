@@ -486,12 +486,32 @@ h2 {
 .rewards-section,
 .fairness-card,
 .account-card,
+.dev-credit-panel,
 .auth-card,
 .state-card {
   padding: clamp(1.4rem, 4vw, 2.5rem);
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 1.25rem;
+}
+
+.dev-credit-panel {
+  margin-top: 1rem;
+  border-color: #8f6c2b;
+}
+
+.dev-credit-panel h2 {
+  font-size: clamp(1.5rem, 4vw, 2.25rem);
+}
+
+.dev-credit-panel .wallet-balance,
+.dev-credit-panel > p[role='status']:not(.inline-notice) {
+  color: var(--muted);
+}
+
+.dev-credit-panel .inline-error,
+.dev-credit-panel .inline-notice {
+  margin-top: 1rem;
 }
 
 .section-heading {

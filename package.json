@@ -39,6 +39,7 @@
     "leaderboards:reconcile": "npm run leaderboard:reconcile --workspace @creatordrop/app-worker",
     "redis:start": "node scripts/start-local-redis.mjs",
     "redis:stop": "node scripts/stop-local-redis.mjs",
+    "seed:demo": "npm run build --workspace @creatordrop/app-api && node --env-file-if-exists=.env scripts/seed-phase15-demo.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint . --max-warnings=0",

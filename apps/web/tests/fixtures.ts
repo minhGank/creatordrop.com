@@ -146,6 +146,8 @@ export const publishedBoxFixture: PublishedBoxVersionResponse = {
   },
 };
 
+const currentClientSeedFixture = 'c'.repeat(64);
+
 export const currentFairnessFixture: CurrentFairnessResponse = {
   fairness: {
     activeSeedSet: {
@@ -162,7 +164,7 @@ export const currentFairnessFixture: CurrentFairnessResponse = {
       rotateAfter: '2026-09-06T00:00:00.000Z',
       status: 'active',
     },
-    clientSeed: 'c'.repeat(64),
+    clientSeed: currentClientSeedFixture,
     revision: 1,
     rotationPolicy: { maxAgeMs: 86_400_000, maxOpenings: '1000' },
   },
@@ -174,7 +176,7 @@ export const boxOpeningFixture: BoxOpeningResponse = {
     boxVersionId: publishedBoxFixture.manifest.boxVersionId,
     cost: { currency: 'USD', priceMinor: '999' },
     fairness: {
-      clientSeed: currentFairnessFixture.fairness.clientSeed,
+      clientSeed: currentClientSeedFixture,
       commitment: currentFairnessFixture.fairness.activeSeedSet.commitment,
       configurationHash: publishedBoxFixture.configurationHash,
       nonce: '0',
@@ -203,7 +205,7 @@ export const boxOpeningFixture: BoxOpeningResponse = {
 export const pendingOpeningProofFixture: OpeningFairnessProofResponse = {
   proof: {
     algorithmVersion: 'hmac-sha256-rejection-v1',
-    clientSeed: currentFairnessFixture.fairness.clientSeed,
+    clientSeed: currentClientSeedFixture,
     configurationHash: publishedBoxFixture.configurationHash,
     manifest: publishedBoxFixture.manifest,
     nonce: '0',

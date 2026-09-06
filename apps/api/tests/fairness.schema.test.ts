@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   parseClientSeedInput,
+  parseClientSeedUpdateInput,
+  parseEmptyFairnessInitializationInput,
   parseEmptyRotationInput,
   parseFairnessRevision,
   parseRotationIdempotencyKey,
@@ -21,6 +23,28 @@ describe('fairness request validation', () => {
       null,
     ]) {
       expect(() => parseClientSeedInput(invalid)).toThrow();
+    }
+  });
+
+  it('accepts only empty initialization and seed-set-bound client-seed updates', () => {
+    const clientSeed = 'ab'.repeat(32);
+    const expectedSeedSetId = '019c0000-0000-7000-8000-000000000020';
+    const expectedServerSeedCommitment = 'cd'.repeat(32);
+    expect(() => parseEmptyFairnessInitializationInput({})).not.toThrow();
+    expect(() => parseEmptyFairnessInitializationInput({ clientSeed })).toThrow();
+    expect(
+      parseClientSeedUpdateInput({
+        clientSeed,
+        expectedSeedSetId: expectedSeedSetId.toUpperCase(),
+        expectedServerSeedCommitment,
+      }),
+    ).toEqual({ clientSeed, expectedSeedSetId, expectedServerSeedCommitment });
+    for (const invalid of [
+      { clientSeed, expectedSeedSetId },
+      { clientSeed, expectedSeedSetId, expectedServerSeedCommitment: 'CD'.repeat(32) },
+      { clientSeed, expectedSeedSetId: 'invalid', expectedServerSeedCommitment },
+    ]) {
+      expect(() => parseClientSeedUpdateInput(invalid)).toThrow();
     }
   });
 

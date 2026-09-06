@@ -330,7 +330,7 @@ export interface PublicRngSeedSetContract {
 export interface CurrentFairnessResponse {
   readonly fairness: {
     readonly activeSeedSet: PublicRngSeedSetContract;
-    readonly clientSeed: string;
+    readonly clientSeed: string | null;
     readonly revision: number;
     readonly rotationPolicy: {
       readonly maxAgeMs: number;

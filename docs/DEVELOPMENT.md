@@ -163,14 +163,13 @@ through their typed fulfillment action; neither paused-box resume nor automatic 
 
 ## Run the API locally
 
-Start Supabase, export the example environment, and run the API watcher:
+Start Supabase, create the local environment file, and run the API watcher. The development
+script loads the repository-root `.env` automatically; no shell export or `source` step is
+required:
 
 ```bash
 npm run db:start
 cp .env.example .env
-set -a
-source .env
-set +a
 npm run dev:api
 ```
 
@@ -191,6 +190,11 @@ work without a session. All CreatorDrop requests flow through `apps/web/src/api/
 validates shared contracts and error envelopes. UI code must keep catalog text in React's escaped
 text path, format money from decimal minor-unit strings, preserve exact integer odds alongside any
 percentage display, provide explicit loading/error/empty states, and respect reduced motion.
+
+When `WALLET_TEST_CREDITS_ENABLED=true`, the local Vite development server derives a boolean-only
+capability for the authenticated account page and shows the clearly labeled test-credit control.
+It does not expose the raw server environment. Vite builds force the capability off, and the
+backend's development/test-only route registration and service check remain authoritative.
 
 For Stripe sandbox funding, set `STRIPE_FUNDING_ENABLED=true` only with explicit `NODE_ENV=development` or `test`, then supply a test-mode `STRIPE_SECRET_KEY` and the signing secret printed by `stripe listen --forward-to http://127.0.0.1:3000/v1/webhooks/stripe`. Never commit either value. Create a funding intent with `POST /v1/me/wallets/USD/funding-intents`, `{ "amountMinor": "2000" }`, and an `Idempotency-Key`; confirm the PaymentIntent using Stripe's client SDK/test payment methods. Only the signed webhook can credit the wallet. The configured limits are USD 500–50000 minor units. Local funding is closed-loop/nonwithdrawable, and no self-service refund route exists.
 
@@ -268,6 +272,89 @@ Season windows are explicit operator-managed PostgreSQL rows (normally about thr
 provision a scheduled row, activate it with the private migration/operator function, and let the
 worker reconcile and finalize after `ends_at`. Do not insert champion results or achievements
 manually.
+
+## Phase 15 local rarity demo
+
+The demo catalog command is deliberately restricted to explicit `development`/`test` mode, the
+local Supabase PostgreSQL port, and the restricted `creatordrop_app` role. It loads `.env`
+automatically, uses the normal creator/catalog services, and publishes through the production
+publication path so `rarity-v1` is derived and snapshotted by the backend. It never supplies a
+rarity value. Run it after the local database is available:
+
+```bash
+cp .env.example .env
+npm run db:start
+npm run seed:demo
+```
+
+The command is idempotent. It validates and reuses its fixed synthetic identities instead of
+creating another creator, reward, box, version, or configuration entry. If those identities were
+manually changed, it fails closed and asks for a local reset rather than rewriting published
+history. `npm run db:reset` and `npm run db:migrations:validate` erase demo data, so rerun
+`npm run seed:demo` afterward.
+
+The public creator is **CreatorDrop Test Creator** (`@creatordrop_test`) at slug
+`creatordrop-test`. Its **Every Rarity Test Box** costs USD 100 minor units and has unlimited
+digital test rewards with a total weight of 1000:
+
+| Reward                | Weight | Exact probability | Published rarity | Base |
+| --------------------- | -----: | ----------------: | ---------------- | ---- |
+| Common Test Reward    |    720 |               72% | common           | yes  |
+| Uncommon Test Reward  |    190 |               19% | uncommon         | no   |
+| Rare Test Reward      |     70 |                7% | rare             | no   |
+| Epic Test Reward      |     16 |              1.6% | epic             | no   |
+| Legendary Test Reward |      4 |              0.4% | legendary        | no   |
+
+With the API and web development servers running, open the URL printed by the seed command, or:
+
+```text
+http://localhost:5173/creators/creatordrop-test/boxes/019f1500-0000-7000-8000-000000000200
+```
+
+The public box page shows every rarity label/color without requiring a win. Actual openings always
+use the normal backend RNG; there is no force-winner query, request field, API, or browser override.
+The probabilities above mean repeated local openings can naturally exercise result states, but a
+particular tier is never guaranteed. For deterministic presentation coverage of every tier, use
+the controlled web-test fixtures instead of weakening selection:
+
+```bash
+npx vitest run apps/web/tests/app.test.tsx -t "renders the test-only" --reporter=verbose
+```
+
+To open the box, create/sign in to a local web account first. On the first opening attempt, the
+browser asks the authenticated API to create the encrypted server seed and public commitment. Only
+after that commitment exists does it generate a fresh client seed with Web Crypto and save it
+through the revision-checked client-seed endpoint. The confirmation displays the authoritative
+seed-set ID, server-seed commitment, and editable client seed before any opening is submitted. No
+manual fairness request is needed.
+
+Copy that local Supabase session's `access_token` from browser developer tools (Application →
+Session Storage) into a temporary shell variable; never paste it into source files or logs. Grant
+synthetic USD credit through the normal authenticated API:
+
+```bash
+export ACCESS_TOKEN='<local browser access token>'
+curl -sS -X POST http://127.0.0.1:3000/v1/me/wallets/USD/test-credits \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: phase15-demo-credit-100000-v1' \
+  --data '{"amountMinor":"100000"}'
+```
+
+This uses only the explicit local `WALLET_TEST_CREDITS_ENABLED=true` path and does not require
+Stripe. Reusing that credit idempotency key replays the same grant rather than crediting twice.
+
+A normal opening initially demonstrates `pending_reveal` without exposing its active seed. Rotate
+the user's active seed through `POST /v1/me/fairness/rotate` to exercise the retired
+`pending_reveal` state. There is intentionally no public force-reveal or compromise endpoint.
+Deterministic safe coverage for active, retired, revealed/`ready`, compromised/`unverifiable`, and
+browser verification/tampering lives in the existing test-only fixtures:
+
+```bash
+npx vitest run apps/api/tests/opening-proof.service.test.ts packages/rng-verifier/tests/browser.test.ts --reporter=verbose
+```
+
+Never read/decrypt an active seed or alter seed status directly to manufacture a local result.
 
 ## Full validation
 

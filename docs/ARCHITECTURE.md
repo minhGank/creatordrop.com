@@ -90,11 +90,14 @@ classification as defense in depth.
 
 Phase 14 routes are `/`, `/auth`, `/account`, `/creators`, `/creators/:customSlug`, and
 `/creators/:customSlug/boxes/:boxId`. Public pages use allowlisted catalog APIs without
-authentication. The protected account shell demonstrates session gating but adds no creator
-dashboard or product mutation. React text escaping is the catalog XSS boundary; no catalog field
-is rendered as raw HTML. Creator box-detail routes use one creator-scoped backend lookup rather
-than composing a slug with a globally addressed box. Money formatting starts from integer
-minor-unit strings, and probability
+authentication. The protected account shell demonstrates session gating and may expose the
+existing Phase 8 synthetic-credit command only through a clearly labeled development-server
+control. Vite derives one boolean from `WALLET_TEST_CREDITS_ENABLED` only when both its mode and the
+declared app environment are development/test; builds force the boolean off, and the backend route
+and service remain the authoritative gates. The account shell adds no creator dashboard or product
+mutation. React text escaping is the catalog XSS boundary; no catalog field is rendered as raw
+HTML. Creator box-detail routes use one creator-scoped backend lookup rather than composing a slug
+with a globally addressed box. Money formatting starts from integer minor-unit strings, and probability
 display starts from immutable integer weights using `BigInt`, always retaining the exact
 `weight / totalWeight` pair. Shared loading/error/empty states, semantic headings/forms, visible
 focus, skip navigation, responsive layouts, and `prefers-reduced-motion` support form the
@@ -146,11 +149,11 @@ Phase 8 establishes the first two locks and the financial composition boundary. 
 
 Detailed flow:
 
-1. Require authenticated actor, `Idempotency-Key`, and a request body containing `clientSeed` plus the immutable box-version ID and configuration hash explicitly confirmed by the user. Canonicalize and hash method, route, actor, box, and the complete body as the request fingerprint. Price and currency remain PostgreSQL-authoritative rather than client inputs.
+1. Require authenticated actor, `Idempotency-Key`, and a request body containing `clientSeed`, the exact active seed-set ID and commitment shown to the user, plus the immutable box-version ID and configuration hash explicitly confirmed by the user. Canonicalize and hash method, route, actor, box, and the complete body as the request fingerprint. Price, currency, and the active fairness state remain PostgreSQL-authoritative rather than client inputs.
 2. Begin a database transaction. Insert the user-scoped idempotency row. A unique conflict waits for the first transaction; replay the stored response if the fingerprint matches, otherwise return `409 IDEMPOTENCY_KEY_REUSED`.
 3. Load the active published version by box ID. Validate visibility, sales state, currency, price, opening limits, and eligibility on the server, then require its immutable version ID and configuration hash to equal the user's confirmed expectation. A mismatch rolls back with `OPENING_CONFIRMATION_STALE` before wallet, nonce, RNG, or inventory work. Read the transaction's authoritative database timestamp and acquire the matching leaderboard-season shared barrier before any selector work.
 4. Lock the user's currency wallet. Reject insufficient funds without consuming a nonce or leaving an idempotency record committed.
-5. Lock the user's active RNG seed-set, validate the client seed, allocate its next nonce, and increment the counter.
+5. Lock the user's active RNG seed-set, require its ID and commitment to match the confirmed expectation, validate the client seed, allocate its next nonce, and increment the counter. A changed seed-set rolls back with `FAIRNESS_CONFIRMATION_STALE` before nonce allocation or any financial mutation and requires fresh confirmation.
 6. Read the immutable ordered reward table, verify its stored total weight/checksum, compute HMAC-SHA256, and select the reward deterministically. The client never supplies or influences authoritative weights beyond choosing its client seed before the opening.
 7. For a finite winner, lock only its stable creator-owned inventory pool after RNG. Multiple immutable reward versions and boxes may reference that same physical stock. Consume one unit with an immutable opening-linked consumption row if available. `pause_box` rejects at zero and atomically pauses all active boxes using the exhausted pool after the last winner; `backorder` preserves the exact winner at zero with an `awaiting_restock` obligation and no consumption row. Never reroll or substitute.
 8. Revalidate the same current compatible version under the box availability lock. Insert the immutable opening with price/fee/points snapshots, version, seed-set, commitment, client seed, nonce, algorithm version, HMAC digest, selection value, and winning reward-version entry.
@@ -164,7 +167,7 @@ Detailed flow:
 
 Failures before commit leave no charge, nonce, opening, fulfillment, or event. If commit succeeds but the HTTP response is lost, retry returns the stored result.
 
-Phase 15 stores a server-derived `rarity-v1` tier on each immutable published box/reward association using exact weight/total comparisons; it does not change the RNG manifest or selection semantics. Before confirmation, the web opening experience refreshes the current authoritative catalog and binds the command to its immutable version/configuration identity; a later mismatch cannot silently switch versions and instead requires the refreshed price and configuration to be explicitly confirmed. It persists one user-intended idempotency key and that complete expectation in session storage and retries only the same command. Only an ambiguous transport outcome is recovered automatically; a definitive server rejection clears recovery, while `OPENING_RETRY_REQUIRED` preserves the command for an explicit user retry. The result UI binds the committed box-version/configuration identity to the exact immutable published snapshot before deriving reel content, price, currency, or odds, and the reel measures the already committed winner's rendered geometry rather than assuming a pixel size. The independent browser verifier consumes the public proof endpoint after reveal and never imports the production selector. A ready proof is not described as verified until that independent recomputation succeeds.
+Phase 15 stores a server-derived `rarity-v1` tier on each immutable published box/reward association using exact weight/total comparisons; it does not change the RNG manifest or selection semantics. On first use, the browser first sends the empty `POST /v1/me/fairness` command so the backend creates the encrypted server seed and public commitment without receiving an opening client seed. Only after that commitment exists does the browser generate a fresh canonical client seed with Web Crypto and save it through the revision-checked client-seed command. The resulting authoritative seed-set ID, commitment, and client seed are displayed before the user can explicitly confirm an opening. The opening command binds all three values, and PostgreSQL rejects a rotated/substituted seed-set with `FAIRNESS_CONFIRMATION_STALE`; initialization is never combined with opening. Before confirmation, the web opening experience refreshes the current authoritative catalog and binds the command to its immutable version/configuration identity; a later mismatch cannot silently switch versions and instead requires the refreshed price and configuration to be explicitly confirmed. It persists one user-intended idempotency key and that complete expectation in session storage and retries only the same command. Only an ambiguous transport outcome is recovered automatically; a definitive server rejection clears recovery, while `OPENING_RETRY_REQUIRED` preserves the command for an explicit user retry. The result UI binds the committed box-version/configuration identity to the exact immutable published snapshot before deriving reel content, price, currency, or odds, and the reel measures the already committed winner's rendered geometry rather than assuming a pixel size. The independent browser verifier consumes the public proof endpoint after reveal and never imports the production selector. A ready proof is not described as verified until that independent recomputation succeeds.
 
 ## Realtime and cache architecture
 
@@ -351,7 +354,7 @@ These must be resolved before their affected phase:
 3. Funding provider, custody model, refunds, chargebacks, creator revenue share, platform fees, tax, payout delay/reserve, KYC, and negative-balance policy.
 4. Reward inventory semantics. Recommended v1: only rewards whose promised fulfillment capacity is guaranteed for the life of a published version; do not dynamically remove sold-out rewards. Finite-stock weighted selection requires a separately specified, publicly verifiable policy.
 5. Whether odds are arbitrary weights or displayed exact percentages, rounding rules, minimum/maximum reward probability, box value/disclosure rules, and creator approval/moderation.
-6. Client-seed UX and seed rotation cadence. Recommended: per-user seed-set, user-editable client seed before opening, automatic server-seed rotation after a bounded opening count/time, then reveal.
+6. Server-seed rotation cadence. Recommended: automatic rotation after a bounded opening count/time, then reveal; each successor commitment remains visible before use.
 7. Opening limits, cancellation policy, fulfillment deadlines, substitutions, digital entitlement delivery, shipping regions/cost, and privacy retention.
 8. Public live-feed identity/amount disclosure and opt-out policy.
 9. Availability, throughput, latency, RPO/RTO, retention, and moderation/support service-level targets.

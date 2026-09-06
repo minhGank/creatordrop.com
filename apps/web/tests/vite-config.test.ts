@@ -10,12 +10,18 @@ import { assertBrowserSafeSupabaseKey } from '../src/config/supabase-browser-key
 import { createWebViteConfig } from '../vite.config.js';
 
 const originalBrowserKey = process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+const originalAppEnvironment = process.env.VITE_APP_ENV;
+const originalTestCreditsEnabled = process.env.WALLET_TEST_CREDITS_ENABLED;
 const webRoot = fileURLToPath(new URL('../', import.meta.url));
 const configFile = fileURLToPath(new URL('../vite.config.ts', import.meta.url));
 
 afterEach(() => {
   if (originalBrowserKey === undefined) delete process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
   else process.env.VITE_SUPABASE_PUBLISHABLE_KEY = originalBrowserKey;
+  if (originalAppEnvironment === undefined) delete process.env.VITE_APP_ENV;
+  else process.env.VITE_APP_ENV = originalAppEnvironment;
+  if (originalTestCreditsEnabled === undefined) delete process.env.WALLET_TEST_CREDITS_ENABLED;
+  else process.env.WALLET_TEST_CREDITS_ENABLED = originalTestCreditsEnabled;
 });
 
 const legacyServiceRoleKey = [
@@ -64,5 +70,35 @@ describe('Vite Supabase browser-key boundary', () => {
     } finally {
       await rm(outputDirectory, { force: true, recursive: true });
     }
+  });
+});
+
+describe('Vite test-credit capability boundary', () => {
+  it('injects only a boolean for an explicitly enabled local development server', () => {
+    process.env.VITE_APP_ENV = 'development';
+    process.env.WALLET_TEST_CREDITS_ENABLED = 'true';
+
+    expect(createWebViteConfig({ command: 'serve', mode: 'development' }).define).toMatchObject({
+      __CREATORDROP_TEST_CREDITS_ENABLED__: 'true',
+    });
+  });
+
+  it('forces the capability off for builds and when the backend feature is disabled', () => {
+    process.env.VITE_APP_ENV = 'development';
+    process.env.WALLET_TEST_CREDITS_ENABLED = 'true';
+    expect(createWebViteConfig({ command: 'build', mode: 'development' }).define).toMatchObject({
+      __CREATORDROP_TEST_CREDITS_ENABLED__: 'false',
+    });
+
+    process.env.WALLET_TEST_CREDITS_ENABLED = 'false';
+    expect(createWebViteConfig({ command: 'serve', mode: 'development' }).define).toMatchObject({
+      __CREATORDROP_TEST_CREDITS_ENABLED__: 'false',
+    });
+
+    process.env.WALLET_TEST_CREDITS_ENABLED = 'true';
+    process.env.VITE_APP_ENV = 'production';
+    expect(createWebViteConfig({ command: 'serve', mode: 'production' }).define).toMatchObject({
+      __CREATORDROP_TEST_CREDITS_ENABLED__: 'false',
+    });
   });
 });

@@ -128,18 +128,18 @@ describe('fairness lifecycle API', () => {
     expect(getCurrent).toHaveBeenCalledWith(userId);
   });
 
-  it('initializes with an authenticated user-derived identity and canonical client seed', async () => {
+  it('initializes the server commitment before accepting a client seed', async () => {
     const initialize = vi
       .fn<FairnessService['initialize']>()
-      .mockResolvedValue({ created: true, fairness });
+      .mockResolvedValue({ created: true, fairness: { ...fairness, clientSeed: null } });
     const response = await request(createTestApp({ fairnessService: serviceWith({ initialize }) }))
       .post('/v1/me/fairness')
-      .send({ clientSeed: fairness.clientSeed });
+      .send({});
 
     expect(response.status).toBe(201);
-    expect(initialize).toHaveBeenCalledWith(
-      expect.objectContaining({ clientSeed: fairness.clientSeed, userId }),
-    );
+    expect(response.body).toMatchObject({ fairness: { clientSeed: null } });
+    expect(initialize).toHaveBeenCalledWith(expect.objectContaining({ userId }));
+    expect(initialize.mock.calls[0]?.[0]).not.toHaveProperty('clientSeed');
   });
 
   it('revision-checks client-seed changes and maps stale writes to a stable conflict', async () => {
@@ -151,7 +151,11 @@ describe('fairness lifecycle API', () => {
     )
       .put('/v1/me/fairness/client-seed')
       .set('If-Match', '"1"')
-      .send({ clientSeed: 'cd'.repeat(32) });
+      .send({
+        clientSeed: 'cd'.repeat(32),
+        expectedSeedSetId: seedSet.id,
+        expectedServerSeedCommitment: seedSet.commitment,
+      });
 
     expect(response.status).toBe(409);
     expect(response.body).toMatchObject({
@@ -307,21 +311,12 @@ describe('fairness lifecycle API', () => {
       authenticate,
       security: { ...options.security, fairnessMutationRateLimitMax: 1 },
     });
-    expect(
-      (await request(app).post('/v1/me/fairness').send({ clientSeed: fairness.clientSeed })).status,
-    ).toBe(201);
-    const limited = await request(app)
-      .post('/v1/me/fairness')
-      .send({ clientSeed: fairness.clientSeed });
+    expect((await request(app).post('/v1/me/fairness').send({})).status).toBe(201);
+    const limited = await request(app).post('/v1/me/fairness').send({});
     expect(limited.status).toBe(429);
     expect(limited.body).toMatchObject({ error: { code: 'RATE_LIMITED' } });
     expect(
-      (
-        await request(app)
-          .post('/v1/me/fairness')
-          .set('X-Test-Actor', 'second')
-          .send({ clientSeed: fairness.clientSeed })
-      ).status,
+      (await request(app).post('/v1/me/fairness').set('X-Test-Actor', 'second').send({})).status,
     ).toBe(201);
   });
 });

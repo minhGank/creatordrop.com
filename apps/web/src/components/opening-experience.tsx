@@ -4,13 +4,19 @@ import { Link } from 'react-router-dom';
 
 import type {
   BoxOpeningResponse,
+  CurrentFairnessResponse,
   OpeningFairnessProofResponse,
   PublishedBoxVersionResponse,
   RewardRarity,
 } from '@creatordrop/contracts';
 import { verifyPersistedRewardSelectionProof } from '@creatordrop/rng-verifier/browser';
 
-import { CreatorDropApiError, type CreatorDropApiClient } from '../api/client.js';
+import {
+  CreatorDropApiError,
+  CreatorDropNetworkError,
+  CreatorDropProtocolError,
+  type CreatorDropApiClient,
+} from '../api/client.js';
 import { usePrefersReducedMotion } from '../accessibility/use-prefers-reduced-motion.js';
 import type { SessionState } from '../auth/session-context-value.js';
 import { formatMinorUnits } from '../formatting/money.js';
@@ -34,6 +40,8 @@ interface PendingOpening {
   readonly clientSeed: string;
   readonly expectedBoxVersionId: string;
   readonly expectedConfigurationHash: string;
+  readonly expectedSeedSetId: string;
+  readonly expectedServerSeedCommitment: string;
   readonly idempotencyKey: string;
   readonly recovery: PendingRecovery;
   readonly userId: string;
@@ -52,13 +60,17 @@ const readPending = (boxId: string, userId: string): PendingOpening | undefined 
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
     const candidate = value as Record<string, unknown>;
     if (
-      Object.keys(candidate).length !== 6 ||
+      Object.keys(candidate).length !== 8 ||
       typeof candidate.clientSeed !== 'string' ||
       !/^[0-9a-f]{64}$/u.test(candidate.clientSeed) ||
       typeof candidate.expectedBoxVersionId !== 'string' ||
       !canonicalUuidPattern.test(candidate.expectedBoxVersionId) ||
       typeof candidate.expectedConfigurationHash !== 'string' ||
       !/^[0-9a-f]{64}$/u.test(candidate.expectedConfigurationHash) ||
+      typeof candidate.expectedSeedSetId !== 'string' ||
+      !canonicalUuidPattern.test(candidate.expectedSeedSetId) ||
+      typeof candidate.expectedServerSeedCommitment !== 'string' ||
+      !/^[0-9a-f]{64}$/u.test(candidate.expectedServerSeedCommitment) ||
       typeof candidate.idempotencyKey !== 'string' ||
       !/^opening_[0-9a-f-]{36}$/u.test(candidate.idempotencyKey) ||
       (candidate.recovery !== 'automatic' && candidate.recovery !== 'manual') ||
@@ -70,6 +82,8 @@ const readPending = (boxId: string, userId: string): PendingOpening | undefined 
       clientSeed: candidate.clientSeed,
       expectedBoxVersionId: candidate.expectedBoxVersionId,
       expectedConfigurationHash: candidate.expectedConfigurationHash,
+      expectedSeedSetId: candidate.expectedSeedSetId,
+      expectedServerSeedCommitment: candidate.expectedServerSeedCommitment,
       idempotencyKey: candidate.idempotencyKey,
       recovery: candidate.recovery,
       userId,
@@ -85,6 +99,11 @@ const writePending = (boxId: string, pending: PendingOpening): void => {
 
 const clearPending = (boxId: string): void => {
   window.sessionStorage.removeItem(storageKey(boxId));
+};
+
+const generateClientSeed = (): string => {
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(32));
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
 };
 
 const catalogMatchesOpening = (catalog: PublishedBoxVersionResponse, opening: Opening): boolean => {
@@ -259,6 +278,8 @@ export const OpeningExperience = ({
   const [resultError, setResultError] = useState<string>();
   const [clientSeed, setClientSeed] = useState<string>();
   const [fairnessRevision, setFairnessRevision] = useState<number>();
+  const [serverSeedCommitment, setServerSeedCommitment] = useState<string>();
+  const [seedSetId, setSeedSetId] = useState<string>();
   const [reelTargetX, setReelTargetX] = useState<number>();
   const confirmationHeading = useRef<HTMLHeadingElement>(null);
   const reelTrack = useRef<HTMLOListElement>(null);
@@ -266,7 +287,67 @@ export const OpeningExperience = ({
   const resultHeading = useRef<HTMLHeadingElement>(null);
   const originalClientSeed = useRef<string | undefined>(undefined);
   const confirming = useRef(false);
+  const preparingConfirmation = useRef(false);
   const recovered = useRef(false);
+
+  const loadOrInitializeFairness = useCallback(async () => {
+    let fairness: CurrentFairnessResponse;
+    try {
+      fairness = await api.getCurrentFairness();
+    } catch (currentError) {
+      if (
+        !(currentError instanceof CreatorDropApiError) ||
+        currentError.code !== 'FAIRNESS_NOT_INITIALIZED'
+      ) {
+        throw currentError;
+      }
+      try {
+        await api.initializeFairness();
+      } catch (initializationError) {
+        const ambiguousResponse =
+          initializationError instanceof CreatorDropNetworkError ||
+          initializationError instanceof CreatorDropProtocolError;
+        if (!ambiguousResponse) throw initializationError;
+      }
+      try {
+        fairness = await api.getCurrentFairness();
+      } catch {
+        throw currentError;
+      }
+    }
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (fairness.fairness.clientSeed !== null) return fairness;
+      const generatedClientSeed = generateClientSeed();
+      try {
+        const updated = await api.updateCurrentClientSeed(
+          generatedClientSeed,
+          fairness.fairness.revision,
+          fairness.fairness.activeSeedSet.id,
+          fairness.fairness.activeSeedSet.commitment,
+        );
+        if (updated.fairness.clientSeed === null) {
+          throw new CreatorDropProtocolError();
+        }
+        return updated;
+      } catch (updateError) {
+        const retryableConflict =
+          updateError instanceof CreatorDropApiError &&
+          (updateError.code === 'FAIRNESS_REVISION_CONFLICT' ||
+            updateError.code === 'FAIRNESS_CONFIRMATION_STALE');
+        const ambiguousResponse =
+          updateError instanceof CreatorDropNetworkError ||
+          updateError instanceof CreatorDropProtocolError;
+        if (!retryableConflict && !ambiguousResponse) throw updateError;
+        try {
+          fairness = await api.getCurrentFairness();
+        } catch {
+          throw updateError;
+        }
+      }
+    }
+    throw new Error('Fairness setup changed repeatedly. Review it and try again.');
+  }, [api]);
 
   const loadCurrentCatalog = useCallback(async (): Promise<PublishedBoxVersionResponse> => {
     const current = await api.getCreatorBox(customSlug, box.manifest.boxId);
@@ -322,7 +403,16 @@ export const OpeningExperience = ({
           pending.idempotencyKey,
           pending.expectedBoxVersionId,
           pending.expectedConfigurationHash,
+          pending.expectedSeedSetId,
+          pending.expectedServerSeedCommitment,
         );
+        if (
+          response.opening.fairness.clientSeed !== pending.clientSeed ||
+          response.opening.fairness.seedSetId !== pending.expectedSeedSetId ||
+          response.opening.fairness.commitment !== pending.expectedServerSeedCommitment
+        ) {
+          throw new Error('The committed opening did not match the confirmed fairness seed.');
+        }
         setOpening(response.opening);
         await resolveCommittedCatalog(response.opening);
       } catch (submissionError) {
@@ -331,6 +421,30 @@ export const OpeningExperience = ({
             writePending(box.manifest.boxId, { ...pending, recovery: 'manual' });
           } else {
             clearPending(box.manifest.boxId);
+          }
+          if (submissionError.code === 'FAIRNESS_CONFIRMATION_STALE') {
+            try {
+              const refreshed = await api.getCurrentFairness();
+              if (refreshed.fairness.clientSeed === null) {
+                setError('Your fairness commitment changed. Reload it before opening.');
+                setStage('idle');
+                return;
+              }
+              originalClientSeed.current = refreshed.fairness.clientSeed;
+              setClientSeed(refreshed.fairness.clientSeed);
+              setFairnessRevision(refreshed.fairness.revision);
+              setSeedSetId(refreshed.fairness.activeSeedSet.id);
+              setServerSeedCommitment(refreshed.fairness.activeSeedSet.commitment);
+              setError(
+                'Your fairness commitment changed. Review the new commitment and confirm again.',
+              );
+              setStage('confirm');
+              return;
+            } catch {
+              setError('Your fairness commitment changed. Reload it before opening.');
+              setStage('idle');
+              return;
+            }
           }
           if (submissionError.code === 'OPENING_CONFIRMATION_STALE') {
             try {
@@ -397,13 +511,27 @@ export const OpeningExperience = ({
         if (
           clientSeed === undefined ||
           fairnessRevision === undefined ||
+          seedSetId === undefined ||
+          serverSeedCommitment === undefined ||
           !/^[0-9a-f]{64}$/u.test(clientSeed)
         ) {
           throw new Error('Client seed must be exactly 64 lowercase hexadecimal characters.');
         }
         let authoritativeClientSeed = clientSeed;
         if (originalClientSeed.current !== clientSeed) {
-          const updated = await api.updateCurrentClientSeed(clientSeed, fairnessRevision);
+          const updated = await api.updateCurrentClientSeed(
+            clientSeed,
+            fairnessRevision,
+            seedSetId,
+            serverSeedCommitment,
+          );
+          if (
+            updated.fairness.clientSeed === null ||
+            updated.fairness.activeSeedSet.id !== seedSetId ||
+            updated.fairness.activeSeedSet.commitment !== serverSeedCommitment
+          ) {
+            throw new CreatorDropProtocolError();
+          }
           authoritativeClientSeed = updated.fairness.clientSeed;
           originalClientSeed.current = authoritativeClientSeed;
           setFairnessRevision(updated.fairness.revision);
@@ -412,6 +540,8 @@ export const OpeningExperience = ({
           clientSeed: authoritativeClientSeed,
           expectedBoxVersionId: confirmationCatalog.version.id,
           expectedConfigurationHash: confirmationCatalog.configurationHash,
+          expectedSeedSetId: seedSetId,
+          expectedServerSeedCommitment: serverSeedCommitment,
           idempotencyKey: `opening_${globalThis.crypto.randomUUID()}`,
           recovery: 'automatic',
           userId: session.user.id,
@@ -422,6 +552,33 @@ export const OpeningExperience = ({
       writePending(box.manifest.boxId, submittedPending);
       await submit(submittedPending);
     } catch (confirmationError) {
+      if (
+        confirmationError instanceof CreatorDropApiError &&
+        (confirmationError.code === 'FAIRNESS_REVISION_CONFLICT' ||
+          confirmationError.code === 'FAIRNESS_CONFIRMATION_STALE')
+      ) {
+        clearPending(box.manifest.boxId);
+        try {
+          const refreshed = await api.getCurrentFairness();
+          if (refreshed.fairness.clientSeed === null) {
+            setError('Your fairness settings changed. Reload them before opening.');
+            setStage('idle');
+            return;
+          }
+          originalClientSeed.current = refreshed.fairness.clientSeed;
+          setClientSeed(refreshed.fairness.clientSeed);
+          setFairnessRevision(refreshed.fairness.revision);
+          setSeedSetId(refreshed.fairness.activeSeedSet.id);
+          setServerSeedCommitment(refreshed.fairness.activeSeedSet.commitment);
+          setError('Your fairness settings changed. Review them and confirm again.');
+          setStage('confirm');
+          return;
+        } catch {
+          setError('Your fairness settings changed. Reload them before opening.');
+          setStage('idle');
+          return;
+        }
+      }
       setError(
         confirmationError instanceof Error
           ? confirmationError.message
@@ -434,6 +591,8 @@ export const OpeningExperience = ({
   };
 
   const beginConfirmation = async (): Promise<void> => {
+    if (preparingConfirmation.current) return;
+    preparingConfirmation.current = true;
     setError(undefined);
     setStage('preparing-confirmation');
     try {
@@ -441,14 +600,19 @@ export const OpeningExperience = ({
         throw new Error('Sign in before opening this box.');
       }
       const [fairness, currentCatalog] = await Promise.all([
-        api.getCurrentFairness(),
+        loadOrInitializeFairness(),
         loadCurrentCatalog(),
       ]);
+      if (fairness.fairness.clientSeed === null) {
+        throw new Error('Choose a client seed before opening.');
+      }
       const existing = readPending(box.manifest.boxId, session.user.id);
       if (
         existing?.recovery === 'manual' &&
         (existing.expectedBoxVersionId !== currentCatalog.version.id ||
-          existing.expectedConfigurationHash !== currentCatalog.configurationHash)
+          existing.expectedConfigurationHash !== currentCatalog.configurationHash ||
+          existing.expectedSeedSetId !== fairness.fairness.activeSeedSet.id ||
+          existing.expectedServerSeedCommitment !== fairness.fairness.activeSeedSet.commitment)
       ) {
         clearPending(box.manifest.boxId);
       }
@@ -456,19 +620,20 @@ export const OpeningExperience = ({
       originalClientSeed.current = fairness.fairness.clientSeed;
       setClientSeed(fairness.fairness.clientSeed);
       setFairnessRevision(fairness.fairness.revision);
+      setSeedSetId(fairness.fairness.activeSeedSet.id);
+      setServerSeedCommitment(fairness.fairness.activeSeedSet.commitment);
       setStage('confirm');
     } catch (loadError) {
       setConfirmationCatalog(undefined);
+      setSeedSetId(undefined);
+      setServerSeedCommitment(undefined);
       setError(
         loadError instanceof Error ? loadError.message : 'Your fairness state is unavailable.',
       );
       setStage('idle');
+    } finally {
+      preparingConfirmation.current = false;
     }
-  };
-
-  const randomClientSeed = (): string => {
-    const bytes = globalThis.crypto.getRandomValues(new Uint8Array(32));
-    return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
   };
 
   const winnerEntry = committedCatalog?.entries.find(
@@ -566,6 +731,14 @@ export const OpeningExperience = ({
           {confirmationCatalog.version.versionNumber.toString()}. The backend will open only this
           exact confirmed version and configuration.
         </p>
+        <p>
+          Active server-seed commitment: <span className="hash-value">{serverSeedCommitment}</span>.
+          This commitment was published before your opening and does not reveal the hidden server
+          seed.
+        </p>
+        <p>
+          Active seed-set ID: <span className="hash-value">{seedSetId}</span>.
+        </p>
         <label className="client-seed-control">
           Client seed
           <input
@@ -585,7 +758,7 @@ export const OpeningExperience = ({
         <button
           className="text-button"
           disabled={stage === 'submitting'}
-          onClick={() => setClientSeed(randomClientSeed())}
+          onClick={() => setClientSeed(generateClientSeed())}
           type="button"
         >
           Generate a new client seed

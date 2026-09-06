@@ -24,6 +24,7 @@ import {
 import {
   FairnessAlreadyInitializedError,
   FairnessClientSeedMismatchError,
+  FairnessConfirmationStaleError,
   FairnessNotInitializedError,
   FairnessRevisionConflictError,
   OpeningFairnessProofNotFoundError,
@@ -194,6 +195,14 @@ const normalizeError = (error: unknown): ApiError => {
 
   if (error instanceof FairnessClientSeedMismatchError) {
     return new ApiError(409, 'CLIENT_SEED_MISMATCH', 'The client seed is no longer current.');
+  }
+
+  if (error instanceof FairnessConfirmationStaleError) {
+    return new ApiError(
+      409,
+      'FAIRNESS_CONFIRMATION_STALE',
+      'The active fairness seed changed. Review the new commitment and confirm again.',
+    );
   }
 
   if (error instanceof BoxNotOpenableError) {

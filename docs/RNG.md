@@ -205,7 +205,7 @@ Phase 6 adds no endpoint, seed persistence, nonce allocation, opening record, or
 
 ## Phase 7 lifecycle implementation
 
-Phase 7 persists one canonical client-seed preference and at most one active encrypted server-seed set per user. The API requires an explicit client seed for initialization, publishes the active commitment before use, permits optimistic client-seed changes, performs idempotent user rotation, and exposes sanitized public seed history. It never returns active plaintext or encryption metadata.
+Phase 7 persists one canonical client-seed preference and at most one active encrypted server-seed set per user. The initialization API first creates and publishes the active commitment without receiving an opening client seed. After that commitment exists, a separate optimistic update records the user's explicit client-seed choice. The API performs idempotent user rotation and exposes sanitized public seed history. It never returns active plaintext or encryption metadata.
 
 Active server seeds are generated with Node `randomBytes(32)`, committed with SHA-256, and encrypted directly using AES-256-GCM under an environment-supplied 32-byte master key, with a fresh 12-byte IV and 16-byte tag. This is authenticated encryption at rest, not envelope encryption: Phase 7 does not create a per-record data-encryption key or wrap one with KMS. Managed KMS/envelope encryption remains required production hardening.
 

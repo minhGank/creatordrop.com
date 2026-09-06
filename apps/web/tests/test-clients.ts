@@ -15,12 +15,19 @@ import {
   publishedBoxFixture,
 } from './fixtures.js';
 
+const emptyWallets = { wallets: [] } as const;
+
 export const createTestApiClient = (
   overrides: Partial<CreatorDropApiClient> = {},
 ): CreatorDropApiClient => ({
   exchangeSession: overrides.exchangeSession ?? (() => Promise.resolve(authSessionResponseFixture)),
+  grantUsdTestCredits:
+    overrides.grantUsdTestCredits ??
+    (() => Promise.reject(new Error('The test did not configure test-credit grants.'))),
   getCurrentFairness:
     overrides.getCurrentFairness ?? (() => Promise.resolve(currentFairnessFixture)),
+  initializeFairness:
+    overrides.initializeFairness ?? (() => Promise.resolve(currentFairnessFixture)),
   getCreator: overrides.getCreator ?? (() => Promise.resolve(publicCreatorResponseFixture)),
   getCreatorBox:
     overrides.getCreatorBox ??
@@ -33,6 +40,7 @@ export const createTestApiClient = (
   listCreatorBoxes:
     overrides.listCreatorBoxes ?? (() => Promise.resolve(publicCreatorBoxesResponseFixture)),
   listCreators: overrides.listCreators ?? (() => Promise.resolve(publicCreatorsResponseFixture)),
+  listWallets: overrides.listWallets ?? (() => Promise.resolve(emptyWallets)),
   openBox: overrides.openBox ?? (() => Promise.resolve(boxOpeningFixture)),
   updateCurrentClientSeed:
     overrides.updateCurrentClientSeed ?? (() => Promise.resolve(currentFairnessFixture)),

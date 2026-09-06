@@ -11,6 +11,8 @@ import type {
   PublicCreatorBoxesResponse,
   PublicCreatorResponse,
   PublicCreatorsResponse,
+  WalletsResponse,
+  WalletTestCreditResponse,
 } from '@creatordrop/contracts';
 
 const nullableHttpsUrlSchema = z.union([z.url({ protocol: /^https:$/u }), z.null()]);
@@ -168,6 +170,9 @@ const walletSchema = z
   })
   .strict();
 
+const walletsResponseSchema = z.object({ wallets: z.array(walletSchema) }).strict();
+const walletTestCreditResponseSchema = z.object({ wallet: walletSchema }).strict();
+
 const boxOpeningResponseSchema = z
   .object({
     opening: z
@@ -226,7 +231,7 @@ const currentFairnessResponseSchema = z
             status: z.enum(['active', 'retired', 'revealed', 'compromised']),
           })
           .strict(),
-        clientSeed: hex256Schema,
+        clientSeed: z.union([hex256Schema, z.null()]),
         revision: z.number().int().positive(),
         rotationPolicy: z
           .object({ maxAgeMs: z.number().int().positive(), maxOpenings: positiveDecimalSchema })
@@ -317,7 +322,9 @@ export class CreatorDropProtocolError extends Error {
 
 export interface CreatorDropApiClient {
   exchangeSession(accessToken: string): Promise<AuthSessionResponse>;
+  grantUsdTestCredits(idempotencyKey: string): Promise<WalletTestCreditResponse>;
   getCurrentFairness(signal?: AbortSignal): Promise<CurrentFairnessResponse>;
+  initializeFairness(): Promise<CurrentFairnessResponse>;
   getCreator(customSlug: string, signal?: AbortSignal): Promise<PublicCreatorResponse>;
   getCreatorBox(
     customSlug: string,
@@ -339,16 +346,21 @@ export interface CreatorDropApiClient {
     signal?: AbortSignal,
   ): Promise<PublicCreatorBoxesResponse>;
   listCreators(cursor?: string, signal?: AbortSignal): Promise<PublicCreatorsResponse>;
+  listWallets(signal?: AbortSignal): Promise<WalletsResponse>;
   openBox(
     boxId: string,
     clientSeed: string,
     idempotencyKey: string,
     expectedBoxVersionId: string,
     expectedConfigurationHash: string,
+    expectedSeedSetId: string,
+    expectedServerSeedCommitment: string,
   ): Promise<BoxOpeningResponse>;
   updateCurrentClientSeed(
     clientSeed: string,
     expectedRevision: number,
+    expectedSeedSetId: string,
+    expectedServerSeedCommitment: string,
   ): Promise<CurrentFairnessResponse>;
 }
 
@@ -438,12 +450,23 @@ export const createApiClient = ({
         body: {},
         method: 'POST',
       }),
+    grantUsdTestCredits: (idempotencyKey) =>
+      request('/v1/me/wallets/USD/test-credits', walletTestCreditResponseSchema, {
+        body: { amountMinor: '100000' },
+        idempotencyKey,
+        method: 'POST',
+      }),
     getCurrentFairness: (signal) =>
       request(
         '/v1/me/fairness',
         currentFairnessResponseSchema,
         signal === undefined ? {} : { signal },
       ),
+    initializeFairness: () =>
+      request('/v1/me/fairness', currentFairnessResponseSchema, {
+        body: {},
+        method: 'POST',
+      }),
     getCreator: (customSlug, signal) =>
       request(
         `/v1/catalog/creators/${encodeURIComponent(customSlug)}`,
@@ -480,15 +503,36 @@ export const createApiClient = ({
         publicCreatorsSchema,
         signal === undefined ? {} : { signal },
       ),
-    openBox: (boxId, clientSeed, idempotencyKey, expectedBoxVersionId, expectedConfigurationHash) =>
+    listWallets: (signal) =>
+      request('/v1/me/wallets', walletsResponseSchema, signal === undefined ? {} : { signal }),
+    openBox: (
+      boxId,
+      clientSeed,
+      idempotencyKey,
+      expectedBoxVersionId,
+      expectedConfigurationHash,
+      expectedSeedSetId,
+      expectedServerSeedCommitment,
+    ) =>
       request(`/v1/boxes/${encodeURIComponent(boxId)}/open`, boxOpeningResponseSchema, {
-        body: { clientSeed, expectedBoxVersionId, expectedConfigurationHash },
+        body: {
+          clientSeed,
+          expectedBoxVersionId,
+          expectedConfigurationHash,
+          expectedSeedSetId,
+          expectedServerSeedCommitment,
+        },
         idempotencyKey,
         method: 'POST',
       }),
-    updateCurrentClientSeed: (clientSeed, expectedRevision) =>
+    updateCurrentClientSeed: (
+      clientSeed,
+      expectedRevision,
+      expectedSeedSetId,
+      expectedServerSeedCommitment,
+    ) =>
       request('/v1/me/fairness/client-seed', currentFairnessResponseSchema, {
-        body: { clientSeed },
+        body: { clientSeed, expectedSeedSetId, expectedServerSeedCommitment },
         ifMatch: expectedRevision,
         method: 'PUT',
       }),

@@ -31,7 +31,11 @@ const bootstrap = async (): Promise<void> => {
   });
   root.render(
     <StrictMode>
-      <App apiClient={apiClient} authClient={authClient} />
+      <App
+        apiClient={apiClient}
+        authClient={authClient}
+        testCreditsEnabled={environment.testCreditsEnabled}
+      />
     </StrictMode>,
   );
 };

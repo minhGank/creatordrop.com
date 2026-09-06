@@ -11,7 +11,8 @@ import { ApiError } from '../../http/errors.js';
 import type { UserId } from '../creators/creator.js';
 import { trustedUserId } from '../creators/creator.schema.js';
 import {
-  parseClientSeedInput,
+  parseClientSeedUpdateInput,
+  parseEmptyFairnessInitializationInput,
   parseEmptyRotationInput,
   parseFairnessRevision,
   parsePublicOpeningId,
@@ -127,8 +128,8 @@ export const createFairnessControllers = (service: FairnessService): FairnessCon
   initialize: (request, response: Response<CurrentFairnessResponse>, next) => {
     run(async () => {
       requireJson(request);
+      parseEmptyFairnessInitializationInput(request.body);
       const result = await service.initialize({
-        ...parseClientSeedInput(request.body),
         requestId: request.requestId,
         userId: requireActorUserId(request),
       });
@@ -163,7 +164,7 @@ export const createFairnessControllers = (service: FairnessService): FairnessCon
     run(async () => {
       requireJson(request);
       const fairness = await service.updateClientSeed({
-        ...parseClientSeedInput(request.body),
+        ...parseClientSeedUpdateInput(request.body),
         expectedRevision: parseFairnessRevision(request.get('if-match')),
         requestId: request.requestId,
         userId: requireActorUserId(request),

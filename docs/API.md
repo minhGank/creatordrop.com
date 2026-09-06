@@ -64,11 +64,11 @@ Every request receives `X-Request-Id`. A caller value is retained only when it m
 | `GET`   | `/v1/me/openings`             | user               | Paginated private opening history                                        |
 | `GET`   | `/v1/me/rewards`              | user               | Reward wins and fulfillment summaries                                    |
 | `GET`   | `/v1/me/fairness`             | user               | Active seed-set ID/commitment, client seed, nonce count, rotation policy |
-| `POST`  | `/v1/me/fairness`             | user               | Initialize client seed and encrypted active server-seed commitment       |
-| `PUT`   | `/v1/me/fairness/client-seed` | user               | Set future client seed with revision check                               |
+| `POST`  | `/v1/me/fairness`             | user               | Create the encrypted active server-seed commitment                       |
+| `PUT`   | `/v1/me/fairness/client-seed` | user               | Set the future client seed against the shown seed-set/revision           |
 | `POST`  | `/v1/me/fairness/rotate`      | user + idempotency | Retire old seed and establish a newly committed active seed              |
 
-Initialization requires an explicit canonical 64-character lowercase-hex client seed; the server does not silently choose one. Repeating initialization with the same seed is safe, while a different seed returns `409 FAIRNESS_ALREADY_INITIALIZED`. Current-state and client-seed responses carry an `ETag`; client-seed updates require the quoted current revision in `If-Match`. Changing a client seed never mutates existing lifecycle history or historical opening proofs.
+Initialization accepts an exact empty JSON object. It atomically creates the fairness profile and encrypted active server seed before receiving the client seed intended for openings, and returns only public seed-set metadata with `clientSeed: null`. Repeating or concurrently issuing initialization converges on that one authoritative active commitment. After seeing it, the web client generates a fresh canonical 64-character lowercase-hex client seed with Web Crypto and saves it through `PUT /v1/me/fairness/client-seed`. Current-state and client-seed responses carry an `ETag`; updates require the quoted current revision in `If-Match` and the exact `expectedSeedSetId` and `expectedServerSeedCommitment` previously shown. Changing a client seed never mutates existing lifecycle history or historical opening proofs.
 
 Rotation requires an 8–128 character allowlisted `Idempotency-Key` and an empty body/query. It locks the user's fairness/active-seed state, retires the old row, activates a fresh commitment at nonce `0`, and records the operation type/reason fingerprint and old/new relationship atomically. Same-key/same-intent retries replay; reuse for a different transition conflicts. Phase 7 exposes the authenticated lifecycle service primitive for eligible retirement reveal; automatic scheduling remains deferred. Active ciphertext, IV, authentication tag, key material, and raw server seed are never response fields.
 
@@ -197,17 +197,23 @@ Requires user authentication and `Idempotency-Key`. Request:
 {
   "clientSeed": "64-lowercase-hex-characters",
   "expectedBoxVersionId": "uuid",
-  "expectedConfigurationHash": "64-lowercase-hex-characters"
+  "expectedConfigurationHash": "64-lowercase-hex-characters",
+  "expectedSeedSetId": "uuid",
+  "expectedServerSeedCommitment": "64-lowercase-hex-characters"
 }
 ```
 
-The seed must match the chosen/current seed policy. The expected version and configuration hash
-bind the command to the immutable catalog snapshot the user explicitly confirmed. PostgreSQL
-still supplies the authoritative price and currency; the client does not submit or control either
-financial value. If the current openable version no longer matches, the transaction returns
+The seed must match the chosen/current seed policy. The expected seed-set ID and commitment bind
+the command to the exact active public commitment the user saw; PostgreSQL locks and compares the
+authoritative active row rather than trusting those client values. A mismatch returns
+`409 FAIRNESS_CONFIRMATION_STALE` before nonce allocation, RNG, debit, inventory, or opening writes
+and requires fresh confirmation. The expected version and configuration hash bind the command to
+the immutable catalog snapshot the user explicitly confirmed. PostgreSQL still supplies the
+authoritative price and currency; the client does not submit or control either financial value. If
+the current openable version no longer matches, the transaction returns
 `409 OPENING_CONFIRMATION_STALE` before wallet, nonce, RNG, or inventory work and the client must
 show the new version for fresh confirmation. There is intentionally no client-authoritative
-price, currency, weight, probability, balance, reward, nonce, or server commitment field.
+price, currency, weight, probability, balance, reward, nonce, or server-seed value.
 
 Successful `201` (or replayed original response):
 

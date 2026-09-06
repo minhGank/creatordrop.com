@@ -165,7 +165,7 @@ const status = (value: unknown): RngSeedSetStatus => {
 };
 
 const parseProfile = (row: FairnessProfileRow): FairnessProfile => ({
-  clientSeed: requiredString(row.clientSeed, 'client seed') as ClientSeed,
+  clientSeed: nullableString(row.clientSeed, 'client seed') as ClientSeed | null,
   createdAt: timestamp(row.createdAt, 'fairness profile created timestamp'),
   revision: requiredInteger(row.revision, 'fairness profile revision'),
   updatedAt: timestamp(row.updatedAt, 'fairness profile updated timestamp'),
@@ -230,7 +230,7 @@ export const lockFairnessProfile = async (
 export const insertFairnessProfile = async (
   executor: QueryExecutor,
   userId: UserId,
-  clientSeed: ClientSeed,
+  clientSeed: ClientSeed | null,
   timestampValue: string,
 ): Promise<FairnessProfile | undefined> => {
   const result = await executor.query<FairnessProfileRow>(

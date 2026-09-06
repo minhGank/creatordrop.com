@@ -45,7 +45,8 @@ import {
   createFulfillmentService,
   type FulfillmentService,
 } from '../src/modules/fulfillment/fulfillment.service.js';
-import type { ClientSeed } from '../src/modules/fairness/fairness.js';
+import type { ClientSeed, RngSeedSetId } from '../src/modules/fairness/fairness.js';
+import { FairnessConfirmationStaleError } from '../src/modules/fairness/fairness.errors.js';
 import {
   OpeningConfirmationStaleError,
   OpeningRetryableError,
@@ -176,7 +177,9 @@ const observeBlocking = async (
 
 interface TestUser {
   readonly clientSeed: ClientSeed;
+  readonly commitment: string;
   readonly id: UserId;
+  readonly seedSetId: RngSeedSetId;
 }
 
 interface TestCatalog {
@@ -349,7 +352,15 @@ describe('atomic box opening', { concurrent: false }, () => {
       [id, `opening_fan_${id.replaceAll('-', '')}`],
     );
     nextServerSeed = randomBytes(32);
-    await fairness.initialize({ clientSeed, requestId: randomUUID(), userId: id });
+    const initialized = await fairness.initialize({ requestId: randomUUID(), userId: id });
+    const configured = await fairness.updateClientSeed({
+      clientSeed,
+      expectedRevision: initialized.fairness.revision,
+      expectedSeedSetId: initialized.fairness.activeSeedSet.id,
+      expectedServerSeedCommitment: initialized.fairness.activeSeedSet.commitment,
+      requestId: randomUUID(),
+      userId: id,
+    });
     await wallets.grantTestCredits({
       amountMinor: parsePositiveMoneyMinor(creditMinor),
       currency: usd,
@@ -357,7 +368,12 @@ describe('atomic box opening', { concurrent: false }, () => {
       requestId: randomUUID(),
       userId: id,
     });
-    return { clientSeed, id };
+    return {
+      clientSeed,
+      commitment: configured.activeSeedSet.commitment,
+      id,
+      seedSetId: configured.activeSeedSet.id,
+    };
   };
 
   const inventoryPoolForVersion = async (
@@ -500,14 +516,19 @@ describe('atomic box opening', { concurrent: false }, () => {
 
   const openingExpectation = async (
     boxId: BoxId,
+    user: TestUser,
   ): Promise<{
     readonly expectedBoxVersionId: BoxVersionId;
     readonly expectedConfigurationHash: string;
+    readonly expectedSeedSetId: RngSeedSetId;
+    readonly expectedServerSeedCommitment: string;
   }> => {
     const published = await catalog.getPublicBox(boxId);
     return {
       expectedBoxVersionId: published.version.id,
       expectedConfigurationHash: published.configurationHash,
+      expectedSeedSetId: user.seedSetId,
+      expectedServerSeedCommitment: user.commitment,
     };
   };
 
@@ -515,7 +536,7 @@ describe('atomic box opening', { concurrent: false }, () => {
     openings.openBox({
       boxId,
       clientSeed: user.clientSeed,
-      ...(await openingExpectation(boxId)),
+      ...(await openingExpectation(boxId, user)),
       idempotencyKey,
       requestId: randomUUID(),
       userId: user.id,
@@ -632,7 +653,7 @@ describe('atomic box opening', { concurrent: false }, () => {
     }).openBox({
       boxId: box.boxId,
       clientSeed: changedFeeUser.clientSeed,
-      ...(await openingExpectation(box.boxId)),
+      ...(await openingExpectation(box.boxId, changedFeeUser)),
       idempotencyKey: `opening_${randomUUID()}`,
       requestId: randomUUID(),
       userId: changedFeeUser.id,
@@ -682,7 +703,7 @@ describe('atomic box opening', { concurrent: false }, () => {
       openings.openBox({
         boxId: box.boxId,
         clientSeed: 'ff'.repeat(32) as ClientSeed,
-        ...(await openingExpectation(box.boxId)),
+        ...(await openingExpectation(box.boxId, user)),
         idempotencyKey: key,
         requestId: randomUUID(),
         userId: user.id,
@@ -713,7 +734,7 @@ describe('atomic box opening', { concurrent: false }, () => {
       failingOpenings.openBox({
         boxId: box.boxId,
         clientSeed: user.clientSeed,
-        ...(await openingExpectation(box.boxId)),
+        ...(await openingExpectation(box.boxId, user)),
         idempotencyKey: `open_${randomUUID()}`,
         requestId: randomUUID(),
         userId: user.id,
@@ -787,7 +808,7 @@ describe('atomic box opening', { concurrent: false }, () => {
       guardedOpenings.openBox({
         boxId: box.boxId,
         clientSeed: user.clientSeed,
-        ...(await openingExpectation(box.boxId)),
+        ...(await openingExpectation(box.boxId, user)),
         idempotencyKey: `open_${randomUUID()}`,
         requestId: randomUUID(),
         userId: user.id,
@@ -818,8 +839,8 @@ describe('atomic box opening', { concurrent: false }, () => {
     const ownerId = await creatorOwner(creatorId);
     const rewardVersionId = await createReward(creatorId, { mode: 'finite', quantity: '1' });
     const box = await createBox(creatorId, rewardVersionId, '1000');
-    const originalExpectation = await openingExpectation(box.boxId);
     const user = await createUser('20000');
+    const originalExpectation = await openingExpectation(box.boxId, user);
     const poolId = await inventoryPoolForVersion(rewardVersionId);
     let selectorCalls = 0;
     const guardedOpenings = createOpeningService({
@@ -919,13 +940,91 @@ describe('atomic box opening', { concurrent: false }, () => {
     ]);
   });
 
+  it('rejects a rotated fairness commitment before nonce, charge, inventory, or opening state', async () => {
+    const creatorId = await createCreator();
+    const rewardVersionId = await createReward(creatorId, { mode: 'finite', quantity: '1' });
+    const box = await createBox(creatorId, rewardVersionId, '999');
+    const user = await createUser('1998');
+    const confirmed = await openingExpectation(box.boxId, user);
+    const poolId = await inventoryPoolForVersion(rewardVersionId);
+
+    nextServerSeed = randomBytes(32);
+    const rotated = await fairness.rotate({
+      idempotencyKey: `rotate_${randomUUID()}`,
+      requestId: randomUUID(),
+      userId: user.id,
+    });
+    expect(rotated.newSeedSet.id).not.toBe(confirmed.expectedSeedSetId);
+    expect(rotated.newSeedSet.commitment).not.toBe(confirmed.expectedServerSeedCommitment);
+
+    await expect(
+      openings.openBox({
+        boxId: box.boxId,
+        clientSeed: user.clientSeed,
+        ...confirmed,
+        idempotencyKey: `open_${randomUUID()}`,
+        requestId: randomUUID(),
+        userId: user.id,
+      }),
+    ).rejects.toBeInstanceOf(FairnessConfirmationStaleError);
+
+    const failedState = await database.query<{
+      readonly balance: string;
+      readonly claims: string;
+      readonly consumptions: string;
+      readonly nextNonce: string;
+      readonly openings: string;
+      readonly quantity: string;
+    }>(
+      `select
+         (select available_balance_minor::text from app.wallets
+           where user_id = $1 and currency = 'USD') as balance,
+         (select next_nonce::text from app.rng_seed_sets
+           where id = $2) as "nextNonce",
+         (select count(*)::text from app.idempotency_records
+           where actor_user_id = $1 and operation = 'box.open') as claims,
+         (select count(*)::text from app.box_opens where user_id = $1) as openings,
+         (select count(*)::text from app.inventory_consumptions
+           where inventory_pool_id = $3) as consumptions,
+         (select available_quantity::text from app.inventory_pools where id = $3) as quantity`,
+      [user.id, rotated.newSeedSet.id, poolId],
+    );
+    expect(failedState.rows).toEqual([
+      {
+        balance: '1998',
+        claims: '0',
+        consumptions: '0',
+        nextNonce: '0',
+        openings: '0',
+        quantity: '1',
+      },
+    ]);
+
+    const current = await fairness.getCurrent(user.id);
+    const opened = await openings.openBox({
+      boxId: box.boxId,
+      clientSeed: user.clientSeed,
+      expectedBoxVersionId: confirmed.expectedBoxVersionId,
+      expectedConfigurationHash: confirmed.expectedConfigurationHash,
+      expectedSeedSetId: current.activeSeedSet.id,
+      expectedServerSeedCommitment: current.activeSeedSet.commitment,
+      idempotencyKey: `open_${randomUUID()}`,
+      requestId: randomUUID(),
+      userId: user.id,
+    });
+    expect(opened.body.opening.fairness).toMatchObject({
+      commitment: current.activeSeedSet.commitment,
+      seedSetId: current.activeSeedSet.id,
+    });
+  });
+
   it('replays one committed historical version after a newer version is published', async () => {
     const creatorId = await createCreator();
     const ownerId = await creatorOwner(creatorId);
     const rewardVersionId = await createReward(creatorId, { mode: 'unlimited' });
     const box = await createBox(creatorId, rewardVersionId, '999');
-    const confirmed = await openingExpectation(box.boxId);
     const user = await createUser('1998');
+    const confirmed = await openingExpectation(box.boxId, user);
     const idempotencyKey = `open_${randomUUID()}`;
     const command = {
       boxId: box.boxId,
@@ -961,6 +1060,14 @@ describe('atomic box opening', { concurrent: false }, () => {
     });
     expect(replacement.version.id).not.toBe(first.body.opening.boxVersionId);
 
+    nextServerSeed = randomBytes(32);
+    const rotated = await fairness.rotate({
+      idempotencyKey: `rotate_${randomUUID()}`,
+      requestId: randomUUID(),
+      userId: user.id,
+    });
+    expect(rotated.newSeedSet.id).not.toBe(first.body.opening.fairness.seedSetId);
+
     const replay = await openings.openBox({ ...command, requestId: randomUUID() });
     expect(replay).toEqual({ ...first, replayed: true });
     const state = await database.query<{
@@ -972,9 +1079,9 @@ describe('atomic box opening', { concurrent: false }, () => {
          (select available_balance_minor::text from app.wallets
            where user_id = $1 and currency = 'USD') as balance,
          (select next_nonce::text from app.rng_seed_sets
-           where user_id = $1 and status = 'active') as "nextNonce",
+           where id = $2) as "nextNonce",
          (select count(*)::text from app.box_opens where user_id = $1) as openings`,
-      [user.id],
+      [user.id, first.body.opening.fairness.seedSetId],
     );
     expect(state.rows).toEqual([{ balance: '999', nextNonce: '1', openings: '1' }]);
   });
@@ -2243,8 +2350,8 @@ describe('atomic box opening', { concurrent: false }, () => {
       logger,
     });
     const [firstExpectation, secondExpectation] = await Promise.all([
-      openingExpectation(firstBoxId),
-      openingExpectation(secondBoxId),
+      openingExpectation(firstBoxId, firstUser),
+      openingExpectation(secondBoxId, secondUser),
     ]);
     const firstOperation = firstOpenings.openBox({
       boxId: firstBoxId,

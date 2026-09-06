@@ -9,7 +9,7 @@ export type ClientSeed = string & { readonly __brand: 'ClientSeed' };
 export type Nonce = bigint & { readonly __brand: 'Nonce' };
 
 export interface FairnessProfile {
-  readonly clientSeed: ClientSeed;
+  readonly clientSeed: ClientSeed | null;
   readonly createdAt: string;
   readonly revision: number;
   readonly updatedAt: string;
@@ -33,7 +33,7 @@ export interface PublicSeedSet {
 
 export interface CurrentFairnessState {
   readonly activeSeedSet: PublicSeedSet;
-  readonly clientSeed: ClientSeed;
+  readonly clientSeed: ClientSeed | null;
   readonly revision: number;
   readonly rotationPolicy: {
     readonly maxAgeMs: number;

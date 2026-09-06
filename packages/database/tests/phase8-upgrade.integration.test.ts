@@ -41,7 +41,10 @@ const phase13Migrations = [
   '20260901180000_phase13_leaderboards.sql',
   '20260902120000_phase13_high_remediation.sql',
 ] as const;
-const phase15Migrations = ['20260905065856_phase15_rarity_and_fairness_proof.sql'] as const;
+const phase15Migrations = [
+  '20260905065856_phase15_rarity_and_fairness_proof.sql',
+  '20260906194037_phase15_fairness_confirmation_binding.sql',
+] as const;
 
 const migrationSql = (fileName: string): Promise<string> =>
   readFile(new URL(`../../../infra/supabase/migrations/${fileName}`, import.meta.url), 'utf8');

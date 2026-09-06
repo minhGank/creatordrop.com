@@ -16,6 +16,7 @@ import {
   type SecureRandomBytes,
 } from '../src/modules/fairness/fairness.crypto.js';
 import {
+  FairnessRevisionConflictError,
   SeedRevealNotAllowedError,
   SeedEncryptionKeyUnavailableError,
   SeedReplacementKeyUnsafeError,
@@ -347,12 +348,27 @@ describe('RNG seed lifecycle', { concurrent: false }, () => {
     service: FairnessService,
     actor: TestActor,
     clientSeed = firstClientSeed,
-  ) =>
-    service.initialize({
-      clientSeed,
+  ) => {
+    const initialized = await service.initialize({
       requestId: randomUUID(),
       userId: actor.userId,
     });
+    if (initialized.fairness.clientSeed !== null) return initialized;
+    try {
+      const fairness = await service.updateClientSeed({
+        clientSeed,
+        expectedRevision: initialized.fairness.revision,
+        expectedSeedSetId: initialized.fairness.activeSeedSet.id,
+        expectedServerSeedCommitment: initialized.fairness.activeSeedSet.commitment,
+        requestId: randomUUID(),
+        userId: actor.userId,
+      });
+      return { ...initialized, fairness };
+    } catch (error) {
+      if (!(error instanceof FairnessRevisionConflictError)) throw error;
+      return { ...initialized, fairness: await service.getCurrent(actor.userId) };
+    }
+  };
 
   const corruptWithTriggersDisabled = async (operation: (tx: QueryExecutor) => Promise<void>) => {
     await migrationDatabase.transaction(async (transaction) => {
@@ -409,7 +425,7 @@ describe('RNG seed lifecycle', { concurrent: false }, () => {
     const initialized = await request(app)
       .post('/v1/me/fairness')
       .set(authorization(actor))
-      .send({ clientSeed: firstClientSeed });
+      .send({});
     expect(initialized.status).toBe(201);
     expect(initialized.headers.etag).toBe('"1"');
     expect(initialized.body).toMatchObject({
@@ -420,27 +436,14 @@ describe('RNG seed lifecycle', { concurrent: false }, () => {
           revealedServerSeed: null,
           status: 'active',
         },
-        clientSeed: firstClientSeed,
+        clientSeed: null,
         revision: 1,
       },
     });
     const seedSetId = parseInitializedSeedSetId(initialized.body);
     expect(
-      (
-        await request(app)
-          .post('/v1/me/fairness')
-          .set(authorization(actor))
-          .send({ clientSeed: firstClientSeed })
-      ).status,
+      (await request(app).post('/v1/me/fairness').set(authorization(actor)).send({})).status,
     ).toBe(200);
-    const conflictingInitialization = await request(app)
-      .post('/v1/me/fairness')
-      .set(authorization(actor))
-      .send({ clientSeed: secondClientSeed });
-    expect(conflictingInitialization.status).toBe(409);
-    expect(conflictingInitialization.body).toMatchObject({
-      error: { code: 'FAIRNESS_ALREADY_INITIALIZED' },
-    });
     const rawSeedHex = generatedSeedHexes[0];
     if (rawSeedHex === undefined) throw new Error('Expected generated seed evidence.');
     const persisted = await migrationDatabase.query<{
@@ -491,14 +494,33 @@ describe('RNG seed lifecycle', { concurrent: false }, () => {
       .put('/v1/me/fairness/client-seed')
       .set(authorization(actor))
       .set('If-Match', '"1"')
-      .send({ clientSeed: secondClientSeed });
+      .send({
+        clientSeed: firstClientSeed,
+        expectedSeedSetId: seedSetId,
+        expectedServerSeedCommitment: persisted.rows[0]?.commitment,
+      });
     expect(updated.status).toBe(200);
-    expect(updated.body).toMatchObject({ fairness: { clientSeed: secondClientSeed, revision: 2 } });
+    expect(updated.body).toMatchObject({ fairness: { clientSeed: firstClientSeed, revision: 2 } });
+    const changed = await request(app)
+      .put('/v1/me/fairness/client-seed')
+      .set(authorization(actor))
+      .set('If-Match', '"2"')
+      .send({
+        clientSeed: secondClientSeed,
+        expectedSeedSetId: seedSetId,
+        expectedServerSeedCommitment: persisted.rows[0]?.commitment,
+      });
+    expect(changed.status).toBe(200);
+    expect(changed.body).toMatchObject({ fairness: { clientSeed: secondClientSeed, revision: 3 } });
     const stale = await request(app)
       .put('/v1/me/fairness/client-seed')
       .set(authorization(actor))
-      .set('If-Match', '"1"')
-      .send({ clientSeed: firstClientSeed });
+      .set('If-Match', '"2"')
+      .send({
+        clientSeed: firstClientSeed,
+        expectedSeedSetId: seedSetId,
+        expectedServerSeedCommitment: persisted.rows[0]?.commitment,
+      });
     expect(stale.status).toBe(409);
     expect(stale.body).toMatchObject({ error: { code: 'FAIRNESS_REVISION_CONFLICT' } });
     expect(
@@ -506,8 +528,12 @@ describe('RNG seed lifecycle', { concurrent: false }, () => {
         await request(app)
           .put('/v1/me/fairness/client-seed')
           .set(authorization(actor))
-          .set('If-Match', '"2"')
-          .send({ clientSeed: 'AA'.repeat(32) })
+          .set('If-Match', '"3"')
+          .send({
+            clientSeed: 'AA'.repeat(32),
+            expectedSeedSetId: seedSetId,
+            expectedServerSeedCommitment: persisted.rows[0]?.commitment,
+          })
       ).status,
     ).toBe(400);
 
@@ -526,6 +552,48 @@ describe('RNG seed lifecycle', { concurrent: false }, () => {
     for (const secret of [rawSeedHex, persisted.rows[0]?.ciphertextHex, masterKeyHex]) {
       expect(serializedLogs).not.toContain(secret);
     }
+  });
+
+  it('rolls back the new fairness profile when initial active-seed insertion fails', async () => {
+    const service = createService();
+    const app = createIntegratedApp(service);
+    const existingActor = await createActor(app);
+    await initializeDirect(service, existingActor);
+    const duplicateSeedHex = generatedSeedHexes.at(-1);
+    if (duplicateSeedHex === undefined) throw new Error('Expected a generated server seed.');
+
+    const newActor = await createActor(app);
+    const failingService = createService({
+      generateSeed: () => Uint8Array.from(Buffer.from(duplicateSeedHex, 'hex')),
+    });
+    await expect(initializeDirect(failingService, newActor)).rejects.toMatchObject({
+      constraint: 'rng_seed_sets_commitment_unique',
+    });
+
+    const failedState = await applicationDatabase.query<{
+      readonly idempotencyRecords: string;
+      readonly openings: string;
+      readonly profiles: string;
+      readonly seedSets: string;
+      readonly wallets: string;
+    }>(
+      `select
+         (select count(*)::text from app.fairness_profiles where user_id = $1) as profiles,
+         (select count(*)::text from app.rng_seed_sets where user_id = $1) as "seedSets",
+         (select count(*)::text from app.wallets where user_id = $1) as wallets,
+         (select count(*)::text from app.box_opens where user_id = $1) as openings,
+         (select count(*)::text from app.idempotency_records where actor_user_id = $1)
+           as "idempotencyRecords"`,
+      [newActor.userId],
+    );
+    expect(failedState.rows).toEqual([
+      { idempotencyRecords: '0', openings: '0', profiles: '0', seedSets: '0', wallets: '0' },
+    ]);
+
+    await expect(initializeDirect(service, newActor)).resolves.toMatchObject({
+      created: true,
+      fairness: { activeSeedSet: { nextNonce: '0', status: 'active' }, revision: 2 },
+    });
   });
 
   it('allocates sequential and concurrent nonces under PostgreSQL locks with rollback reuse', async () => {
@@ -1419,6 +1487,32 @@ describe('RNG seed lifecycle', { concurrent: false }, () => {
       [actor.userId],
     );
     expect(counts.rows).toEqual([{ profiles: '1', seeds: '1' }]);
+
+    const competingActor = await createActor(app);
+    const competingInitialization = await Promise.all([
+      initializeDirect(service, competingActor, firstClientSeed),
+      initializeDirect(service, competingActor, secondClientSeed),
+    ]);
+    expect(competingInitialization.filter(({ created }) => created)).toHaveLength(1);
+    expect(
+      competingInitialization.every(
+        ({ fairness }) =>
+          fairness.activeSeedSet.id === competingInitialization[0].fairness.activeSeedSet.id,
+      ),
+    ).toBe(true);
+    expect([firstClientSeed, secondClientSeed]).toContain(
+      (await service.getCurrent(competingActor.userId)).clientSeed,
+    );
+    const competingCounts = await applicationDatabase.query<{
+      readonly profiles: string;
+      readonly seeds: string;
+    }>(
+      `select (select count(*)::text from app.fairness_profiles where user_id = $1) as profiles,
+              (select count(*)::text from app.rng_seed_sets where user_id = $1) as seeds`,
+      [competingActor.userId],
+    );
+    expect(competingCounts.rows).toEqual([{ profiles: '1', seeds: '1' }]);
+
     await applicationDatabase.transaction((transaction) =>
       allocateNextNonce(transaction, { userId: actor.userId }),
     );

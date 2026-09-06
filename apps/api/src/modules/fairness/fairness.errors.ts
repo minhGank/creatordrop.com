@@ -36,6 +36,13 @@ export class FairnessClientSeedMismatchError extends Error {
   }
 }
 
+export class FairnessConfirmationStaleError extends Error {
+  constructor() {
+    super('The confirmed RNG seed set is no longer active.');
+    this.name = 'FairnessConfirmationStaleError';
+  }
+}
+
 export class SeedRotationRequiredError extends Error {
   constructor() {
     super('The active RNG seed set must be rotated before another nonce can be allocated.');

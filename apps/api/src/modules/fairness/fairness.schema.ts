@@ -40,6 +40,41 @@ export const parseClientSeedInput = (value: unknown): { readonly clientSeed: Cli
   return { clientSeed: input.clientSeed as ClientSeed };
 };
 
+export const parseClientSeedUpdateInput = (
+  value: unknown,
+): {
+  readonly clientSeed: ClientSeed;
+  readonly expectedSeedSetId: RngSeedSetId;
+  readonly expectedServerSeedCommitment: string;
+} => {
+  const input = record(value);
+  exactFields(input, ['clientSeed', 'expectedSeedSetId', 'expectedServerSeedCommitment']);
+  const { clientSeed } = parseClientSeedInput({ clientSeed: input.clientSeed });
+  if (
+    typeof input.expectedServerSeedCommitment !== 'string' ||
+    !clientSeedPattern.test(input.expectedServerSeedCommitment)
+  ) {
+    throw new ApiError(
+      400,
+      'VALIDATION_ERROR',
+      'expectedServerSeedCommitment must be exactly 64 lowercase hexadecimal characters.',
+      { field: 'expectedServerSeedCommitment' },
+    );
+  }
+  return {
+    clientSeed,
+    expectedSeedSetId: parseSeedSetId(
+      typeof input.expectedSeedSetId === 'string' ? input.expectedSeedSetId : undefined,
+    ),
+    expectedServerSeedCommitment: input.expectedServerSeedCommitment,
+  };
+};
+
+export const parseEmptyFairnessInitializationInput = (value: unknown): void => {
+  const input = record(value);
+  exactFields(input, []);
+};
+
 export const parseFairnessRevision = (value: string | undefined): number => {
   const revision = value === undefined ? undefined : ifMatchPattern.exec(value)?.groups?.revision;
   const parsed = revision === undefined ? Number.NaN : Number(revision);

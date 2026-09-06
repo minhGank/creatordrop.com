@@ -13,7 +13,7 @@ import type {
 } from '@creatordrop/contracts';
 
 import { ApiProvider } from '../src/api/api-context.js';
-import { CreatorDropApiError } from '../src/api/client.js';
+import { CreatorDropApiError, type CreatorDropApiClient } from '../src/api/client.js';
 import { SessionProvider } from '../src/auth/session-context.js';
 import { AppRoutes } from '../src/app.js';
 import { calculateReelWinnerTranslation } from '../src/components/reel-geometry.js';
@@ -33,6 +33,7 @@ const renderRoute = (
   options: {
     readonly api?: ReturnType<typeof createTestApiClient>;
     readonly auth?: ReturnType<typeof createTestAuthClient>;
+    readonly testCreditsEnabled?: boolean;
   } = {},
 ) => {
   const api = options.api ?? createTestApiClient();
@@ -44,7 +45,7 @@ const renderRoute = (
       <MemoryRouter initialEntries={[route]}>
         <ApiProvider client={api}>
           <SessionProvider apiClient={api} authClient={auth}>
-            <AppRoutes />
+            <AppRoutes testCreditsEnabled={options.testCreditsEnabled ?? false} />
           </SessionProvider>
         </ApiProvider>
       </MemoryRouter>,
@@ -236,6 +237,7 @@ describe('Phase 14 web shell', () => {
 
   it('opens once, reuses one idempotency key after a lost response, and reveals the committed result', async () => {
     const user = userEvent.setup();
+    const initializeFairness = vi.fn(() => Promise.resolve(currentFairnessFixture));
     const openBox = vi
       .fn()
       .mockRejectedValueOnce(new Error('The response was lost.'))
@@ -244,6 +246,7 @@ describe('Phase 14 web shell', () => {
       api: createTestApiClient({
         getCurrentFairness: () => Promise.resolve(currentFairnessFixture),
         getOpeningFairnessProof: () => Promise.resolve(pendingOpeningProofFixture),
+        initializeFairness,
         openBox,
       }),
       auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
@@ -269,6 +272,245 @@ describe('Phase 14 web shell', () => {
     expect(openBox).toHaveBeenCalledTimes(2);
     expect(openBox.mock.calls[0]?.[2]).toBe(openBox.mock.calls[1]?.[2]);
     expect(openBox.mock.calls[0]?.[1]).toBe(currentFairnessFixture.fairness.clientSeed);
+    expect(initializeFairness).not.toHaveBeenCalled();
+  });
+
+  it('initializes first-use fairness once and displays the commitment before opening', async () => {
+    const notInitialized = new CreatorDropApiError(404, {
+      error: {
+        code: 'FAIRNESS_NOT_INITIALIZED',
+        details: {},
+        message: 'Fairness state has not been initialized.',
+        requestId: 'fairness-not-initialized',
+      },
+    });
+    const unconfiguredFairness = {
+      fairness: { ...currentFairnessFixture.fairness, clientSeed: null },
+    };
+    const getCurrentFairness = vi
+      .fn()
+      .mockRejectedValueOnce(notInitialized)
+      .mockResolvedValueOnce(unconfiguredFairness);
+    const initializeFairness = vi.fn(() => Promise.resolve(unconfiguredFairness));
+    const updateCurrentClientSeed = vi.fn((generatedClientSeed: string) =>
+      Promise.resolve({
+        fairness: {
+          ...currentFairnessFixture.fairness,
+          clientSeed: generatedClientSeed,
+          revision: 2,
+        },
+      }),
+    );
+    const openBox = vi.fn<CreatorDropApiClient['openBox']>((_boxId, submittedClientSeed) =>
+      Promise.resolve({
+        opening: {
+          ...boxOpeningFixture.opening,
+          fairness: { ...boxOpeningFixture.opening.fairness, clientSeed: submittedClientSeed },
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
+      api: createTestApiClient({
+        getCurrentFairness,
+        initializeFairness,
+        openBox,
+        updateCurrentClientSeed,
+      }),
+      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
+    });
+
+    await user.dblClick(await screen.findByRole('button', { name: 'Open this box' }));
+    expect(await screen.findByRole('heading', { name: 'Open First Drop?' })).toBeInTheDocument();
+    expect(getCurrentFairness).toHaveBeenCalledTimes(2);
+    expect(initializeFairness).toHaveBeenCalledOnce();
+    expect(initializeFairness.mock.calls[0]).toEqual([]);
+    expect(updateCurrentClientSeed).toHaveBeenCalledOnce();
+    expect(initializeFairness.mock.invocationCallOrder[0]).toBeLessThan(
+      updateCurrentClientSeed.mock.invocationCallOrder[0] ?? 0,
+    );
+    const generatedClientSeed = updateCurrentClientSeed.mock.calls[0]?.[0];
+    expect(generatedClientSeed).toMatch(/^[0-9a-f]{64}$/u);
+    expect(updateCurrentClientSeed.mock.calls[0]?.slice(1)).toEqual([
+      1,
+      currentFairnessFixture.fairness.activeSeedSet.id,
+      currentFairnessFixture.fairness.activeSeedSet.commitment,
+    ]);
+    expect(screen.getByLabelText('Client seed')).toHaveValue(generatedClientSeed);
+    expect(
+      screen.getByText(currentFairnessFixture.fairness.activeSeedSet.commitment),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/does not reveal the hidden server seed/u)).toBeInTheDocument();
+    expect(openBox).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
+    expect(openBox).toHaveBeenCalledOnce();
+    expect(openBox.mock.calls[0]?.[1]).toBe(generatedClientSeed);
+    expect(openBox.mock.calls[0]?.slice(5)).toEqual([
+      currentFairnessFixture.fairness.activeSeedSet.id,
+      currentFairnessFixture.fairness.activeSeedSet.commitment,
+    ]);
+  });
+
+  it('converges on the existing fairness state after a concurrent first-use initialization', async () => {
+    const notInitialized = new CreatorDropApiError(404, {
+      error: {
+        code: 'FAIRNESS_NOT_INITIALIZED',
+        details: {},
+        message: 'Fairness state has not been initialized.',
+        requestId: 'fairness-race-not-initialized',
+      },
+    });
+    const revisionConflict = new CreatorDropApiError(409, {
+      error: {
+        code: 'FAIRNESS_REVISION_CONFLICT',
+        details: { currentRevision: 2 },
+        message: 'The fairness revision is stale.',
+        requestId: 'fairness-race-conflict',
+      },
+    });
+    const unconfiguredFairness = {
+      fairness: { ...currentFairnessFixture.fairness, clientSeed: null },
+    };
+    const getCurrentFairness = vi
+      .fn()
+      .mockRejectedValueOnce(notInitialized)
+      .mockResolvedValueOnce(unconfiguredFairness)
+      .mockResolvedValueOnce(currentFairnessFixture);
+    const initializeFairness = vi.fn().mockResolvedValue(unconfiguredFairness);
+    const updateCurrentClientSeed = vi.fn().mockRejectedValue(revisionConflict);
+    const openBox = vi.fn<CreatorDropApiClient['openBox']>(() =>
+      Promise.resolve(boxOpeningFixture),
+    );
+    const user = userEvent.setup();
+    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
+      api: createTestApiClient({
+        getCurrentFairness,
+        initializeFairness,
+        openBox,
+        updateCurrentClientSeed,
+      }),
+      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
+    });
+
+    await user.click(await screen.findByRole('button', { name: 'Open this box' }));
+    expect(await screen.findByRole('heading', { name: 'Open First Drop?' })).toBeInTheDocument();
+    expect(getCurrentFairness).toHaveBeenCalledTimes(3);
+    expect(initializeFairness).toHaveBeenCalledOnce();
+    expect(updateCurrentClientSeed).toHaveBeenCalledOnce();
+    expect(screen.getByLabelText('Client seed')).toHaveValue(
+      currentFairnessFixture.fairness.clientSeed,
+    );
+    expect(openBox).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
+    expect(openBox).toHaveBeenCalledOnce();
+    expect(openBox.mock.calls[0]?.[1]).toBe(currentFairnessFixture.fairness.clientSeed);
+  });
+
+  it('requires fresh confirmation when the displayed fairness commitment is rotated', async () => {
+    const rotatedFairness = {
+      fairness: {
+        ...currentFairnessFixture.fairness,
+        activeSeedSet: {
+          ...currentFairnessFixture.fairness.activeSeedSet,
+          commitment: 'e'.repeat(64),
+          id: '00000000-0000-4000-8000-000000000405',
+        },
+      },
+    };
+    const stale = new CreatorDropApiError(409, {
+      error: {
+        code: 'FAIRNESS_CONFIRMATION_STALE',
+        details: {},
+        message: 'The active fairness seed changed.',
+        requestId: 'fairness-commitment-stale',
+      },
+    });
+    const rotatedOpening = {
+      opening: {
+        ...boxOpeningFixture.opening,
+        fairness: {
+          ...boxOpeningFixture.opening.fairness,
+          commitment: rotatedFairness.fairness.activeSeedSet.commitment,
+          seedSetId: rotatedFairness.fairness.activeSeedSet.id,
+        },
+      },
+    };
+    const getCurrentFairness = vi
+      .fn()
+      .mockResolvedValueOnce(currentFairnessFixture)
+      .mockResolvedValueOnce(rotatedFairness);
+    const openBox = vi.fn<CreatorDropApiClient['openBox']>().mockRejectedValueOnce(stale);
+    openBox.mockResolvedValueOnce(rotatedOpening);
+    const user = userEvent.setup();
+    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
+      api: createTestApiClient({ getCurrentFairness, openBox }),
+      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
+    });
+
+    await user.click(await screen.findByRole('button', { name: 'Open this box' }));
+    expect(
+      screen.getByText(currentFairnessFixture.fairness.activeSeedSet.commitment),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('commitment changed');
+    expect(openBox).toHaveBeenCalledOnce();
+    expect(screen.getByText(rotatedFairness.fairness.activeSeedSet.commitment)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
+    expect(
+      await screen.findByRole('heading', { name: 'Unwrapping your reward…' }),
+    ).toBeInTheDocument();
+    expect(openBox).toHaveBeenCalledTimes(2);
+    expect(openBox.mock.calls[0]?.slice(5)).toEqual([
+      currentFairnessFixture.fairness.activeSeedSet.id,
+      currentFairnessFixture.fairness.activeSeedSet.commitment,
+    ]);
+    expect(openBox.mock.calls[1]?.slice(5)).toEqual([
+      rotatedFairness.fairness.activeSeedSet.id,
+      rotatedFairness.fairness.activeSeedSet.commitment,
+    ]);
+    expect(openBox.mock.calls[0]?.[2]).not.toBe(openBox.mock.calls[1]?.[2]);
+  });
+
+  it('fails first-use initialization without submitting or retaining an opening command', async () => {
+    const notInitialized = new CreatorDropApiError(404, {
+      error: {
+        code: 'FAIRNESS_NOT_INITIALIZED',
+        details: {},
+        message: 'Fairness state has not been initialized.',
+        requestId: 'fairness-failure-not-initialized',
+      },
+    });
+    const initializationFailure = new CreatorDropApiError(503, {
+      error: {
+        code: 'SEED_ENCRYPTION_KEY_UNAVAILABLE',
+        details: {},
+        message: 'Fairness initialization is temporarily unavailable.',
+        requestId: 'fairness-initialization-failure',
+      },
+    });
+    const initializeFairness = vi.fn().mockRejectedValue(initializationFailure);
+    const openBox = vi.fn(() => Promise.resolve(boxOpeningFixture));
+    const user = userEvent.setup();
+    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
+      api: createTestApiClient({
+        getCurrentFairness: () => Promise.reject(notInitialized),
+        initializeFairness,
+        openBox,
+      }),
+      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
+    });
+
+    await user.click(await screen.findByRole('button', { name: 'Open this box' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Fairness initialization is temporarily unavailable.',
+    );
+    expect(initializeFairness).toHaveBeenCalledOnce();
+    expect(openBox).not.toHaveBeenCalled();
+    expect(window.sessionStorage).toHaveLength(0);
   });
 
   it('collapses duplicate confirmation clicks into one opening command', async () => {
@@ -340,49 +582,56 @@ describe('Phase 14 web shell', () => {
     },
   );
 
-  it('reveals a normal committed reward with its immutable rarity, exact odds, and 5 points', async () => {
-    const entries = publishedBoxFixture.entries.map((entry, index) =>
-      index === 0
-        ? { ...entry, rarity: 'legendary' as const, rarityPolicyVersion: 'rarity-v1' as const }
-        : entry,
-    );
-    const box = { ...publishedBoxFixture, entries };
-    const first = entries[0];
-    const response: BoxOpeningResponse = {
-      opening: {
-        ...boxOpeningFixture.opening,
-        pointsAwarded: 5,
-        reward: {
-          ...boxOpeningFixture.opening.reward,
-          name: first?.rewardVersion.name ?? 'Rare reward',
-          rarity: 'legendary',
-          rarityPolicyVersion: 'rarity-v1',
-          rewardVersionId:
-            first?.rewardVersion.id ?? boxOpeningFixture.opening.reward.rewardVersionId,
+  it.each([
+    ['common', 'Common'],
+    ['uncommon', 'Uncommon'],
+    ['rare', 'Rare'],
+    ['epic', 'Epic'],
+    ['legendary', 'Legendary'],
+  ] as const)(
+    'renders the test-only %s result presentation with immutable odds and points',
+    async (rarity, label) => {
+      const entries = publishedBoxFixture.entries.map((entry, index) =>
+        index === 0 ? { ...entry, rarity, rarityPolicyVersion: 'rarity-v1' as const } : entry,
+      );
+      const box = { ...publishedBoxFixture, entries };
+      const first = entries[0];
+      const response: BoxOpeningResponse = {
+        opening: {
+          ...boxOpeningFixture.opening,
+          pointsAwarded: 5,
+          reward: {
+            ...boxOpeningFixture.opening.reward,
+            name: first?.rewardVersion.name ?? 'Rare reward',
+            rarity,
+            rarityPolicyVersion: 'rarity-v1',
+            rewardVersionId:
+              first?.rewardVersion.id ?? boxOpeningFixture.opening.reward.rewardVersionId,
+          },
         },
-      },
-    };
-    const user = userEvent.setup();
-    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
-      api: createTestApiClient({
-        getCreatorBox: () =>
-          Promise.resolve({ box, creator: publicCreatorResponseFixture.creator }),
-        openBox: () => Promise.resolve(response),
-      }),
-      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
-    });
+      };
+      const user = userEvent.setup();
+      renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
+        api: createTestApiClient({
+          getCreatorBox: () =>
+            Promise.resolve({ box, creator: publicCreatorResponseFixture.creator }),
+          openBox: () => Promise.resolve(response),
+        }),
+        auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
+      });
 
-    await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-    await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
-    await user.click(await screen.findByRole('button', { name: 'Skip to reveal' }));
+      await user.click(await screen.findByRole('button', { name: 'Open this box' }));
+      await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
+      await user.click(await screen.findByRole('button', { name: 'Skip to reveal' }));
 
-    const heading = await screen.findByRole('heading', { level: 2, name: 'Rare reward' });
-    const result = heading.closest('section');
-    if (result === null) throw new Error('Expected the opening result section.');
-    expect(within(result).getByText('Legendary')).toBeInTheDocument();
-    expect(within(result).getByText('<0.000001%')).toBeInTheDocument();
-    expect(within(result).getByText('+5 points')).toBeInTheDocument();
-  });
+      const heading = await screen.findByRole('heading', { level: 2, name: 'Rare reward' });
+      const result = heading.closest('section');
+      if (result === null) throw new Error('Expected the opening result section.');
+      expect(within(result).getByText(label)).toBeInTheDocument();
+      expect(within(result).getByText('<0.000001%')).toBeInTheDocument();
+      expect(within(result).getByText('+5 points')).toBeInTheDocument();
+    },
+  );
 
   it('uses the exact committed version when publication changes rarity and odds after page load', async () => {
     const committed = committedVersionB();
@@ -442,6 +691,8 @@ describe('Phase 14 web shell', () => {
       expect.stringMatching(/^opening_/u),
       committed.box.version.id,
       committed.box.configurationHash,
+      currentFairnessFixture.fairness.activeSeedSet.id,
+      currentFairnessFixture.fairness.activeSeedSet.commitment,
     );
   });
 
@@ -500,6 +751,8 @@ describe('Phase 14 web shell', () => {
     expect(openBox.mock.calls[1]?.slice(3)).toEqual([
       committed.box.version.id,
       committed.box.configurationHash,
+      currentFairnessFixture.fairness.activeSeedSet.id,
+      currentFairnessFixture.fairness.activeSeedSet.commitment,
     ]);
   });
 
@@ -512,6 +765,8 @@ describe('Phase 14 web shell', () => {
         clientSeed: currentFairnessFixture.fairness.clientSeed,
         expectedBoxVersionId: committed.box.version.id,
         expectedConfigurationHash: committed.box.configurationHash,
+        expectedSeedSetId: currentFairnessFixture.fairness.activeSeedSet.id,
+        expectedServerSeedCommitment: currentFairnessFixture.fairness.activeSeedSet.commitment,
         idempotencyKey,
         recovery: 'automatic',
         userId: authSessionResponseFixture.user.id,
@@ -543,6 +798,8 @@ describe('Phase 14 web shell', () => {
       idempotencyKey,
       committed.box.version.id,
       committed.box.configurationHash,
+      currentFairnessFixture.fairness.activeSeedSet.id,
+      currentFairnessFixture.fairness.activeSeedSet.commitment,
     );
     expect(getPublishedBoxVersion).toHaveBeenCalledOnce();
   });
@@ -768,6 +1025,8 @@ describe('Phase 14 web shell', () => {
         clientSeed: currentFairnessFixture.fairness.clientSeed,
         expectedBoxVersionId: publishedBoxFixture.version.id,
         expectedConfigurationHash: publishedBoxFixture.configurationHash,
+        expectedSeedSetId: currentFairnessFixture.fairness.activeSeedSet.id,
+        expectedServerSeedCommitment: currentFairnessFixture.fairness.activeSeedSet.commitment,
         idempotencyKey,
         recovery: 'automatic',
         userId: authSessionResponseFixture.user.id,
@@ -789,6 +1048,8 @@ describe('Phase 14 web shell', () => {
       idempotencyKey,
       publishedBoxFixture.version.id,
       publishedBoxFixture.configurationHash,
+      currentFairnessFixture.fairness.activeSeedSet.id,
+      currentFairnessFixture.fairness.activeSeedSet.commitment,
     );
   });
 
@@ -799,6 +1060,8 @@ describe('Phase 14 web shell', () => {
         clientSeed: currentFairnessFixture.fairness.clientSeed,
         expectedBoxVersionId: publishedBoxFixture.version.id,
         expectedConfigurationHash: publishedBoxFixture.configurationHash,
+        expectedSeedSetId: currentFairnessFixture.fairness.activeSeedSet.id,
+        expectedServerSeedCommitment: currentFairnessFixture.fairness.activeSeedSet.commitment,
         idempotencyKey: 'opening_00000000-0000-4000-8000-000000000498',
         recovery: 'automatic',
         userId: '00000000-0000-4000-8000-000000000497',
@@ -864,6 +1127,60 @@ describe('Phase 14 web shell', () => {
     expect(
       await screen.findByRole('heading', { name: authSessionResponseFixture.user.username }),
     ).toBeInTheDocument();
+  });
+
+  it('shows enabled development credits, uses a fresh key per click, and refreshes the balance', async () => {
+    const wallet = {
+      currency: 'USD',
+      id: '00000000-0000-4000-8000-000000000501',
+      revision: '1',
+    } as const;
+    const listWallets = vi
+      .fn<CreatorDropApiClient['listWallets']>()
+      .mockResolvedValueOnce({ wallets: [{ ...wallet, balanceMinor: '0' }] })
+      .mockResolvedValueOnce({ wallets: [{ ...wallet, balanceMinor: '100000', revision: '2' }] })
+      .mockResolvedValueOnce({ wallets: [{ ...wallet, balanceMinor: '200000', revision: '3' }] });
+    const grantUsdTestCredits = vi.fn<CreatorDropApiClient['grantUsdTestCredits']>(() =>
+      Promise.resolve({ wallet: { ...wallet, balanceMinor: '100000', revision: '2' } }),
+    );
+    const user = userEvent.setup();
+    renderRoute('/account', {
+      api: createTestApiClient({ grantUsdTestCredits, listWallets }),
+      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
+      testCreditsEnabled: true,
+    });
+
+    const button = await screen.findByRole('button', {
+      name: 'DEV ONLY — Add $1,000 Test Credits',
+    });
+    expect(await screen.findByText('$0.00', { selector: 'strong' })).toBeInTheDocument();
+    await user.click(button);
+    expect(await screen.findByText('$1,000.00', { selector: 'strong' })).toBeInTheDocument();
+    await user.click(button);
+    expect(await screen.findByText('$2,000.00', { selector: 'strong' })).toBeInTheDocument();
+
+    expect(listWallets).toHaveBeenCalledTimes(3);
+    expect(grantUsdTestCredits).toHaveBeenCalledTimes(2);
+    const firstKey = grantUsdTestCredits.mock.calls[0]?.[0];
+    const secondKey = grantUsdTestCredits.mock.calls[1]?.[0];
+    expect(firstKey).toMatch(/^wallet_test_credit_[0-9a-f-]{36}$/u);
+    expect(secondKey).toMatch(/^wallet_test_credit_[0-9a-f-]{36}$/u);
+    expect(firstKey).not.toBe(secondKey);
+  });
+
+  it('does not load wallets or show test credits when the frontend capability is disabled', async () => {
+    const listWallets = vi.fn<CreatorDropApiClient['listWallets']>();
+    renderRoute('/account', {
+      api: createTestApiClient({ listWallets }),
+      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
+    });
+
+    expect(
+      await screen.findByRole('heading', { name: authSessionResponseFixture.user.username }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('DEV ONLY')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Test Credits/u })).not.toBeInTheDocument();
+    expect(listWallets).not.toHaveBeenCalled();
   });
 
   it('clears an invalid restored session and keeps protected routes private', async () => {

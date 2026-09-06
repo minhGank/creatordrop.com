@@ -18,7 +18,7 @@ import {
 } from '../catalog/catalog.js';
 import type { UserId } from '../creators/creator.js';
 import type { FairnessService } from '../fairness/fairness.service.js';
-import type { ClientSeed } from '../fairness/fairness.js';
+import type { ClientSeed, RngSeedSetId } from '../fairness/fairness.js';
 import { IdempotencyKeyReusedError } from '../wallet/wallet.errors.js';
 import {
   claimBoxOpeningIdempotency,
@@ -58,6 +58,8 @@ export interface OpenBoxCommand {
   readonly clientSeed: ClientSeed;
   readonly expectedBoxVersionId: BoxVersionId;
   readonly expectedConfigurationHash: string;
+  readonly expectedSeedSetId: RngSeedSetId;
+  readonly expectedServerSeedCommitment: string;
   readonly idempotencyKey: string;
   readonly requestId: string;
   readonly userId: UserId;
@@ -267,6 +269,22 @@ export const buildOpeningFingerprint = (input: {
   readonly clientSeed: ClientSeed;
   readonly expectedBoxVersionId: BoxVersionId;
   readonly expectedConfigurationHash: string;
+  readonly expectedSeedSetId: RngSeedSetId;
+  readonly expectedServerSeedCommitment: string;
+  readonly userId: UserId;
+}): string =>
+  createHash('sha256')
+    .update(
+      `creatordrop:idempotency:v3|${openingOperation}|${input.userId}|${input.boxId}|${input.clientSeed}|${input.expectedBoxVersionId}|${input.expectedConfigurationHash}|${input.expectedSeedSetId}|${input.expectedServerSeedCommitment}`,
+      'utf8',
+    )
+    .digest('hex');
+
+const buildVersionTwoOpeningFingerprint = (input: {
+  readonly boxId: BoxId;
+  readonly clientSeed: ClientSeed;
+  readonly expectedBoxVersionId: BoxVersionId;
+  readonly expectedConfigurationHash: string;
   readonly userId: UserId;
 }): string =>
   createHash('sha256')
@@ -395,12 +413,23 @@ export const createOpeningService = ({
             }
             const storedBody = storedOpeningBody(claim.record.responseBody);
             const exactFingerprint = claim.record.fingerprint === fingerprint;
+            const storedFairnessMatchesExpectation =
+              storedBody.opening.fairness.seedSetId === command.expectedSeedSetId &&
+              storedBody.opening.fairness.commitment === command.expectedServerSeedCommitment;
+            const compatibleVersionTwoFingerprint =
+              claim.record.fingerprint === buildVersionTwoOpeningFingerprint(command) &&
+              storedFairnessMatchesExpectation;
             const compatibleLegacyFingerprint =
               claim.record.fingerprint === buildLegacyOpeningFingerprint(command) &&
               storedBody.opening.boxId === command.boxId &&
               storedBody.opening.boxVersionId === command.expectedBoxVersionId &&
-              storedBody.opening.fairness.configurationHash === command.expectedConfigurationHash;
-            if (!exactFingerprint && !compatibleLegacyFingerprint) {
+              storedBody.opening.fairness.configurationHash === command.expectedConfigurationHash &&
+              storedFairnessMatchesExpectation;
+            if (
+              !exactFingerprint &&
+              !compatibleVersionTwoFingerprint &&
+              !compatibleLegacyFingerprint
+            ) {
               throw new IdempotencyKeyReusedError();
             }
             return { body: storedBody, replayed: true };
@@ -430,6 +459,8 @@ export const createOpeningService = ({
           markSelectionStarted();
           const selection = await fairnessService.selectForOpening(transaction, {
             clientSeed: command.clientSeed,
+            expectedSeedSetId: command.expectedSeedSetId,
+            expectedServerSeedCommitment: command.expectedServerSeedCommitment,
             expectedManifestHash: catalog.configurationHash,
             manifest: openingManifest(catalog),
             userId: command.userId,

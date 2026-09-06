@@ -34,8 +34,8 @@ import {
   type SeedEncryptionKeyProvider,
 } from './fairness.key-provider.js';
 import {
-  FairnessAlreadyInitializedError,
   FairnessClientSeedMismatchError,
+  FairnessConfirmationStaleError,
   FairnessNotInitializedError,
   FairnessRevisionConflictError,
   OpeningFairnessProofNotFoundError,
@@ -93,12 +93,14 @@ export interface SeedRotationPolicy {
 }
 
 export interface InitializeFairnessCommand {
-  readonly clientSeed: ClientSeed;
   readonly requestId: string;
   readonly userId: UserId;
 }
 
 export interface UpdateClientSeedCommand extends InitializeFairnessCommand {
+  readonly clientSeed: ClientSeed;
+  readonly expectedSeedSetId: RngSeedSetId;
+  readonly expectedServerSeedCommitment: string;
   readonly expectedRevision: number;
 }
 
@@ -158,6 +160,8 @@ export interface FairnessService {
     transaction: TransactionExecutor,
     input: {
       readonly clientSeed: ClientSeed;
+      readonly expectedSeedSetId: RngSeedSetId;
+      readonly expectedServerSeedCommitment: string;
       readonly expectedManifestHash: string;
       readonly manifest: PublishedManifest;
       readonly userId: UserId;
@@ -199,7 +203,7 @@ const parsedTimestamp = (value: string, name: string): number => {
 };
 
 const currentFairness = (
-  profile: { readonly clientSeed: ClientSeed; readonly revision: number },
+  profile: { readonly clientSeed: ClientSeed | null; readonly revision: number },
   seedSet: PublicSeedSet,
 ): CurrentFairnessState => {
   const maxAgeMs =
@@ -304,13 +308,25 @@ const seedSetInsert = (
 
 export const allocateNextNonce = async (
   transaction: TransactionExecutor,
-  input: { readonly userId: UserId },
+  input: {
+    readonly expectedSeedSetId?: RngSeedSetId;
+    readonly expectedServerSeedCommitment?: string;
+    readonly userId: UserId;
+  },
 ): Promise<NonceAllocation> => {
   assertTransactionExecutor(transaction);
   const profile = await lockFairnessProfile(transaction, input.userId);
   if (profile === undefined) throw new FairnessNotInitializedError();
+  if (profile.clientSeed === null) throw new FairnessClientSeedMismatchError();
   const seedSet = await findActiveSeedSet(transaction, input.userId, true);
   if (seedSet === undefined) throw new SeedSetUnavailableError();
+  if (
+    (input.expectedSeedSetId !== undefined || input.expectedServerSeedCommitment !== undefined) &&
+    (seedSet.id !== input.expectedSeedSetId ||
+      seedSet.commitment !== input.expectedServerSeedCommitment)
+  ) {
+    throw new FairnessConfirmationStaleError();
+  }
 
   const allocatedNonce = await allocateSeedSetNonce(transaction, seedSet.id);
   if (allocatedNonce === undefined) throw new SeedRotationRequiredError();
@@ -818,9 +834,6 @@ export const createFairnessService = ({
     initialize: async (command) => {
       const existingProfile = await findFairnessProfile(database, command.userId);
       if (existingProfile !== undefined) {
-        if (existingProfile.clientSeed !== command.clientSeed) {
-          throw new FairnessAlreadyInitializedError();
-        }
         const active = await findActiveSeedSet(database, command.userId);
         if (active === undefined) throw new SeedSetUnavailableError();
         return { created: false, fairness: currentFairness(existingProfile, active) };
@@ -835,16 +848,13 @@ export const createFairnessService = ({
           const inserted = await insertFairnessProfile(
             transaction,
             command.userId,
-            command.clientSeed,
+            null,
             timestamp,
           );
           if (inserted === undefined) {
             const existing = await lockFairnessProfile(transaction, command.userId);
             if (existing === undefined) {
               throw new Error('Fairness profile conflict could not be read.');
-            }
-            if (existing.clientSeed !== command.clientSeed) {
-              throw new FairnessAlreadyInitializedError();
             }
             const active = await findActiveSeedSet(transaction, command.userId, true);
             if (active === undefined) throw new SeedSetUnavailableError();
@@ -991,7 +1001,11 @@ export const createFairnessService = ({
 
     selectForOpening: async (transaction, input) => {
       assertTransactionExecutor(transaction);
-      const allocation = await allocateNextNonce(transaction, { userId: input.userId });
+      const allocation = await allocateNextNonce(transaction, {
+        expectedSeedSetId: input.expectedSeedSetId,
+        expectedServerSeedCommitment: input.expectedServerSeedCommitment,
+        userId: input.userId,
+      });
       if (allocation.clientSeed !== input.clientSeed) throw new FairnessClientSeedMismatchError();
       const seedSet = await findSeedSetForUser(
         transaction,
@@ -1067,6 +1081,12 @@ export const createFairnessService = ({
         }
         const active = await findActiveSeedSet(transaction, command.userId, true);
         if (active === undefined) throw new SeedSetUnavailableError();
+        if (
+          active.id !== command.expectedSeedSetId ||
+          active.commitment !== command.expectedServerSeedCommitment
+        ) {
+          throw new FairnessConfirmationStaleError();
+        }
         if (current.clientSeed === command.clientSeed) {
           return { changed: false as const, fairness: currentFairness(current, active) };
         }
