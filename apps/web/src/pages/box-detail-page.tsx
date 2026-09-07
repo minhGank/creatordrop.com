@@ -8,6 +8,7 @@ import { useApi } from '../api/use-api.js';
 import { useApiResource } from '../api/use-api-resource.js';
 import type { SessionState } from '../auth/session-context-value.js';
 import { useSession } from '../auth/use-session.js';
+import { isOpeningV1Catalog } from '../components/opening-catalog.js';
 import { OpeningExperience } from '../components/opening-experience.js';
 import { ErrorState, LoadingState } from '../components/page-states.js';
 import { formatMinorUnits } from '../formatting/money.js';
@@ -49,7 +50,7 @@ const BoxDetailContent = ({
 }) => {
   const [box, setBox] = useState(initial.box);
   const creator = initial.creator;
-  const openable = box.version.openingCompatibilityVersion === 'opening-v1';
+  const openable = isOpeningV1Catalog(box);
   return (
     <article className="page box-detail">
       <Link className="back-link" to={`/creators/${creator.customSlug}`}>
@@ -60,9 +61,17 @@ const BoxDetailContent = ({
           <p className="eyebrow">Published version {box.version.versionNumber.toString()}</p>
           <h1>{box.version.name}</h1>
           <p className="box-description">{box.version.description}</p>
-          <p className="price">{formatMinorUnits(box.version.priceMinor, box.version.currency)}</p>
+          <p className="price">
+            {box.version.openingCompatibilityVersion === 'opening-v2'
+              ? 'Free-entry model'
+              : formatMinorUnits(box.version.priceMinor, box.version.currency)}
+          </p>
           <span className={`status-pill ${openable ? 'openable' : 'legacy'}`}>
-            {openable ? 'Opening-compatible' : 'Legacy version · cannot be opened'}
+            {openable
+              ? 'Opening-compatible'
+              : box.version.openingCompatibilityVersion === 'opening-v2'
+                ? 'Free-entry opening · available after R1B'
+                : 'Legacy version · cannot be opened'}
           </span>
         </div>
         {box.version.imageUrl === null ? (
@@ -119,7 +128,7 @@ const BoxDetailContent = ({
         </ol>
       </section>
 
-      {openable ? (
+      {isOpeningV1Catalog(box) ? (
         <OpeningExperience
           api={api}
           box={box}

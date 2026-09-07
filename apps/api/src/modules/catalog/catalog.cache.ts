@@ -7,7 +7,7 @@ import type {
   BoxVersion,
   BoxVersionRewardId,
   DraftRewardEntry,
-  PublishedManifest,
+  VersionedPublishedManifest,
   RewardVersion,
   RewardVersionId,
 } from './catalog.js';
@@ -106,6 +106,7 @@ const boxVersion = (value: unknown): BoxVersion => {
       'description',
       'id',
       'imageUrl',
+      'maxOpeningsPerUser',
       'name',
       'openingCompatibilityVersion',
       'priceMinor',
@@ -118,25 +119,49 @@ const boxVersion = (value: unknown): BoxVersion => {
     ],
     'box version',
   );
-  return {
+  const openingCompatibilityVersion =
+    row.openingCompatibilityVersion === null
+      ? null
+      : oneOf(
+          row.openingCompatibilityVersion,
+          ['opening-v1', 'opening-v2'] as const,
+          'compatibility version',
+        );
+  const common = {
     configurationHash: nullableString(row.configurationHash, 'configuration hash'),
     createdAt: timestamp(row.createdAt, 'box version created timestamp'),
-    currency: currency(row.currency, 'box currency'),
     description: string(row.description, 'box description'),
     id: uuid(row.id, 'box version ID') as BoxVersion['id'],
     imageUrl: nullableString(row.imageUrl, 'box image URL'),
     name: string(row.name, 'box name'),
-    openingCompatibilityVersion:
-      row.openingCompatibilityVersion === null
-        ? null
-        : oneOf(row.openingCompatibilityVersion, ['opening-v1'] as const, 'compatibility version'),
-    priceMinor: decimal(row.priceMinor, 'box price'),
     publishedAt: nullableTimestamp(row.publishedAt, 'publication timestamp'),
     rngAlgorithmVersion: nullableString(row.rngAlgorithmVersion, 'RNG version'),
     state: oneOf(row.state, ['draft', 'published', 'retired'] as const, 'box version state'),
     totalWeight: nullableDecimal(row.totalWeight, 'total weight'),
     updatedAt: timestamp(row.updatedAt, 'box version updated timestamp'),
     versionNumber: integer(row.versionNumber, 'box version number'),
+  };
+  if (openingCompatibilityVersion === 'opening-v2') {
+    if (row.currency !== null || row.priceMinor !== null) {
+      throw new Error('Redis returned financial opening-v2 fields.');
+    }
+    return {
+      ...common,
+      currency: null,
+      maxOpeningsPerUser: decimal(row.maxOpeningsPerUser, 'maximum openings per user'),
+      openingCompatibilityVersion,
+      priceMinor: null,
+    };
+  }
+  if (row.maxOpeningsPerUser !== null) {
+    throw new Error('Redis returned a legacy maximum openings value.');
+  }
+  return {
+    ...common,
+    currency: currency(row.currency, 'box currency'),
+    maxOpeningsPerUser: null,
+    openingCompatibilityVersion,
+    priceMinor: decimal(row.priceMinor, 'box price'),
   };
 };
 
@@ -229,7 +254,70 @@ const draftEntry = (value: unknown): DraftRewardEntry => {
   };
 };
 
-const manifest = (value: unknown): PublishedManifest => {
+const manifest = (value: unknown): VersionedPublishedManifest => {
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    (value as Record<string, unknown>).openingCompatibilityVersion === 'opening-v2'
+  ) {
+    const row = record(
+      value,
+      [
+        'algorithmVersion',
+        'boxId',
+        'boxVersionId',
+        'entries',
+        'maxOpeningsPerUser',
+        'openingCompatibilityVersion',
+        'totalWeight',
+      ],
+      'opening-v2 published manifest',
+    );
+    if (!Array.isArray(row.entries)) throw new Error('Redis returned invalid manifest entries.');
+    return {
+      algorithmVersion: oneOf(
+        row.algorithmVersion,
+        ['hmac-sha256-rejection-v1'] as const,
+        'RNG algorithm version',
+      ),
+      boxId: uuid(row.boxId, 'box ID'),
+      boxVersionId: uuid(row.boxVersionId, 'box version ID'),
+      entries: row.entries.map((item) => {
+        const entry = record(
+          item,
+          [
+            'boxVersionRewardId',
+            'position',
+            'rarity',
+            'rarityPolicyVersion',
+            'rewardVersionId',
+            'weight',
+          ],
+          'opening-v2 manifest entry',
+        );
+        return {
+          boxVersionRewardId: uuid(entry.boxVersionRewardId, 'manifest entry ID'),
+          position: integer(entry.position, 'manifest position'),
+          rarity: oneOf(
+            entry.rarity,
+            ['common', 'uncommon', 'rare', 'epic', 'legendary'] as const,
+            'manifest rarity',
+          ),
+          rarityPolicyVersion: oneOf(
+            entry.rarityPolicyVersion,
+            ['rarity-v1'] as const,
+            'manifest rarity policy',
+          ),
+          rewardVersionId: uuid(entry.rewardVersionId, 'manifest reward version ID'),
+          weight: decimal(entry.weight, 'manifest weight'),
+        };
+      }),
+      maxOpeningsPerUser: decimal(row.maxOpeningsPerUser, 'manifest maximum openings per user'),
+      openingCompatibilityVersion: 'opening-v2',
+      totalWeight: decimal(row.totalWeight, 'manifest total weight'),
+    };
+  }
   const row = record(
     value,
     [
@@ -293,20 +381,30 @@ export const parseCachedPublishedCatalog = (
     result.version.state !== 'published' ||
     result.version.configurationHash !== result.configurationHash ||
     result.version.id !== result.manifest.boxVersionId ||
-    result.version.priceMinor !== result.manifest.priceMinor ||
     result.version.totalWeight !== result.manifest.totalWeight ||
     result.version.rngAlgorithmVersion !== result.manifest.algorithmVersion ||
     result.manifest.boxId !== expectedBoxId ||
     (expectedVersionId !== undefined && result.version.id !== expectedVersionId) ||
     hashPublishedManifest(result.manifest) !== result.configurationHash ||
     result.entries.length !== result.manifest.entries.length ||
+    (result.version.openingCompatibilityVersion === 'opening-v2'
+      ? !('openingCompatibilityVersion' in result.manifest) ||
+        result.version.maxOpeningsPerUser !== result.manifest.maxOpeningsPerUser
+      : 'openingCompatibilityVersion' in result.manifest ||
+        result.version.priceMinor !== result.manifest.priceMinor ||
+        result.version.currency !== result.manifest.currency) ||
     result.entries.some((item, index) => {
       const canonical = result.manifest.entries[index];
       return (
         item.id !== canonical?.boxVersionRewardId ||
         item.position !== canonical.position ||
         item.rewardVersion.id !== canonical.rewardVersionId ||
-        item.weight !== canonical.weight
+        item.weight !== canonical.weight ||
+        ('openingCompatibilityVersion' in result.manifest &&
+          (!('rarity' in canonical) ||
+            item.rarity !== canonical.rarity ||
+            item.rarityPolicyVersion !== canonical.rarityPolicyVersion ||
+            item.isBaseReward))
       );
     })
   ) {

@@ -44,6 +44,7 @@ const phase13Migrations = [
 const phase15Migrations = [
   '20260905065856_phase15_rarity_and_fairness_proof.sql',
   '20260906194037_phase15_fairness_confirmation_binding.sql',
+  '20260907185800_r1a_opening_v2_entitlements.sql',
 ] as const;
 
 const migrationSql = (fileName: string): Promise<string> =>
@@ -364,6 +365,7 @@ describe('Phase 8 to current forward migration', { concurrent: false }, () => {
         readonly boxXmin: string;
         readonly compatibility: string | null;
         readonly entryXmin: string;
+        readonly maxOpeningsPerUser: string | null;
         readonly priceMinor: string;
         readonly rarity: string | null;
         readonly rarityPolicyVersion: string | null;
@@ -372,6 +374,7 @@ describe('Phase 8 to current forward migration', { concurrent: false }, () => {
       }>(
         `select version.xmin::text as "boxXmin", entry.xmin::text as "entryXmin",
                 version.price_minor::text as "priceMinor",
+                version.max_openings_per_user::text as "maxOpeningsPerUser",
                 entry.reward_version_id::text as "rewardVersionId",
                 entry.weight::text as weight,
                 entry.rarity,
@@ -389,6 +392,7 @@ describe('Phase 8 to current forward migration', { concurrent: false }, () => {
           ...beforeRow,
           baseCount: '0',
           compatibility: null,
+          maxOpeningsPerUser: null,
           rarity: null,
           rarityPolicyVersion: null,
         },

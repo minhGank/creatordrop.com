@@ -20,6 +20,8 @@ const positiveDecimalPattern = /^[1-9][0-9]*$/u;
 interface ParsedEntry {
   readonly boxVersionRewardId: string;
   readonly position: number;
+  readonly rarity?: 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
+  readonly rarityPolicyVersion?: 'rarity-v1';
   readonly rewardVersionId: string;
   readonly weight: bigint;
   readonly weightText: string;
@@ -29,9 +31,11 @@ interface ParsedManifest {
   readonly algorithmVersion: typeof algorithmVersion;
   readonly boxId: string;
   readonly boxVersionId: string;
-  readonly currency: string;
+  readonly currency?: string;
   readonly entries: readonly ParsedEntry[];
-  readonly priceMinor: string;
+  readonly maxOpeningsPerUser?: string;
+  readonly openingCompatibilityVersion?: 'opening-v2';
+  readonly priceMinor?: string;
   readonly totalWeight: bigint;
   readonly totalWeightText: string;
 }
@@ -88,6 +92,78 @@ const positiveSignedDecimal = (
 };
 
 const parseManifest = (value: unknown): ParsedManifest => {
+  if (isObject(value) && value.openingCompatibilityVersion === 'opening-v2') {
+    const manifest = objectWithFields(
+      value,
+      [
+        'algorithmVersion',
+        'boxId',
+        'boxVersionId',
+        'entries',
+        'maxOpeningsPerUser',
+        'openingCompatibilityVersion',
+        'totalWeight',
+      ],
+      'MALFORMED_MANIFEST',
+    );
+    if (manifest.algorithmVersion !== algorithmVersion) {
+      throw new VerifierError('UNSUPPORTED_ALGORITHM');
+    }
+    if (!Array.isArray(manifest.entries) || manifest.entries.length === 0) {
+      throw new VerifierError('NO_SELECTABLE_REWARD');
+    }
+    const rarities = ['common', 'uncommon', 'rare', 'epic', 'legendary'] as const;
+    const entries = Array.from(manifest.entries, (input, expectedPosition): ParsedEntry => {
+      const entry = objectWithFields(
+        input,
+        [
+          'boxVersionRewardId',
+          'position',
+          'rarity',
+          'rarityPolicyVersion',
+          'rewardVersionId',
+          'weight',
+        ],
+        'MALFORMED_MANIFEST',
+      );
+      if (
+        entry.position !== expectedPosition ||
+        typeof entry.rarity !== 'string' ||
+        !rarities.includes(entry.rarity as (typeof rarities)[number]) ||
+        entry.rarityPolicyVersion !== 'rarity-v1'
+      ) {
+        throw new VerifierError('MALFORMED_MANIFEST');
+      }
+      const weight = positiveSignedDecimal(entry.weight, 'INVALID_WEIGHT');
+      return {
+        boxVersionRewardId: uuid(entry.boxVersionRewardId, 'MALFORMED_MANIFEST'),
+        position: expectedPosition,
+        rarity: entry.rarity as NonNullable<ParsedEntry['rarity']>,
+        rarityPolicyVersion: 'rarity-v1',
+        rewardVersionId: uuid(entry.rewardVersionId, 'MALFORMED_MANIFEST'),
+        weight,
+        weightText: weight.toString(),
+      };
+    });
+    validateParsedEntries(entries);
+    const totalWeight = positiveSignedDecimal(manifest.totalWeight, 'INVALID_WEIGHT');
+    if (entries.reduce((sum, entry) => sum + entry.weight, 0n) !== totalWeight) {
+      throw new VerifierError('TOTAL_WEIGHT_MISMATCH');
+    }
+    return {
+      algorithmVersion,
+      boxId: uuid(manifest.boxId, 'MALFORMED_MANIFEST'),
+      boxVersionId: uuid(manifest.boxVersionId, 'MALFORMED_MANIFEST'),
+      entries,
+      maxOpeningsPerUser: positiveSignedDecimal(
+        manifest.maxOpeningsPerUser,
+        'MALFORMED_MANIFEST',
+      ).toString(),
+      openingCompatibilityVersion: 'opening-v2',
+      totalWeight,
+      totalWeightText: totalWeight.toString(),
+    };
+  }
   const manifest = objectWithFields(
     value,
     [
@@ -132,12 +208,7 @@ const parseManifest = (value: unknown): ParsedManifest => {
       weightText: weight.toString(),
     };
   });
-  if (
-    new Set(entries.map(({ boxVersionRewardId }) => boxVersionRewardId)).size !== entries.length ||
-    new Set(entries.map(({ rewardVersionId }) => rewardVersionId)).size !== entries.length
-  ) {
-    throw new VerifierError('MALFORMED_MANIFEST');
-  }
+  validateParsedEntries(entries);
 
   let sum = 0n;
   for (const entry of entries) {
@@ -160,9 +231,35 @@ const parseManifest = (value: unknown): ParsedManifest => {
   };
 };
 
+function validateParsedEntries(entries: readonly ParsedEntry[]): void {
+  if (
+    new Set(entries.map(({ boxVersionRewardId }) => boxVersionRewardId)).size !== entries.length ||
+    new Set(entries.map(({ rewardVersionId }) => rewardVersionId)).size !== entries.length
+  ) {
+    throw new VerifierError('MALFORMED_MANIFEST');
+  }
+}
+
 const quote = (value: string): string => JSON.stringify(value);
 
 const canonicalManifest = (manifest: ParsedManifest): string => {
+  if (manifest.openingCompatibilityVersion === 'opening-v2') {
+    if (manifest.maxOpeningsPerUser === undefined) {
+      throw new VerifierError('MALFORMED_MANIFEST');
+    }
+    const entries = manifest.entries
+      .map((entry) => {
+        if (entry.rarity === undefined || entry.rarityPolicyVersion === undefined) {
+          throw new VerifierError('MALFORMED_MANIFEST');
+        }
+        return `{"boxVersionRewardId":${quote(entry.boxVersionRewardId)},"position":${entry.position.toString()},"rarity":${quote(entry.rarity)},"rarityPolicyVersion":${quote(entry.rarityPolicyVersion)},"rewardVersionId":${quote(entry.rewardVersionId)},"weight":${quote(entry.weightText)}}`;
+      })
+      .join(',');
+    return `{"algorithmVersion":${quote(manifest.algorithmVersion)},"boxId":${quote(manifest.boxId)},"boxVersionId":${quote(manifest.boxVersionId)},"entries":[${entries}],"maxOpeningsPerUser":${quote(manifest.maxOpeningsPerUser)},"openingCompatibilityVersion":"opening-v2","totalWeight":${quote(manifest.totalWeightText)}}`;
+  }
+  if (manifest.currency === undefined || manifest.priceMinor === undefined) {
+    throw new VerifierError('MALFORMED_MANIFEST');
+  }
   const entries = manifest.entries
     .map(
       (entry) =>

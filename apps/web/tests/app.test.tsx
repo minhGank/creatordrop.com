@@ -76,6 +76,12 @@ const rectangle = (left: number, width: number): DOMRect => ({
 const committedVersionB = (
   options: { readonly priceMinor?: string; readonly uniqueWinner?: boolean } = {},
 ): { readonly box: PublishedBoxVersionResponse; readonly opening: BoxOpeningResponse } => {
+  if (
+    'openingCompatibilityVersion' in publishedBoxFixture.manifest ||
+    publishedBoxFixture.version.openingCompatibilityVersion !== 'opening-v1'
+  ) {
+    throw new Error('Expected an opening-v1 fixture.');
+  }
   const versionId = '00000000-0000-4000-8000-000000000105';
   const first = publishedBoxFixture.entries[0];
   const second = publishedBoxFixture.entries[1];
@@ -135,7 +141,7 @@ const committedVersionB = (
     opening: {
       ...boxOpeningFixture.opening,
       boxVersionId: versionId,
-      cost: { currency: box.version.currency, priceMinor },
+      cost: { currency: publishedBoxFixture.version.currency, priceMinor },
       fairness: { ...boxOpeningFixture.opening.fairness, configurationHash },
       pointsAwarded: 5,
       reward: {
@@ -235,6 +241,71 @@ describe('Phase 14 web shell', () => {
     expect(screen.queryByRole('button', { name: /open/i })).not.toBeInTheDocument();
   });
 
+  it('keeps technical fairness values in an optional advanced disclosure', async () => {
+    const user = userEvent.setup();
+    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
+      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
+    });
+
+    await user.click(await screen.findByRole('button', { name: 'Open this box' }));
+    const confirmationHeading = await screen.findByRole('heading', { name: 'Open First Drop?' });
+    const confirmation = confirmationHeading.closest('section');
+    if (confirmation === null) throw new Error('Expected the opening confirmation section.');
+    const details = confirmation.querySelector<HTMLDetailsElement>(
+      '.opening-confirmation-fairness',
+    );
+    if (details === null) throw new Error('Expected the fairness disclosure.');
+
+    expect(within(confirmation).getByText('$9.99')).toBeVisible();
+    expect(
+      within(confirmation).getByText('This amount will be deducted from your wallet.'),
+    ).toBeVisible();
+    expect(within(confirmation).getByText('Provably fair')).toBeVisible();
+    expect(details).not.toHaveAttribute('open');
+    expect(
+      within(confirmation).getByText(currentFairnessFixture.fairness.activeSeedSet.commitment),
+    ).not.toBeVisible();
+    expect(
+      within(confirmation).getByText(currentFairnessFixture.fairness.activeSeedSet.id),
+    ).not.toBeVisible();
+    expect(within(confirmation).getByLabelText('Client seed')).not.toBeVisible();
+    expect(within(confirmation).queryByText(/exact confirmed version/u)).not.toBeInTheDocument();
+
+    await user.click(within(confirmation).getByText('Fairness details'));
+    expect(details).toHaveAttribute('open');
+    expect(
+      within(confirmation).getByText(currentFairnessFixture.fairness.activeSeedSet.commitment),
+    ).toBeVisible();
+    expect(
+      within(confirmation).getByText(currentFairnessFixture.fairness.activeSeedSet.id),
+    ).toBeVisible();
+    const clientSeedInput = within(confirmation).getByLabelText('Client seed');
+    expect(clientSeedInput).toBeVisible();
+    const previousClientSeed = currentFairnessFixture.fairness.clientSeed;
+    await user.click(
+      within(confirmation).getByRole('button', { name: 'Generate a new client seed' }),
+    );
+    expect((clientSeedInput as HTMLInputElement).value).toMatch(/^[0-9a-f]{64}$/u);
+    expect(clientSeedInput).not.toHaveValue(previousClientSeed);
+  });
+
+  it('cancels confirmation without submitting an opening', async () => {
+    const openBox = vi.fn(() => Promise.resolve(boxOpeningFixture));
+    const user = userEvent.setup();
+    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
+      api: createTestApiClient({ openBox }),
+      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
+    });
+
+    await user.click(await screen.findByRole('button', { name: 'Open this box' }));
+    expect(await screen.findByRole('heading', { name: 'Open First Drop?' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(screen.queryByRole('heading', { name: 'Open First Drop?' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open this box' })).toBeInTheDocument();
+    expect(openBox).not.toHaveBeenCalled();
+  });
+
   it('opens once, reuses one idempotency key after a lost response, and reveals the committed result', async () => {
     const user = userEvent.setup();
     const initializeFairness = vi.fn(() => Promise.resolve(currentFairnessFixture));
@@ -254,9 +325,9 @@ describe('Phase 14 web shell', () => {
 
     await user.click(await screen.findByRole('button', { name: 'Open this box' }));
     expect(screen.getByRole('heading', { name: 'Open First Drop?' })).toHaveFocus();
-    await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
+    await user.click(screen.getByRole('button', { name: 'Open box' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('The response was lost.');
-    await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
+    await user.click(screen.getByRole('button', { name: 'Open box' }));
     expect(
       await screen.findByRole('heading', { name: 'Unwrapping your reward…' }),
     ).toBeInTheDocument();
@@ -336,14 +407,17 @@ describe('Phase 14 web shell', () => {
       currentFairnessFixture.fairness.activeSeedSet.id,
       currentFairnessFixture.fairness.activeSeedSet.commitment,
     ]);
+    expect(screen.getByLabelText('Client seed')).not.toBeVisible();
+    await user.click(screen.getByText('Fairness details'));
+    expect(screen.getByLabelText('Client seed')).toBeVisible();
     expect(screen.getByLabelText('Client seed')).toHaveValue(generatedClientSeed);
     expect(
       screen.getByText(currentFairnessFixture.fairness.activeSeedSet.commitment),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/does not reveal the hidden server seed/u)).toBeInTheDocument();
+    ).toBeVisible();
+    expect(screen.getByText(/fixed a hidden server seed before this opening/u)).toBeVisible();
     expect(openBox).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
+    await user.click(screen.getByRole('button', { name: 'Open box' }));
     expect(openBox).toHaveBeenCalledOnce();
     expect(openBox.mock.calls[0]?.[1]).toBe(generatedClientSeed);
     expect(openBox.mock.calls[0]?.slice(5)).toEqual([
@@ -398,12 +472,13 @@ describe('Phase 14 web shell', () => {
     expect(getCurrentFairness).toHaveBeenCalledTimes(3);
     expect(initializeFairness).toHaveBeenCalledOnce();
     expect(updateCurrentClientSeed).toHaveBeenCalledOnce();
+    await user.click(screen.getByText('Fairness details'));
     expect(screen.getByLabelText('Client seed')).toHaveValue(
       currentFairnessFixture.fairness.clientSeed,
     );
     expect(openBox).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
+    await user.click(screen.getByRole('button', { name: 'Open box' }));
     expect(openBox).toHaveBeenCalledOnce();
     expect(openBox.mock.calls[0]?.[1]).toBe(currentFairnessFixture.fairness.clientSeed);
   });
@@ -453,13 +528,13 @@ describe('Phase 14 web shell', () => {
     expect(
       screen.getByText(currentFairnessFixture.fairness.activeSeedSet.commitment),
     ).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
+    await user.click(screen.getByRole('button', { name: 'Open box' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('commitment changed');
     expect(openBox).toHaveBeenCalledOnce();
     expect(screen.getByText(rotatedFairness.fairness.activeSeedSet.commitment)).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
+    await user.click(screen.getByRole('button', { name: 'Open box' }));
     expect(
       await screen.findByRole('heading', { name: 'Unwrapping your reward…' }),
     ).toBeInTheDocument();
@@ -523,7 +598,7 @@ describe('Phase 14 web shell', () => {
     });
 
     await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-    await user.dblClick(screen.getByRole('button', { name: 'Confirm and open' }));
+    await user.dblClick(screen.getByRole('button', { name: 'Open box' }));
     expect(openBox).toHaveBeenCalledOnce();
     act(() => pending.resolve(boxOpeningFixture));
     expect(
@@ -563,7 +638,7 @@ describe('Phase 14 web shell', () => {
           auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
         });
         await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-        await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
+        await user.click(screen.getByRole('button', { name: 'Open box' }));
         const reel = await waitFor(() => {
           const candidate = document.querySelector<HTMLOListElement>('.reel-track');
           if (candidate === null) throw new Error('Expected the reel track.');
@@ -621,7 +696,7 @@ describe('Phase 14 web shell', () => {
       });
 
       await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-      await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
+      await user.click(screen.getByRole('button', { name: 'Open box' }));
       await user.click(await screen.findByRole('button', { name: 'Skip to reveal' }));
 
       const heading = await screen.findByRole('heading', { level: 2, name: 'Rare reward' });
@@ -663,7 +738,7 @@ describe('Phase 14 web shell', () => {
     const confirmation = confirmationHeading.closest('section');
     if (confirmation === null) throw new Error('Expected the opening confirmation section.');
     expect(within(confirmation).getByText(/\$100\.00/u)).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
+    await user.click(screen.getByRole('button', { name: 'Open box' }));
     expect(
       await screen.findByRole('heading', { name: 'Unwrapping your reward…' }),
     ).toBeInTheDocument();
@@ -733,7 +808,7 @@ describe('Phase 14 web shell', () => {
     const firstConfirmation = firstConfirmationHeading.closest('section');
     if (firstConfirmation === null) throw new Error('Expected the opening confirmation section.');
     expect(within(firstConfirmation).getByText(/\$9\.99/u)).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
+    await user.click(screen.getByRole('button', { name: 'Open box' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('box changed');
     const secondConfirmationHeading = screen.getByRole('heading', { name: 'Open Second Drop?' });
@@ -742,7 +817,7 @@ describe('Phase 14 web shell', () => {
     expect(within(secondConfirmation).getByText(/\$100\.00/u)).toBeInTheDocument();
     expect(openBox).toHaveBeenCalledOnce();
 
-    await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
+    await user.click(screen.getByRole('button', { name: 'Open box' }));
     expect(
       await screen.findByRole('heading', { name: 'Unwrapping your reward…' }),
     ).toBeInTheDocument();
@@ -823,7 +898,7 @@ describe('Phase 14 web shell', () => {
     });
 
     await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-    await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
+    await user.click(screen.getByRole('button', { name: 'Open box' }));
     expect(
       await screen.findByRole('heading', { name: 'Your result is safely recorded' }),
     ).toBeInTheDocument();
@@ -857,7 +932,7 @@ describe('Phase 14 web shell', () => {
     });
 
     await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-    await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
+    await user.click(screen.getByRole('button', { name: 'Open box' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(message);
     expect(screen.queryByText('Your reward')).not.toBeInTheDocument();
@@ -885,7 +960,7 @@ describe('Phase 14 web shell', () => {
       );
 
       await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-      await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
+      await user.click(screen.getByRole('button', { name: 'Open box' }));
       expect(await screen.findByRole('alert')).toHaveTextContent(code);
       expect(
         window.sessionStorage.getItem(
@@ -918,7 +993,7 @@ describe('Phase 14 web shell', () => {
     );
 
     await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-    await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
+    await user.click(screen.getByRole('button', { name: 'Open box' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('response was lost');
     const stored = window.sessionStorage.getItem(
       `creatordrop:opening:v1:${publishedBoxFixture.manifest.boxId}`,
@@ -961,7 +1036,7 @@ describe('Phase 14 web shell', () => {
     );
 
     await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-    await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
+    await user.click(screen.getByRole('button', { name: 'Open box' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('same request');
     const stored = window.sessionStorage.getItem(
       `creatordrop:opening:v1:${publishedBoxFixture.manifest.boxId}`,
@@ -981,7 +1056,7 @@ describe('Phase 14 web shell', () => {
     await act(() => Promise.resolve());
     expect(openBox).toHaveBeenCalledOnce();
     await user.click(screen.getByRole('button', { name: 'Open this box' }));
-    await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
+    await user.click(screen.getByRole('button', { name: 'Open box' }));
     expect(
       await screen.findByRole('heading', { name: 'Unwrapping your reward…' }),
     ).toBeInTheDocument();
@@ -1007,7 +1082,7 @@ describe('Phase 14 web shell', () => {
     });
 
     await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-    await user.click(screen.getByRole('button', { name: 'Confirm and open' }));
+    await user.click(screen.getByRole('button', { name: 'Open box' }));
 
     expect(
       await screen.findByRole('heading', { level: 2, name: 'Base reward' }),

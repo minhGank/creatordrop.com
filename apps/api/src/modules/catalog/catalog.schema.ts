@@ -19,13 +19,25 @@ import type {
   RewardVersionId,
 } from './catalog.js';
 
-export interface BoxDraftInput {
+export interface LegacyBoxDraftInput {
   readonly currency: string;
   readonly description: string;
   readonly imageUrl: string | null;
   readonly name: string;
   readonly priceMinor: MoneyMinor;
 }
+
+export interface OpeningV2BoxDraftInput {
+  readonly currency: null;
+  readonly description: string;
+  readonly imageUrl: string | null;
+  readonly maxOpeningsPerUser: bigint;
+  readonly name: string;
+  readonly openingCompatibilityVersion: 'opening-v2';
+  readonly priceMinor: null;
+}
+
+export type BoxDraftInput = LegacyBoxDraftInput | OpeningV2BoxDraftInput;
 
 export interface RewardDraftInput {
   readonly declaredValueCurrency: string | null;
@@ -46,6 +58,17 @@ export interface DraftRewardConfigurationInput {
     readonly weight: ProbabilityWeight;
   }[];
 }
+
+export interface OpeningV2DraftRewardConfigurationInput {
+  readonly entries: readonly {
+    readonly rewardVersionId: RewardVersionId;
+    readonly weight: ProbabilityWeight;
+  }[];
+  readonly openingCompatibilityVersion: 'opening-v2';
+}
+
+export type VersionedDraftRewardConfigurationInput =
+  DraftRewardConfigurationInput | OpeningV2DraftRewardConfigurationInput;
 
 const positiveDecimalPattern = /^[1-9][0-9]*$/u;
 const nonnegativeDecimalPattern = /^(0|[1-9][0-9]*)$/u;
@@ -147,6 +170,28 @@ export const parseCatalogCreatorId = (value: string | undefined): CreatorId =>
 
 export const parseBoxDraftInput = (body: unknown): BoxDraftInput => {
   const record = requireRecord(body);
+  if (record.openingCompatibilityVersion === 'opening-v2') {
+    rejectUnknownFields(record, [
+      'description',
+      'imageUrl',
+      'maxOpeningsPerUser',
+      'name',
+      'openingCompatibilityVersion',
+    ]);
+    return {
+      currency: null,
+      description: limitedString(record, 'description', 0, 5000),
+      imageUrl: optionalHttpsUrl(record),
+      maxOpeningsPerUser: parseBigint(
+        record.maxOpeningsPerUser,
+        'maxOpeningsPerUser',
+        positiveDecimalPattern,
+      ),
+      name: limitedString(record, 'name', 1, 120),
+      openingCompatibilityVersion: 'opening-v2',
+      priceMinor: null,
+    };
+  }
   rejectUnknownFields(record, ['currency', 'description', 'imageUrl', 'name', 'priceMinor']);
   const currency = requireString(record, 'currency');
   if (!currencyPattern.test(currency)) {
@@ -255,9 +300,12 @@ export const parseRewardDraftInput = (body: unknown): RewardDraftInput => {
   };
 };
 
-export const parseDraftRewardConfiguration = (body: unknown): DraftRewardConfigurationInput => {
+export const parseDraftRewardConfiguration = (
+  body: unknown,
+): VersionedDraftRewardConfigurationInput => {
   const record = requireRecord(body);
-  rejectUnknownFields(record, ['entries']);
+  const openingV2 = record.openingCompatibilityVersion === 'opening-v2';
+  rejectUnknownFields(record, openingV2 ? ['entries', 'openingCompatibilityVersion'] : ['entries']);
   if (!Array.isArray(record.entries) || record.entries.length > 1000) {
     throw validationError('entries must be an array containing at most 1000 rewards.', {
       field: 'entries',
@@ -266,7 +314,10 @@ export const parseDraftRewardConfiguration = (body: unknown): DraftRewardConfigu
   const seen = new Set<string>();
   const entries = record.entries.map((value, position) => {
     const entry = requireRecord(value);
-    rejectUnknownFields(entry, ['isBaseReward', 'rewardVersionId', 'weight']);
+    rejectUnknownFields(
+      entry,
+      openingV2 ? ['rewardVersionId', 'weight'] : ['isBaseReward', 'rewardVersionId', 'weight'],
+    );
     const rewardVersionId = parseRewardVersionId(
       typeof entry.rewardVersionId === 'string' ? entry.rewardVersionId : undefined,
     );
@@ -275,19 +326,21 @@ export const parseDraftRewardConfiguration = (body: unknown): DraftRewardConfigu
         field: `entries[${position.toString()}].rewardVersionId`,
       });
     }
-    if (typeof entry.isBaseReward !== 'boolean') {
+    if (!openingV2 && typeof entry.isBaseReward !== 'boolean') {
       throw validationError('isBaseReward must be a boolean.', {
         field: `entries[${position.toString()}].isBaseReward`,
       });
     }
     seen.add(rewardVersionId);
     return {
-      isBaseReward: entry.isBaseReward,
+      ...(openingV2 ? {} : { isBaseReward: entry.isBaseReward as boolean }),
       rewardVersionId,
       weight: parseBigint(entry.weight, 'weight', positiveDecimalPattern) as ProbabilityWeight,
     };
   });
-  return { entries };
+  return openingV2
+    ? { entries, openingCompatibilityVersion: 'opening-v2' }
+    : ({ entries } as DraftRewardConfigurationInput);
 };
 
 export const parseExpectedCatalogRevision = (value: string | undefined): number => {

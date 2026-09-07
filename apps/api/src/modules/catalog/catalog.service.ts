@@ -22,6 +22,7 @@ import {
   type CatalogCacheIdentity,
 } from './catalog.cache.js';
 import {
+  createOpeningV2PublishedManifest,
   createPublishedManifest,
   hashPublishedManifest,
   rngAlgorithmVersion,
@@ -58,7 +59,11 @@ import {
   updateRewardDraft,
   type ConfigurationEntryRecord,
 } from './catalog.repository.js';
-import type { BoxDraftInput, RewardDraftInput } from './catalog.schema.js';
+import type {
+  BoxDraftInput,
+  RewardDraftInput,
+  VersionedDraftRewardConfigurationInput,
+} from './catalog.schema.js';
 import type {
   Box,
   BoxId,
@@ -68,7 +73,7 @@ import type {
   DraftRewardEntry,
   MoneyMinor,
   ProbabilityWeight,
-  PublishedManifest,
+  VersionedPublishedManifest,
   Reward,
   RewardId,
   RewardVersion,
@@ -84,7 +89,7 @@ interface CreatorCommand extends AuditContext {
   readonly creatorId: CreatorId;
 }
 
-export interface CreateBoxCommand extends CreatorCommand, BoxDraftInput {}
+export type CreateBoxCommand = CreatorCommand & BoxDraftInput;
 export interface CreateRewardCommand extends CreatorCommand, RewardDraftInput {}
 
 export interface BoxCommand extends CreatorCommand {
@@ -95,22 +100,19 @@ export interface RewardCommand extends CreatorCommand {
   readonly rewardId: RewardId;
 }
 
-export interface UpdateBoxCommand extends BoxCommand, BoxDraftInput {
-  readonly expectedRevision: number;
-}
+export type UpdateBoxCommand = BoxCommand &
+  BoxDraftInput & {
+    readonly expectedRevision: number;
+  };
 
 export interface UpdateRewardCommand extends RewardCommand, RewardDraftInput {
   readonly expectedRevision: number;
 }
 
-export interface ReplaceConfigurationCommand extends BoxCommand {
-  readonly entries: readonly {
-    readonly isBaseReward: boolean;
-    readonly rewardVersionId: RewardVersionId;
-    readonly weight: ProbabilityWeight;
-  }[];
-  readonly expectedRevision: number;
-}
+export type ReplaceConfigurationCommand = BoxCommand &
+  VersionedDraftRewardConfigurationInput & {
+    readonly expectedRevision: number;
+  };
 
 export interface RevisionedBoxCommand extends BoxCommand {
   readonly expectedRevision: number;
@@ -128,7 +130,7 @@ export interface CatalogReadScope {
 export interface PublishedCatalogVersion {
   readonly configurationHash: string;
   readonly entries: readonly DraftRewardEntry[];
-  readonly manifest: PublishedManifest;
+  readonly manifest: VersionedPublishedManifest;
   readonly version: BoxVersion;
 }
 
@@ -280,18 +282,37 @@ export const buildPublishedCatalog = async (
     throw new Error('Published box version is internally inconsistent.');
   }
   const records = await listPublishedConfiguration(executor, version.id);
-  const manifest = createPublishedManifest({
-    boxId,
-    boxVersionId: version.id,
-    currency: version.currency,
-    entries: records.map(({ entry }) => ({
-      id: entry.id,
-      position: entry.position,
-      rewardVersionId: entry.rewardVersion.id,
-      weight: asWeight(entry.weight),
-    })),
-    priceMinor: asMoney(version.priceMinor),
-  });
+  const manifest =
+    version.openingCompatibilityVersion === 'opening-v2'
+      ? createOpeningV2PublishedManifest({
+          boxId,
+          boxVersionId: version.id,
+          entries: records.map(({ entry }) => {
+            if (entry.rarity === null || entry.rarityPolicyVersion !== 'rarity-v1') {
+              throw new Error('opening-v2 published entry is missing its rarity snapshot.');
+            }
+            return {
+              id: entry.id,
+              position: entry.position,
+              rarity: entry.rarity,
+              rewardVersionId: entry.rewardVersion.id,
+              weight: asWeight(entry.weight),
+            };
+          }),
+          maxOpeningsPerUser: BigInt(version.maxOpeningsPerUser),
+        })
+      : createPublishedManifest({
+          boxId,
+          boxVersionId: version.id,
+          currency: version.currency,
+          entries: records.map(({ entry }) => ({
+            id: entry.id,
+            position: entry.position,
+            rewardVersionId: entry.rewardVersion.id,
+            weight: asWeight(entry.weight),
+          })),
+          priceMinor: asMoney(version.priceMinor),
+        });
   const hash = hashPublishedManifest(manifest);
   if (manifest.totalWeight !== version.totalWeight || hash !== version.configurationHash) {
     throw new Error('Published manifest does not match its stored integrity metadata.');
@@ -304,17 +325,27 @@ export const buildPublishedCatalog = async (
   };
 };
 
-const validatePublicationEntries = (records: readonly ConfigurationEntryRecord[]): void => {
+const validatePublicationEntries = (
+  records: readonly ConfigurationEntryRecord[],
+  compatibility: 'opening-v1' | 'opening-v2' | null,
+): void => {
   if (records.length === 0) {
     throw new CatalogPublicationError(
       'EMPTY_CONFIGURATION',
       'A box draft requires at least one reward before publication.',
     );
   }
-  if (records.filter(({ entry }) => entry.isBaseReward).length !== 1) {
+  const baseRewardCount = records.filter(({ entry }) => entry.isBaseReward).length;
+  if (compatibility === 'opening-v1' && baseRewardCount !== 1) {
     throw new CatalogPublicationError(
       'BASE_REWARD_INVALID',
       'An opening-v1 box draft requires exactly one explicitly designated base reward.',
+    );
+  }
+  if (compatibility === 'opening-v2' && baseRewardCount !== 0) {
+    throw new CatalogPublicationError(
+      'BASE_REWARD_INVALID',
+      'An opening-v2 box draft must not use legacy base-reward semantics.',
     );
   }
   for (const { entry, rewardStatus } of records) {
@@ -601,11 +632,28 @@ export const createCatalogService = ({
             'Every configured reward version must be active and belong to this creator.',
           );
         }
+        const requestedCompatibility =
+          'openingCompatibilityVersion' in command ? 'opening-v2' : 'opening-v1';
+        if (
+          box.draft !== null &&
+          ((requestedCompatibility === 'opening-v2' &&
+            box.draft.openingCompatibilityVersion !== 'opening-v2') ||
+            (requestedCompatibility === 'opening-v1' &&
+              box.draft.openingCompatibilityVersion === 'opening-v2'))
+        ) {
+          throw new CatalogDraftConflictError(
+            'The reward configuration model must match the box draft model.',
+          );
+        }
         await replaceDraftConfiguration(
           transaction,
           command.creatorId,
           command.boxId,
-          command.entries.map((entry) => ({ ...entry, id: asEntryId(createId()) })),
+          command.entries.map((entry) => ({
+            ...entry,
+            id: asEntryId(createId()),
+          })),
+          requestedCompatibility,
         );
         await incrementBoxRevision(transaction, command.creatorId, command.boxId);
       });
@@ -647,7 +695,10 @@ export const createCatalogService = ({
           command.creatorId,
           command.boxId,
         );
-        validatePublicationEntries(preflightRecords);
+        validatePublicationEntries(
+          preflightRecords,
+          preflightBox.draft.openingCompatibilityVersion,
+        );
         const lockedInventory = await lockBoxPublicationInventoryPools(
           transaction,
           preflightBox.draft.id,
@@ -668,25 +719,16 @@ export const createCatalogService = ({
           throw new CatalogRevisionConflictError(box.revision);
         }
         const records = await listDraftConfiguration(transaction, command.creatorId, command.boxId);
-        validatePublicationEntries(records);
-        if (lockedDraft.openingCompatibilityVersion !== 'opening-v1') {
+        validatePublicationEntries(records, lockedDraft.openingCompatibilityVersion);
+        if (
+          lockedDraft.openingCompatibilityVersion !== 'opening-v1' &&
+          lockedDraft.openingCompatibilityVersion !== 'opening-v2'
+        ) {
           throw new CatalogPublicationError(
             'BASE_REWARD_INVALID',
-            'Legacy drafts must be explicitly reconfigured before they can be published for opening.',
+            'Legacy drafts must be explicitly reconfigured before publication.',
           );
         }
-        const manifest = createPublishedManifest({
-          boxId: box.id,
-          boxVersionId: lockedDraft.id,
-          currency: lockedDraft.currency,
-          entries: records.map(({ entry }) => ({
-            id: entry.id,
-            position: entry.position,
-            rewardVersionId: entry.rewardVersion.id,
-            weight: asWeight(entry.weight),
-          })),
-          priceMinor: asMoney(lockedDraft.priceMinor),
-        });
         const totalWeight = totalProbabilityWeight(
           records.map(({ entry }) => ({
             id: entry.id,
@@ -695,15 +737,38 @@ export const createCatalogService = ({
             weight: asWeight(entry.weight),
           })),
         );
+        const raritySnapshots = records.map(({ entry }) => ({
+          entryId: entry.id,
+          rarity: deriveRarityV1(BigInt(entry.weight), totalWeight),
+        }));
+        const manifest =
+          lockedDraft.openingCompatibilityVersion === 'opening-v2'
+            ? createOpeningV2PublishedManifest({
+                boxId: box.id,
+                boxVersionId: lockedDraft.id,
+                entries: records.map(({ entry }) => ({
+                  id: entry.id,
+                  position: entry.position,
+                  rarity: deriveRarityV1(BigInt(entry.weight), totalWeight),
+                  rewardVersionId: entry.rewardVersion.id,
+                  weight: asWeight(entry.weight),
+                })),
+                maxOpeningsPerUser: BigInt(lockedDraft.maxOpeningsPerUser),
+              })
+            : createPublishedManifest({
+                boxId: box.id,
+                boxVersionId: lockedDraft.id,
+                currency: lockedDraft.currency,
+                entries: records.map(({ entry }) => ({
+                  id: entry.id,
+                  position: entry.position,
+                  rewardVersionId: entry.rewardVersion.id,
+                  weight: asWeight(entry.weight),
+                })),
+                priceMinor: asMoney(lockedDraft.priceMinor),
+              });
         const configurationHash = hashPublishedManifest(manifest);
-        await snapshotConfigurationRarities(
-          transaction,
-          lockedDraft.id,
-          records.map(({ entry }) => ({
-            entryId: entry.id,
-            rarity: deriveRarityV1(BigInt(entry.weight), totalWeight),
-          })),
-        );
+        await snapshotConfigurationRarities(transaction, lockedDraft.id, raritySnapshots);
         await markConfigurationRewardsPublished(transaction, lockedDraft.id);
         await publishBoxVersion(
           transaction,

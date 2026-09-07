@@ -122,15 +122,18 @@ The two list endpoints accept only optional `limit` and `cursor` query fields. `
 20 and is capped at 50. The cursor is an opaque versioned token and ordering is the repository-wide
 ascending `(created_at, id)` order. Creator summaries expose exactly `customSlug`, `displayName`,
 and `handle`. Box summaries expose only the stable box/current-version IDs, published display
-fields, price/currency, publication/version facts, configuration hash, compatibility marker, and
-derived `openable|legacy` availability. They never expose roles, memberships, revisions, drafts,
+fields, version-appropriate price/currency or `maxOpeningsPerUser`, publication/version facts,
+configuration hash, compatibility marker, and derived `openable|legacy|opening-v2` availability.
+They never expose roles, memberships, revisions, drafts,
 inventory-pool identity, financial data, fulfillment data, or cryptographic secrets.
 
 Only active creators resolve publicly. Discovery/current box lists contain boxes whose stable
 identity is `active` and whose current version is published. Paused, archived, unpublished, and
 draft boxes are excluded. An active grandfathered version remains readable and is returned as
 `availability: "legacy"` with a null opening-compatibility marker, so clients cannot present it as
-openable. As before, an archived or paused box has no current public read, while a specifically
+openable. An `opening-v2` version is returned with null price/currency, its positive immutable
+`maxOpeningsPerUser`, and `availability: "opening-v2"`; during R1A this means published/staged, not
+yet accepted by the production opening command. As before, an archived or paused box has no current public read, while a specifically
 addressed immutable published version remains available for historical audit.
 
 The creator-scoped detail endpoint resolves the slug, box ownership, active statuses, and current
@@ -181,15 +184,23 @@ Phase 5 implements:
 
 All Phase 5 draft configuration, publication, and archive commands require a quoted positive revision in `If-Match`; missing preconditions return `428 PRECONDITION_REQUIRED`, and stale revisions return `409 CATALOG_REVISION_CONFLICT`. Creation derives ownership from the authenticated creator membership and accepts no creator ID in the body. The API rejects unknown fields and accepts monetary amounts, inventory quantities, and weights only as canonical decimal strings within signed 64-bit storage.
 
-`PUT .../draft/rewards` accepts `{ "entries": [{ "rewardVersionId": "uuid", "weight": "5", "isBaseReward": true }] }`. Array order is the canonical position. An empty array and zero/multiple base designations are valid intermediate drafts, but every new publication rejects them unless exactly one entry is explicitly designated. A version may occur only once and every referenced reward must belong to the authenticated creator. Saving this configuration marks the draft `opening-v1`; grandfathered published versions retain a null compatibility marker and no inferred base reward.
+Legacy draft create/update bodies retain `{ "name", "description", "imageUrl", "priceMinor", "currency" }`. A new free-entry draft instead accepts exactly `{ "name", "description", "imageUrl", "openingCompatibilityVersion": "opening-v2", "maxOpeningsPerUser": "3" }`; `priceMinor` and `currency` are rejected rather than interpreted as zero. The maximum is a positive canonical signed-64-bit decimal string and becomes immutable at publication.
 
-The publish response returns the immutable version, reward snapshots, exact ordered weights, calculated `totalWeight`, canonical manifest, and `configurationHash`. The server calculates totals/hashes; client totals are never authoritative. Publication failures use stable codes including `CATALOG_PUBLICATION_EMPTY_CONFIGURATION`, `CATALOG_PUBLICATION_BASE_REWARD_INVALID`, `CATALOG_PUBLICATION_INELIGIBLE_REWARD`, `CATALOG_PUBLICATION_INVALID_INVENTORY`, and `CATALOG_PUBLICATION_WEIGHT_OVERFLOW`. Pause behavior and durable command idempotency are not introduced in Phase 5; optimistic revision and row locking serialize publication against edits.
+Legacy `PUT .../draft/rewards` accepts `{ "entries": [{ "rewardVersionId": "uuid", "weight": "5", "isBaseReward": true }] }`. Array order is the canonical position. An empty array and zero/multiple base designations are valid intermediate drafts, but `opening-v1` publication requires exactly one explicit designation. An `opening-v2` configuration accepts `{ "openingCompatibilityVersion": "opening-v2", "entries": [{ "rewardVersionId": "uuid", "weight": "5" }] }`; it rejects `isBaseReward` and publication requires zero legacy base designations. A version may occur only once and every referenced reward must belong to the authenticated creator. Grandfathered published versions retain a null compatibility marker and no inferred model or base reward.
+
+The publish response returns the immutable discriminated version, reward snapshots, exact ordered weights, calculated `totalWeight`, version-specific canonical manifest, and `configurationHash`. The server calculates totals, rarity, and hashes; client totals/rarity are never authoritative. `opening-v1` responses retain price/currency and legacy manifest bytes. `opening-v2` responses contain null price/currency, positive `maxOpeningsPerUser`, and the non-financial manifest. Publication failures use stable codes including `CATALOG_PUBLICATION_EMPTY_CONFIGURATION`, `CATALOG_PUBLICATION_BASE_REWARD_INVALID`, `CATALOG_PUBLICATION_INELIGIBLE_REWARD`, `CATALOG_PUBLICATION_INVALID_INVENTORY`, and `CATALOG_PUBLICATION_WEIGHT_OVERFLOW`. Optimistic revision and row locking serialize publication against edits.
+
+## Opening entitlement foundation
+
+R1A adds no public or authenticated entitlement mutation/read endpoint. Immutable non-financial grants are operator/development records scoped to a user and stable box identity, with a globally unique source type/identity and SHA-256 request fingerprint. Their derived state is `granted - consumed = remaining`. The application and worker roles have no table access and cannot execute the private grant/read functions. The local-only `npm run grant:entitlement:dev -- ...` command uses migration credentials, validates explicit development/test plus local Supabase, performs an idempotent grant, and prints the aggregate state. R1B will add the constrained transaction-owned consumption path; R1A does not let the current opening command consume these rows.
 
 The shared creator policy—not controllers—allows owner/manager/editor draft writes, owner/manager publication and archival actions, and viewer reads. Same-creator insufficient roles receive `403`; nonmembers, cross-creator actors, or mismatched resources receive concealed `404`. Catalog mutations emit allowlisted `catalog.audit` records for creation, publication, and archival without tokens, headers, secrets, or profile data.
 
 ## Box opening
 
 ### `POST /v1/boxes/:boxId/open`
+
+This remains the paid `opening-v1` command during R1A. `opening-v2` is deliberately rejected until R1B provides atomic entitlement consumption.
 
 Requires user authentication and `Idempotency-Key`. Request:
 

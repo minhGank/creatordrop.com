@@ -607,6 +607,84 @@ h2 {
   justify-content: space-between;
 }
 
+.opening-dialog > .opening-confirmation-price {
+  margin-top: 1.25rem;
+  font-size: clamp(2rem, 5vw, 3.4rem);
+  font-weight: 850;
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
+
+.opening-dialog > .opening-confirmation-charge {
+  margin-top: 0.65rem;
+}
+
+.opening-confirmation-fairness {
+  margin-top: 1.5rem;
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: 0.85rem;
+  overflow: hidden;
+}
+
+.opening-confirmation-fairness summary {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.opening-confirmation-fairness summary::-webkit-details-marker {
+  display: none;
+}
+
+.opening-confirmation-fairness-status {
+  display: inline-flex;
+  gap: 0.55rem;
+  align-items: center;
+  color: #fff;
+  font-weight: 750;
+}
+
+.opening-confirmation-fairness-label {
+  color: var(--accent);
+  font-size: 0.88rem;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.opening-confirmation-fairness-content {
+  padding: 0 1rem 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.opening-confirmation-fairness-content > p:first-child {
+  margin: 1rem 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.opening-confirmation-fairness-content dl {
+  display: grid;
+  gap: 0.8rem;
+  margin: 0;
+}
+
+.opening-confirmation-fairness-content dt {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.opening-confirmation-fairness-content dd {
+  margin: 0.25rem 0 0;
+}
+
 .client-seed-control {
   display: grid;
   gap: 0.5rem;
@@ -645,6 +723,10 @@ h2 {
 .opening-result > p {
   margin-bottom: 0;
   color: var(--muted);
+}
+
+.opening-dialog > p.opening-confirmation-price {
+  color: #fff;
 }
 
 .opening-dialog h2,

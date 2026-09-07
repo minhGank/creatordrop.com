@@ -42,22 +42,38 @@ const publicCreatorSchema = z
   })
   .strict();
 
-const publicBoxSummarySchema = z
-  .object({
-    availability: z.enum(['legacy', 'openable']),
-    configurationHash: z.string().regex(/^[0-9a-f]{64}$/u),
-    currency: z.string().regex(/^[A-Z]{3}$/u),
-    currentPublishedVersionId: uuidSchema,
-    description: z.string().max(5000),
-    id: uuidSchema,
-    imageUrl: nullableHttpsUrlSchema,
-    name: z.string().min(1).max(120),
-    openingCompatibilityVersion: z.union([z.literal('opening-v1'), z.null()]),
-    priceMinor: canonicalDecimalSchema,
-    publishedAt: z.iso.datetime({ offset: true }),
-    versionNumber: z.number().int().positive(),
-  })
-  .strict();
+const publicBoxSummaryBase = {
+  configurationHash: z.string().regex(/^[0-9a-f]{64}$/u),
+  currentPublishedVersionId: uuidSchema,
+  description: z.string().max(5000),
+  id: uuidSchema,
+  imageUrl: nullableHttpsUrlSchema,
+  name: z.string().min(1).max(120),
+  publishedAt: z.iso.datetime({ offset: true }),
+  versionNumber: z.number().int().positive(),
+};
+const publicBoxSummarySchema = z.union([
+  z
+    .object({
+      ...publicBoxSummaryBase,
+      availability: z.enum(['legacy', 'openable']),
+      currency: z.string().regex(/^[A-Z]{3}$/u),
+      maxOpeningsPerUser: z.null(),
+      openingCompatibilityVersion: z.union([z.literal('opening-v1'), z.null()]),
+      priceMinor: canonicalDecimalSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...publicBoxSummaryBase,
+      availability: z.literal('opening-v2'),
+      currency: z.null(),
+      maxOpeningsPerUser: positiveDecimalSchema,
+      openingCompatibilityVersion: z.literal('opening-v2'),
+      priceMinor: z.null(),
+    })
+    .strict(),
+]);
 
 const publicCreatorsSchema = z
   .object({
@@ -74,25 +90,40 @@ const publicCreatorBoxesSchema = z
   })
   .strict();
 
-const boxVersionSchema = z
-  .object({
-    configurationHash: z.union([z.string(), z.null()]),
-    createdAt: z.iso.datetime({ offset: true }),
-    currency: z.string().regex(/^[A-Z]{3}$/u),
-    description: z.string().max(5000),
-    id: uuidSchema,
-    imageUrl: nullableHttpsUrlSchema,
-    name: z.string().min(1).max(120),
-    openingCompatibilityVersion: z.union([z.literal('opening-v1'), z.null()]),
-    priceMinor: canonicalDecimalSchema,
-    publishedAt: z.union([z.iso.datetime({ offset: true }), z.null()]),
-    rngAlgorithmVersion: z.union([z.string(), z.null()]),
-    state: z.enum(['draft', 'published', 'retired']),
-    totalWeight: z.union([canonicalDecimalSchema, z.null()]),
-    updatedAt: z.iso.datetime({ offset: true }),
-    versionNumber: z.number().int().positive(),
-  })
-  .strict();
+const boxVersionBase = {
+  configurationHash: z.union([z.string(), z.null()]),
+  createdAt: z.iso.datetime({ offset: true }),
+  description: z.string().max(5000),
+  id: uuidSchema,
+  imageUrl: nullableHttpsUrlSchema,
+  name: z.string().min(1).max(120),
+  publishedAt: z.union([z.iso.datetime({ offset: true }), z.null()]),
+  rngAlgorithmVersion: z.union([z.string(), z.null()]),
+  state: z.enum(['draft', 'published', 'retired']),
+  totalWeight: z.union([canonicalDecimalSchema, z.null()]),
+  updatedAt: z.iso.datetime({ offset: true }),
+  versionNumber: z.number().int().positive(),
+};
+const boxVersionSchema = z.union([
+  z
+    .object({
+      ...boxVersionBase,
+      currency: z.string().regex(/^[A-Z]{3}$/u),
+      maxOpeningsPerUser: z.null(),
+      openingCompatibilityVersion: z.union([z.literal('opening-v1'), z.null()]),
+      priceMinor: canonicalDecimalSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...boxVersionBase,
+      currency: z.null(),
+      maxOpeningsPerUser: positiveDecimalSchema,
+      openingCompatibilityVersion: z.literal('opening-v2'),
+      priceMinor: z.null(),
+    })
+    .strict(),
+]);
 
 const rewardVersionSchema = z
   .object({
@@ -148,11 +179,34 @@ const publishedManifestSchema = z
   })
   .strict();
 
+const openingV2PublishedManifestSchema = z
+  .object({
+    algorithmVersion: z.literal('hmac-sha256-rejection-v1'),
+    boxId: uuidSchema,
+    boxVersionId: uuidSchema,
+    entries: z.array(
+      z
+        .object({
+          boxVersionRewardId: uuidSchema,
+          position: z.number().int().nonnegative(),
+          rarity: raritySchema,
+          rarityPolicyVersion: z.literal('rarity-v1'),
+          rewardVersionId: uuidSchema,
+          weight: positiveDecimalSchema,
+        })
+        .strict(),
+    ),
+    maxOpeningsPerUser: positiveDecimalSchema,
+    openingCompatibilityVersion: z.literal('opening-v2'),
+    totalWeight: positiveDecimalSchema,
+  })
+  .strict();
+
 const publishedBoxSchema = z
   .object({
     configurationHash: z.string().regex(/^[0-9a-f]{64}$/u),
     entries: z.array(publishedEntrySchema),
-    manifest: publishedManifestSchema,
+    manifest: z.union([publishedManifestSchema, openingV2PublishedManifestSchema]),
     version: boxVersionSchema,
   })
   .strict();
@@ -248,7 +302,7 @@ const openingFairnessProofResponseSchema = z
         algorithmVersion: z.literal('hmac-sha256-rejection-v1'),
         clientSeed: hex256Schema,
         configurationHash: hex256Schema,
-        manifest: publishedManifestSchema,
+        manifest: z.union([publishedManifestSchema, openingV2PublishedManifestSchema]),
         nonce: canonicalDecimalSchema,
         openedAt: z.iso.datetime({ offset: true }),
         openingId: uuidSchema,

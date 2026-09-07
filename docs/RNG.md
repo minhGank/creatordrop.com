@@ -62,9 +62,9 @@ for entry in orderedEntries:
 
 Boundary behavior is therefore unambiguous: value `0` selects the first entry; value exactly equal to an interval's upper bound selects the next entry. The result must exist because `selectionValue < W` and the weights sum to `W`.
 
-## Canonical box manifest
+## Canonical box manifests
 
-Every published box version stores a SHA-256 configuration hash over a canonical UTF-8 JSON byte sequence. Use RFC 8785 JSON Canonicalization Scheme in the implementation rather than runtime property order. The logical manifest is:
+Every published box version stores a SHA-256 configuration hash over a canonical UTF-8 JSON byte sequence. Use RFC 8785 JSON Canonicalization Scheme in the implementation rather than runtime property order. Historical manifests and `opening-v1` use the exact legacy paid shape:
 
 ```json
 {
@@ -85,7 +85,30 @@ Every published box version stores a SHA-256 configuration hash over a canonical
 }
 ```
 
-All 64-bit integers are decimal strings in the manifest and public JSON. Entry order is ascending `position`. The publish operation calculates the manifest and hash once inside its database transaction. The verification API returns the manifest; opening records retain its hash.
+R1A adds a separate `opening-v2` non-financial shape:
+
+```json
+{
+  "algorithmVersion": "hmac-sha256-rejection-v1",
+  "boxId": "uuid",
+  "boxVersionId": "uuid",
+  "entries": [
+    {
+      "boxVersionRewardId": "uuid",
+      "position": 0,
+      "rarity": "common",
+      "rarityPolicyVersion": "rarity-v1",
+      "rewardVersionId": "uuid",
+      "weight": "1"
+    }
+  ],
+  "maxOpeningsPerUser": "3",
+  "openingCompatibilityVersion": "opening-v2",
+  "totalWeight": "1"
+}
+```
+
+All 64-bit integers are decimal strings in the manifest and public JSON. Entry order is ascending `position`. The v2 manifest must not contain price, currency, wallet, fee, share, or entitlement-source fields. Publication derives the rarity snapshots from authoritative weights before hashing. Separate exact parsers/canonicalizers prevent any v1 history from being reinterpreted with v2 semantics. Both shapes normalize to the same ordered weights for the unchanged HMAC/rejection selector. The publish operation calculates the manifest and hash once inside its database transaction. Opening proofs continue to carry their exact historical manifest; actual v2 proofs begin only when R1B wires free openings.
 
 ## Seed lifecycle
 

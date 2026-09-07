@@ -85,10 +85,18 @@ const CreatorCatalog = ({ customSlug }: { readonly customSlug: string }) => {
                 )}
                 <span className="box-card-body">
                   <span className={`status-pill ${box.availability}`}>
-                    {box.availability === 'openable' ? 'Published' : 'Legacy · view only'}
+                    {box.availability === 'openable'
+                      ? 'Published'
+                      : box.availability === 'opening-v2'
+                        ? 'Free-entry · coming next'
+                        : 'Legacy · view only'}
                   </span>
                   <strong>{box.name}</strong>
-                  <small>{formatMinorUnits(box.priceMinor, box.currency)}</small>
+                  <small>
+                    {box.availability === 'opening-v2'
+                      ? `${box.maxOpeningsPerUser} max openings per user`
+                      : formatMinorUnits(box.priceMinor, box.currency)}
+                  </small>
                 </span>
               </Link>
             </li>

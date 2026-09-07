@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { describe, expect, it } from 'vitest';
 
 import vectors from '../../../test-vectors/rng/hmac-sha256-rejection-v1.json' with { type: 'json' };
@@ -43,7 +45,42 @@ if (first === undefined || second === undefined || third === undefined) {
   throw new Error('Expected three independent manifest entries.');
 }
 
+const openingV2Manifest = {
+  algorithmVersion: vector.manifest.algorithmVersion,
+  boxId: vector.manifest.boxId,
+  boxVersionId: vector.manifest.boxVersionId,
+  entries: vector.manifest.entries.map((entry) => ({
+    boxVersionRewardId: entry.boxVersionRewardId,
+    position: entry.position,
+    rarity: 'common',
+    rarityPolicyVersion: 'rarity-v1',
+    rewardVersionId: entry.rewardVersionId,
+    weight: entry.weight,
+  })),
+  maxOpeningsPerUser: '3',
+  openingCompatibilityVersion: 'opening-v2',
+  totalWeight: vector.manifest.totalWeight,
+} as const;
+const openingV2Canonical = JSON.stringify(openingV2Manifest);
+const openingV2Hash = createHash('sha256').update(openingV2Canonical, 'utf8').digest('hex');
+
 describe('independent verifier manifest conformance', () => {
+  it('independently verifies the explicit opening-v2 manifest shape', () => {
+    const result = verifyRewardSelectionProof({
+      ...proof,
+      configurationHash: openingV2Hash,
+      manifest: openingV2Manifest,
+    });
+    expect(result.valid).toBe(true);
+    expect(result.computed.manifestHash).toBe(openingV2Hash);
+    expect(() =>
+      verifyRewardSelectionProof({
+        ...proof,
+        configurationHash: openingV2Hash,
+        manifest: { ...openingV2Manifest, currency: 'USD' },
+      }),
+    ).toThrow(VerifierError);
+  });
   it('canonicalizes root and entry properties independently of insertion order', () => {
     const reversedEntries = vector.manifest.entries.map((entry) => ({
       weight: entry.weight,

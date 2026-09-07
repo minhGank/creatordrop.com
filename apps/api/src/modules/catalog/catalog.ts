@@ -70,16 +70,13 @@ export interface CatalogScope {
   readonly creatorId: CreatorId;
 }
 
-export interface BoxVersion {
+interface BoxVersionBase {
   readonly configurationHash: string | null;
   readonly createdAt: string;
-  readonly currency: string;
   readonly description: string;
   readonly id: BoxVersionId;
   readonly imageUrl: string | null;
   readonly name: string;
-  readonly openingCompatibilityVersion: 'opening-v1' | null;
-  readonly priceMinor: string;
   readonly publishedAt: string | null;
   readonly rngAlgorithmVersion: string | null;
   readonly state: BoxVersionState;
@@ -87,6 +84,22 @@ export interface BoxVersion {
   readonly updatedAt: string;
   readonly versionNumber: number;
 }
+
+export interface LegacyBoxVersion extends BoxVersionBase {
+  readonly currency: string;
+  readonly maxOpeningsPerUser: null;
+  readonly openingCompatibilityVersion: 'opening-v1' | null;
+  readonly priceMinor: string;
+}
+
+export interface OpeningV2BoxVersion extends BoxVersionBase {
+  readonly currency: null;
+  readonly maxOpeningsPerUser: string;
+  readonly openingCompatibilityVersion: 'opening-v2';
+  readonly priceMinor: null;
+}
+
+export type BoxVersion = LegacyBoxVersion | OpeningV2BoxVersion;
 
 export interface Box {
   readonly createdAt: string;
@@ -156,11 +169,26 @@ export interface PublishedManifest {
   readonly totalWeight: string;
 }
 
-export interface PublishedBoxVersion extends BoxVersion {
+export interface OpeningV2PublishedManifest {
+  readonly algorithmVersion: 'hmac-sha256-rejection-v1';
+  readonly boxId: string;
+  readonly boxVersionId: string;
+  readonly entries: readonly (PublishedManifestEntry & {
+    readonly rarity: RewardRarity;
+    readonly rarityPolicyVersion: 'rarity-v1';
+  })[];
+  readonly maxOpeningsPerUser: string;
+  readonly openingCompatibilityVersion: 'opening-v2';
+  readonly totalWeight: string;
+}
+
+export type VersionedPublishedManifest = PublishedManifest | OpeningV2PublishedManifest;
+
+export type PublishedBoxVersion = BoxVersion & {
   readonly configurationHash: string;
-  readonly manifest: PublishedManifest;
+  readonly manifest: VersionedPublishedManifest;
   readonly publishedAt: string;
   readonly rngAlgorithmVersion: 'hmac-sha256-rejection-v1';
   readonly state: 'published';
   readonly totalWeight: string;
-}
+};

@@ -40,6 +40,7 @@ interface BoxRow {
   readonly draftDescription: unknown;
   readonly draftId: unknown;
   readonly draftImageUrl: unknown;
+  readonly draftMaxOpeningsPerUser: unknown;
   readonly draftName: unknown;
   readonly draftOpeningCompatibilityVersion: unknown;
   readonly draftPriceMinor: unknown;
@@ -87,6 +88,7 @@ interface BoxVersionRow {
   readonly description: unknown;
   readonly id: unknown;
   readonly imageUrl: unknown;
+  readonly maxOpeningsPerUser: unknown;
   readonly name: unknown;
   readonly openingCompatibilityVersion: unknown;
   readonly priceMinor: unknown;
@@ -225,29 +227,56 @@ const parseBoxVersion = (row: BoxVersionRow): BoxVersion => {
   if (!isOneOf(row.state, boxVersionStates)) {
     throw new Error('Database returned invalid box version state.');
   }
-  return {
+  const openingCompatibilityVersion = row.openingCompatibilityVersion;
+  if (
+    openingCompatibilityVersion !== null &&
+    openingCompatibilityVersion !== 'opening-v1' &&
+    openingCompatibilityVersion !== 'opening-v2'
+  ) {
+    throw new Error('Database returned invalid opening compatibility version.');
+  }
+  const common = {
     configurationHash: nullableString(row.configurationHash, 'configuration hash'),
     createdAt: timestamp(row.createdAt, 'box version created timestamp'),
-    currency: requiredString(row.currency, 'box currency'),
     description: requiredString(row.description, 'box description'),
     id: requiredString(row.id, 'box version ID') as BoxVersionId,
     imageUrl: nullableString(row.imageUrl, 'box image URL'),
     name: requiredString(row.name, 'box name'),
-    openingCompatibilityVersion:
-      row.openingCompatibilityVersion === null
-        ? null
-        : row.openingCompatibilityVersion === 'opening-v1'
-          ? 'opening-v1'
-          : (() => {
-              throw new Error('Database returned invalid opening compatibility version.');
-            })(),
-    priceMinor: requiredString(row.priceMinor, 'box price'),
     publishedAt: nullableTimestamp(row.publishedAt, 'box publication timestamp'),
     rngAlgorithmVersion: nullableString(row.rngAlgorithmVersion, 'RNG algorithm version'),
     state: row.state,
     totalWeight: nullableString(row.totalWeight, 'total weight'),
     updatedAt: timestamp(row.updatedAt, 'box version updated timestamp'),
     versionNumber: requiredNumber(row.versionNumber, 'box version number'),
+  };
+  if (openingCompatibilityVersion === 'opening-v2') {
+    return {
+      ...common,
+      currency:
+        row.currency === null
+          ? null
+          : (() => {
+              throw new Error('opening-v2 currency must be null.');
+            })(),
+      maxOpeningsPerUser: requiredString(row.maxOpeningsPerUser, 'maximum openings per user'),
+      openingCompatibilityVersion,
+      priceMinor:
+        row.priceMinor === null
+          ? null
+          : (() => {
+              throw new Error('opening-v2 price must be null.');
+            })(),
+    };
+  }
+  if (row.maxOpeningsPerUser !== null) {
+    throw new Error('Legacy box version returned a maximum openings value.');
+  }
+  return {
+    ...common,
+    currency: requiredString(row.currency, 'box currency'),
+    maxOpeningsPerUser: null,
+    openingCompatibilityVersion,
+    priceMinor: requiredString(row.priceMinor, 'box price'),
   };
 };
 
@@ -265,6 +294,7 @@ const boxVersionFromJoinedRow = (row: BoxRow): BoxVersion | null => {
     description: row.draftDescription,
     id: row.draftId,
     imageUrl: row.draftImageUrl,
+    maxOpeningsPerUser: row.draftMaxOpeningsPerUser,
     name: row.draftName,
     openingCompatibilityVersion: row.draftOpeningCompatibilityVersion,
     priceMinor: row.draftPriceMinor,
@@ -383,6 +413,7 @@ const boxColumns = `
   draft.opening_compatibility_version as "draftOpeningCompatibilityVersion",
   draft.description as "draftDescription",
   draft.image_url as "draftImageUrl",
+  draft.max_openings_per_user::text as "draftMaxOpeningsPerUser",
   draft.price_minor::text as "draftPriceMinor",
   draft.currency as "draftCurrency",
   encode(draft.configuration_hash, 'hex') as "draftConfigurationHash",
@@ -424,6 +455,7 @@ const boxVersionColumns = `
   bv.opening_compatibility_version as "openingCompatibilityVersion",
   bv.description,
   bv.image_url as "imageUrl",
+  bv.max_openings_per_user::text as "maxOpeningsPerUser",
   bv.price_minor::text as "priceMinor",
   bv.currency,
   bv.total_weight::text as "totalWeight",
@@ -482,16 +514,19 @@ export const insertBoxAndDraft = async (
   await executor.query(
     `insert into app.box_versions (
        id, box_id, version_number, name, description, image_url,
-       price_minor, currency, created_by_user_id
-     ) values ($1, $2, 1, $3, $4, $5, $6, $7, $8)`,
+       price_minor, currency, max_openings_per_user,
+       opening_compatibility_version, created_by_user_id
+     ) values ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, $10)`,
     [
       identifiers.versionId,
       identifiers.boxId,
       input.name,
       input.description,
       input.imageUrl,
-      input.priceMinor.toString(),
+      input.priceMinor?.toString() ?? null,
       input.currency,
+      'maxOpeningsPerUser' in input ? input.maxOpeningsPerUser.toString() : null,
+      'openingCompatibilityVersion' in input ? input.openingCompatibilityVersion : null,
       actorUserId,
     ],
   );
@@ -616,7 +651,13 @@ export const updateBoxDraft = async (
   const result = await executor.query(
     `update app.box_versions bv
         set name = $3, description = $4, image_url = $5,
-            price_minor = $6, currency = $7, updated_at = statement_timestamp()
+            price_minor = $6, currency = $7, max_openings_per_user = $8,
+            opening_compatibility_version = case
+              when $9::text = 'opening-v2' then 'opening-v2'
+              when bv.opening_compatibility_version = 'opening-v2' then null
+              else bv.opening_compatibility_version
+            end,
+            updated_at = statement_timestamp()
        from app.boxes b
       where bv.box_id = b.id and bv.state = 'draft'
         and b.creator_id = $1 and b.id = $2`,
@@ -626,11 +667,25 @@ export const updateBoxDraft = async (
       input.name,
       input.description,
       input.imageUrl,
-      input.priceMinor.toString(),
+      input.priceMinor?.toString() ?? null,
       input.currency,
+      'maxOpeningsPerUser' in input ? input.maxOpeningsPerUser.toString() : null,
+      'openingCompatibilityVersion' in input ? input.openingCompatibilityVersion : null,
     ],
   );
   if (result.rowCount !== 1) throw new Error('Expected one scoped box draft update.');
+  if ('openingCompatibilityVersion' in input) {
+    await executor.query(
+      `delete from app.box_version_base_rewards
+        where box_version_id in (
+          select bv.id
+          from app.box_versions bv
+          join app.boxes b on b.id = bv.box_id
+          where b.creator_id = $1 and b.id = $2 and bv.state = 'draft'
+        )`,
+      [creatorId, boxId],
+    );
+  }
 };
 
 export const updateRewardDraft = async (
@@ -808,10 +863,11 @@ export const replaceDraftConfiguration = async (
   boxId: BoxId,
   entries: readonly {
     readonly id: BoxVersionRewardId;
-    readonly isBaseReward: boolean;
+    readonly isBaseReward?: boolean;
     readonly rewardVersionId: RewardVersionId;
     readonly weight: ProbabilityWeight;
   }[],
+  openingCompatibilityVersion: 'opening-v1' | 'opening-v2',
 ): Promise<void> => {
   const draft = await executor.query<{ readonly id: string }>(
     `select bv.id::text as id
@@ -833,7 +889,7 @@ export const replaceDraftConfiguration = async (
        ) values ($1, $2, $3, $4, $5)`,
       [entry.id, draftId, entry.rewardVersionId, position, entry.weight.toString()],
     );
-    if (entry.isBaseReward) {
+    if (entry.isBaseReward === true) {
       await executor.query(
         `insert into app.box_version_base_rewards (
            id, box_version_id, box_version_reward_id
@@ -844,10 +900,10 @@ export const replaceDraftConfiguration = async (
   }
   await executor.query(
     `update app.box_versions
-        set opening_compatibility_version = 'opening-v1',
+        set opening_compatibility_version = $2,
             updated_at = statement_timestamp()
       where id = $1 and state = 'draft'`,
-    [draftId],
+    [draftId, openingCompatibilityVersion],
   );
 };
 
@@ -860,11 +916,12 @@ export const insertBoxDraftClone = async (
   const result = await executor.query(
     `insert into app.box_versions (
        id, box_id, version_number, name, description, image_url,
-       price_minor, currency, opening_compatibility_version, created_by_user_id
+       price_minor, currency, max_openings_per_user,
+       opening_compatibility_version, created_by_user_id
      )
      select $2, b.id, source.version_number + 1, source.name, source.description,
             source.image_url, source.price_minor, source.currency,
-            source.opening_compatibility_version, $3
+            source.max_openings_per_user, source.opening_compatibility_version, $3
        from app.boxes b
        join app.box_versions source on source.id = b.current_published_version_id
       where b.id = $1 and source.state = 'published'`,

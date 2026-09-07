@@ -20,7 +20,13 @@ PostgreSQL owns users, configuration versions, openings, balances, ledger entrie
 
 ### Immutable published configuration
 
-`boxes` and `rewards` are stable identities. Every publish creates immutable `box_versions`, `reward_versions`, and ordered weighted entries. Phase 9 adds an explicit `opening-v1` compatibility marker and exactly one explicit base-reward designation to newly published openable versions. Earlier published versions are grandfathered unchanged with a null marker: they remain readable fairness history but cannot be opened. Republishing always creates a new version; no base reward is inferred or backfilled. An opening references exactly one compatible published box version. Edits create drafts/new versions and cannot rewrite history.
+`boxes` and `rewards` are stable identities. Every publish creates immutable `box_versions`, `reward_versions`, and ordered weighted entries. Phase 9 adds an explicit `opening-v1` compatibility marker and exactly one explicit base-reward designation to newly published paid/openable versions. Earlier published versions are grandfathered unchanged with a null marker: they remain readable fairness history but cannot be opened. R1A adds the distinct `opening-v2` free-entry publication model: it has no price, currency, or base reward and instead snapshots a positive `maxOpeningsPerUser`. Republishing always creates a new version; no historical version is inferred, backfilled, or rehashed. An opening references exactly one compatible published box version. Edits create drafts/new versions and cannot rewrite history.
+
+### Dual opening model during the product rebase
+
+`opening-v1` retains the completed paid-opening contract, including its historical financial manifest and Phase 9 transaction. `opening-v2` is the target free-entry contract. Its canonical manifest contains the model marker, box/version identity, ordered rewards and weights, immutable rarity snapshots, total weight, and `maxOpeningsPerUser`; it deliberately contains no financial field. Both formats use the unchanged `hmac-sha256-rejection-v1` selector and separate exact parsers/canonicalizers.
+
+R1A is foundation only. PostgreSQL can publish and audit `opening-v2` versions and hold immutable non-financial grants for stable box identities, but the production opening command still accepts only `opening-v1` and performs the existing wallet transaction. R1B will atomically consume an entitlement and enforce the per-user maximum for an `opening-v2` opening. Until then the web labels `opening-v2` catalog entries as staged and does not present the paid opening component for them.
 
 ### One currency per wallet and integer amounts
 
@@ -119,6 +125,8 @@ Authorization uses a hybrid RBAC/resource-ownership model:
 Creator authorization always scopes database access by both resource ID and creator ID/member actor. Avoid “load by ID, then hope the controller checks ownership.” PostgreSQL row-level security can protect direct Supabase access, but the browser must not directly write core application tables. The server uses a restricted database role; migrations use a separate owner role. Administrative actions require a reason and an `audit_log` entry.
 
 ## Box-opening consistency model
+
+This section describes the still-active `opening-v1` paid transaction. R1A does not alter its lock order, accounting, RNG, inventory, or idempotency behavior.
 
 The opening endpoint is a short PostgreSQL transaction at `READ COMMITTED` with explicit row locks. Lock order is fixed to reduce deadlocks:
 

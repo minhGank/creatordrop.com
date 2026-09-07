@@ -17,6 +17,7 @@ import { createCatalogService } from '../src/modules/catalog/catalog.service.js'
 import { hashPublishedManifest } from '../src/modules/catalog/catalog.manifest.js';
 import { createPublicCatalogService } from '../src/modules/catalog/public-catalog.service.js';
 import { createCreatorService } from '../src/modules/creators/creator.service.js';
+import { createOpeningEntitlementOperatorService } from '../src/modules/entitlements/opening-entitlement.service.js';
 import { createUserBootstrapService } from '../src/modules/users/bootstrap-user.service.js';
 import {
   createUnhandledFairnessService,
@@ -130,6 +131,20 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
   const removeSyntheticState = async (): Promise<void> => {
     await migrationDatabase.transaction(async (transaction) => {
       await transaction.query(`set local session_replication_role = replica`);
+      await transaction.query(`
+        delete from app.opening_entitlement_consumptions as consumption
+         where exists (
+           select 1 from app.creators as creator
+            where creator.id = consumption.creator_id and left(creator.handle::text, 3) = 'p5_'
+         )
+      `);
+      await transaction.query(`
+        delete from app.opening_entitlement_grants as grant_row
+         where exists (
+           select 1 from app.creators as creator
+            where creator.id = grant_row.creator_id and left(creator.handle::text, 3) = 'p5_'
+         )
+      `);
       await transaction.query(`
         update app.boxes b
            set current_published_version_id = null
@@ -521,6 +536,272 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
         .filter((record) => record.message === 'catalog.audit')
         .map((record) => record.attributes?.action),
     ).toEqual(expect.arrayContaining(['box.archived', 'reward.archived']));
+  });
+
+  it('publishes opening-v2 without financial/base fields and provides immutable idempotent entitlements', async () => {
+    const owner = await createActor();
+    const otherUser = await createActor();
+    const creator = await createCreator(owner, 'R1A Creator');
+    const reward = await createReward(owner, creator.id, rewardBody('R1A Reward'));
+    const boxName = `R1A Free Drop ${randomUUID()}`;
+    const create = await request(app)
+      .post(`/v1/creators/${creator.id}/boxes`)
+      .set(authorization(owner))
+      .send({
+        description: 'R1A free-entry catalog fixture',
+        maxOpeningsPerUser: '3',
+        name: boxName,
+        openingCompatibilityVersion: 'opening-v2',
+      });
+    expect(create.status).toBe(201);
+    const box = await applicationDatabase.query<TestBox>(
+      `select b.id::text as id, b.revision, bv.id::text as "draftId"
+         from app.boxes b
+         join app.box_versions bv on bv.box_id = b.id and bv.state = 'draft'
+        where b.creator_id = $1 and bv.name = $2`,
+      [creator.id, boxName],
+    );
+    const draft = box.rows[0];
+    if (draft === undefined) throw new Error('opening-v2 draft was not persisted.');
+    await expect(
+      applicationDatabase.query(
+        `update app.box_versions set max_openings_per_user = null where id = $1`,
+        [draft.draftId],
+      ),
+    ).rejects.toThrow(/box_versions_opening_model_shape/iu);
+    await expect(
+      applicationDatabase.query(
+        `update app.box_versions
+            set opening_compatibility_version = 'opening-v1',
+                price_minor = null, currency = 'USD', max_openings_per_user = null
+          where id = $1`,
+        [draft.draftId],
+      ),
+    ).rejects.toThrow(/box_versions_opening_model_shape/iu);
+    await expect(
+      applicationDatabase.query(
+        `update app.box_versions
+            set opening_compatibility_version = 'opening-v1',
+                price_minor = 100, currency = null, max_openings_per_user = null
+          where id = $1`,
+        [draft.draftId],
+      ),
+    ).rejects.toThrow(/box_versions_opening_model_shape/iu);
+    await applicationDatabase.query(
+      `update app.box_versions
+          set opening_compatibility_version = null,
+              price_minor = 100, currency = 'USD', max_openings_per_user = null
+        where id = $1`,
+      [draft.draftId],
+    );
+    await expect(
+      applicationDatabase.query(`update app.box_versions set state = 'published' where id = $1`, [
+        draft.draftId,
+      ]),
+    ).rejects.toThrow(/explicitly select an opening compatibility model/iu);
+    await applicationDatabase.query(
+      `update app.box_versions
+          set opening_compatibility_version = 'opening-v2',
+              price_minor = null, currency = null, max_openings_per_user = 3
+        where id = $1`,
+      [draft.draftId],
+    );
+    const configureV2 = await request(app)
+      .put(`/v1/creators/${creator.id}/boxes/${draft.id}/draft/rewards`)
+      .set(authorization(owner))
+      .set('If-Match', '"1"')
+      .send({
+        entries: [{ rewardVersionId: reward.draftId, weight: '5' }],
+        openingCompatibilityVersion: 'opening-v2',
+      });
+    expect(configureV2.status).toBe(200);
+    const publish = await request(app)
+      .post(`/v1/creators/${creator.id}/boxes/${draft.id}/publish`)
+      .set(authorization(owner))
+      .set('If-Match', '"2"');
+    expect(publish.status).toBe(200);
+    expect(publish.body).toMatchObject({
+      entries: [{ isBaseReward: false, rarity: 'common', rarityPolicyVersion: 'rarity-v1' }],
+      manifest: {
+        maxOpeningsPerUser: '3',
+        openingCompatibilityVersion: 'opening-v2',
+        totalWeight: '5',
+      },
+      version: {
+        currency: null,
+        maxOpeningsPerUser: '3',
+        openingCompatibilityVersion: 'opening-v2',
+        priceMinor: null,
+      },
+    });
+    const publishedBody = publish.body as PublishedBoxVersionResponse;
+    expect(publishedBody.manifest).not.toHaveProperty('currency');
+    expect(publishedBody.manifest).not.toHaveProperty('priceMinor');
+    const publicList = await request(app).get(`/v1/catalog/creators/${creator.customSlug}/boxes`);
+    expect(publicList.body).toMatchObject({
+      boxes: [
+        {
+          availability: 'opening-v2',
+          currency: null,
+          id: draft.id,
+          maxOpeningsPerUser: '3',
+          priceMinor: null,
+        },
+      ],
+    });
+    await expect(
+      migrationDatabase.query(
+        `update app.box_versions set max_openings_per_user = 4 where id = $1`,
+        [draft.draftId],
+      ),
+    ).rejects.toThrow(/Published catalog versions are immutable/iu);
+
+    const sourceIdentity = `catalog-test-${randomUUID()}`;
+    const firstGrantId = uuidv7();
+    const entitlementOperator = createOpeningEntitlementOperatorService(migrationDatabase);
+    const grantInput = {
+      boxId: draft.id,
+      creatorId: creator.id,
+      grantedByUserId: owner.userId,
+      quantity: 2n,
+      reason: 'R1A test grant',
+      sourceIdentity,
+      sourceType: 'development_manual',
+      userId: owner.userId,
+    };
+    const firstGrant = await entitlementOperator.grant({ ...grantInput, grantId: firstGrantId });
+    const replay = await entitlementOperator.grant({ ...grantInput, grantId: uuidv7() });
+    expect(firstGrant).toEqual({ id: firstGrantId, replayed: false });
+    expect(replay).toEqual({ id: firstGrantId, replayed: true });
+    await expect(
+      migrationDatabase.query(
+        `select *
+           from app_private.grant_opening_entitlement($1,$2,$3,$4,2,'development_manual',$5,$2,'R1A test grant')`,
+        [uuidv7(), otherUser.userId, creator.id, draft.id, sourceIdentity],
+      ),
+    ).rejects.toThrow(/source identity was reused/iu);
+    await expect(
+      migrationDatabase.query(
+        `select *
+           from app_private.grant_opening_entitlement($1,$2,$3,$4,0,'development_manual',$5,$2,'Invalid R1A grant')`,
+        [uuidv7(), owner.userId, creator.id, draft.id, `${sourceIdentity}-zero`],
+      ),
+    ).rejects.toThrow(/quantity must be positive/iu);
+    const concurrentSource = `${sourceIdentity}-concurrent`;
+    const concurrentGrants = await Promise.all(
+      [uuidv7(), uuidv7()].map((grantId) =>
+        entitlementOperator.grant({
+          ...grantInput,
+          grantId,
+          quantity: 1n,
+          reason: 'Concurrent R1A grant',
+          sourceIdentity: concurrentSource,
+        }),
+      ),
+    );
+    expect(concurrentGrants.map(({ replayed }) => replayed).sort()).toEqual([false, true]);
+
+    const readEntitlementState = (userId: string) =>
+      migrationDatabase.query<{
+        readonly boxId: string;
+        readonly consumed: string;
+        readonly granted: string;
+        readonly remaining: string;
+      }>(
+        `select box_id::text as "boxId", granted::text, consumed::text, remaining::text
+           from app_private.read_opening_entitlement_state($1, $2)`,
+        [userId, draft.id],
+      );
+    expect((await readEntitlementState(owner.userId)).rows).toEqual([
+      { boxId: draft.id, consumed: '0', granted: '3', remaining: '3' },
+    ]);
+    expect((await readEntitlementState(otherUser.userId)).rows).toEqual([
+      { boxId: draft.id, consumed: '0', granted: '0', remaining: '0' },
+    ]);
+
+    await expect(
+      applicationDatabase.query(
+        `insert into app.opening_entitlement_grants (
+           id,user_id,creator_id,box_id,quantity_granted,source_type,source_identity,
+           source_fingerprint,grant_reason
+         ) values ($1,$2,$3,$4,1,'forged','forged',decode(repeat('00',32),'hex'),'forged')`,
+        [uuidv7(), owner.userId, creator.id, draft.id],
+      ),
+    ).rejects.toThrow(/permission denied/iu);
+    await expect(
+      applicationDatabase.query(
+        `select quantity_granted from app.opening_entitlement_grants where user_id = $1`,
+        [owner.userId],
+      ),
+    ).rejects.toThrow(/permission denied/iu);
+    await expect(
+      applicationDatabase.query(
+        `insert into app.opening_entitlement_consumptions (
+           id,grant_id,user_id,creator_id,box_id,opening_id
+         ) values ($1,$2,$3,$4,$5,$6)`,
+        [uuidv7(), firstGrantId, owner.userId, creator.id, draft.id, uuidv7()],
+      ),
+    ).rejects.toThrow(/permission denied/iu);
+    await expect(
+      applicationDatabase.query(
+        `select * from app_private.read_opening_entitlement_state($1, $2)`,
+        [owner.userId, draft.id],
+      ),
+    ).rejects.toThrow(/permission denied/iu);
+
+    const openingId = uuidv7();
+    await migrationDatabase.query(
+      `insert into app.opening_entitlement_consumptions (
+         id,grant_id,user_id,creator_id,box_id,opening_id
+       ) values ($1,$2,$3,$4,$5,$6)`,
+      [uuidv7(), firstGrantId, owner.userId, creator.id, draft.id, openingId],
+    );
+    await migrationDatabase.query(
+      `insert into app.opening_entitlement_consumptions (
+         id,grant_id,user_id,creator_id,box_id,opening_id
+       ) values ($1,$2,$3,$4,$5,$6)`,
+      [uuidv7(), firstGrantId, owner.userId, creator.id, draft.id, uuidv7()],
+    );
+    await expect(
+      migrationDatabase.query(
+        `insert into app.opening_entitlement_consumptions (
+           id,grant_id,user_id,creator_id,box_id,opening_id
+         ) values ($1,$2,$3,$4,$5,$6)`,
+        [uuidv7(), firstGrantId, owner.userId, creator.id, draft.id, uuidv7()],
+      ),
+    ).rejects.toThrow(/cannot be over-consumed/iu);
+    expect((await readEntitlementState(owner.userId)).rows[0]).toMatchObject({
+      consumed: '2',
+      granted: '3',
+      remaining: '1',
+    });
+    const secondGrant = await entitlementOperator.grant({
+      ...grantInput,
+      grantId: uuidv7(),
+      quantity: 1n,
+      reason: 'Second R1A test grant',
+      sourceIdentity: `${sourceIdentity}-second`,
+    });
+    expect(secondGrant).toMatchObject({ replayed: false });
+    expect((await readEntitlementState(owner.userId)).rows[0]).toMatchObject({
+      consumed: '2',
+      granted: '4',
+      remaining: '2',
+    });
+    await expect(
+      migrationDatabase.query(
+        `update app.opening_entitlement_grants set quantity_granted = 3 where id = $1`,
+        [firstGrantId],
+      ),
+    ).rejects.toThrow(/Opening entitlement history is immutable/iu);
+    await expect(
+      migrationDatabase.query(
+        `insert into app.opening_entitlement_consumptions (
+           id,grant_id,user_id,creator_id,box_id,opening_id
+         ) values ($1,$2,$3,$4,$5,$6)`,
+        [uuidv7(), firstGrantId, otherUser.userId, creator.id, draft.id, uuidv7()],
+      ),
+    ).rejects.toThrow();
   });
 
   it('replaces ordered draft rewards and rejects invalid associations and weights', async () => {
@@ -1097,6 +1378,7 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
       'description',
       'id',
       'imageUrl',
+      'maxOpeningsPerUser',
       'name',
       'openingCompatibilityVersion',
       'priceMinor',

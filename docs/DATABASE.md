@@ -52,17 +52,18 @@ Versioned publication record, immutable once published:
 
 - `id` PK, `box_id` FK, `version_number integer`, unique `(box_id, version_number)`;
 - `name`, `description`, `image_url` and other presentation snapshot fields;
-- `price_minor bigint CHECK (price_minor > 0)`, `currency char(3)`;
+- legacy `price_minor bigint` and `currency char(3)`, both null only for `opening-v2`;
+- `max_openings_per_user bigint`, positive only for `opening-v2` and null for legacy history;
 - `total_weight bigint CHECK (total_weight > 0)`;
 - `configuration_hash bytea` (SHA-256 of canonical selection manifest), `rng_algorithm_version text`;
-- nullable `opening_compatibility_version`; only `opening-v1` is currently supported;
+- nullable `opening_compatibility_version`; `opening-v1` is legacy paid and `opening-v2` is free-entry;
 - `state` (`draft`, `published`, `retired`), `published_at`, `created_by_user_id`, timestamps.
 
 Only drafts may be changed. Phase 5 enforces one draft per box with a partial unique index. Publishing locks the box, validates the complete graph, computes the canonical manifest/hash and total, changes the draft to `published`, marks referenced reward versions published, and atomically switches `boxes.current_published_version_id` while incrementing its revision. The box identity becomes `active` on its first publication. Later edits lazily clone the latest version into a new numbered draft; history is never overwritten.
 
-Phase 9 grandfathering is explicit. Published versions that predate its migration retain a null compatibility marker and receive no inferred `box_version_base_rewards` row. They remain immutable/readable but are not eligible for `POST /v1/boxes/:boxId/open`. Reconfiguration marks a draft `opening-v1`; every subsequent publication requires exactly one designation that points to an association in that version. A legacy box becomes openable only by publishing a normal new compatible version.
+Phase 9 grandfathering is explicit. Published versions that predate its migration retain a null compatibility marker and receive no inferred `box_version_base_rewards` row. They remain immutable/readable but are not eligible for `POST /v1/boxes/:boxId/open`. An `opening-v1` draft requires positive price/currency, no maximum, and exactly one base designation at publication. An `opening-v2` draft requires null price/currency, a positive maximum, and zero base designations. A legacy box changes model only by publishing a normal new immutable version.
 
-The manifest is a fixed-schema RFC 8785-compatible canonical JSON object containing algorithm version, box/version IDs, currency, price, total weight, and the ordered association ID/reward-version ID/position/weight entries. Integer values that can exceed JavaScript's safe range are decimal strings. `configuration_hash` is SHA-256 over those exact UTF-8 canonical bytes. Phase 5 records `hmac-sha256-rejection-v1` as the future selection algorithm identifier but does not implement selection or RNG.
+Manifest parsing is explicitly versioned. Historical/`opening-v1` RFC 8785-compatible bytes contain algorithm version, box/version IDs, currency, price, total weight, and ordered association ID/reward-version ID/position/weight entries. `opening-v2` bytes instead contain the model marker, box/version IDs, ordered entries including immutable rarity/policy snapshots, total weight, and `maxOpeningsPerUser`; no financial field is permitted. Integer values that can exceed JavaScript's safe range are decimal strings. `configuration_hash` is SHA-256 over the exact version-specific UTF-8 bytes. The RNG algorithm remains `hmac-sha256-rejection-v1` for both.
 
 ### `rewards`
 
@@ -98,7 +99,13 @@ The Phase 5 publish transaction verifies at least one association, positive weig
 
 ### `box_version_base_rewards`
 
-Draft-only mutable designations link a generated ID, box version, and one of that version's reward associations. Multiple/zero designations may exist during editing, but the forward publication trigger requires exactly one for `opening-v1`. Designations become immutable with the published version and are deliberately absent for grandfathered history.
+Draft-only mutable designations link a generated ID, box version, and one of that version's reward associations. Multiple/zero designations may exist during legacy editing, but the forward publication trigger requires exactly one for `opening-v1` and zero for `opening-v2`. Designations become immutable with the published version and are deliberately absent for grandfathered history.
+
+### `opening_entitlement_grants` and `opening_entitlement_consumptions`
+
+R1A grants are immutable non-financial authority scoped to `(user_id, creator_id, box_id)`, where the composite box/creator foreign key proves stable Drop ownership. Each row records positive `quantity_granted`, a generic source type/identity, globally unique SHA-256 semantic fingerprint, optional granting actor, reason, and timestamp. The unique source and fingerprint constraints plus the private grant primitive make exact retry idempotent and reject semantic reuse across a different user, creator, box, quantity, actor, or reason.
+
+Consumption rows prepare R1B linkage: each row repeats the exact grant scope and has a globally unique `opening_id`. A before-insert guard locks its grant, counts prior immutable consumptions, and prevents remaining quantity from becoming negative. The current opening transaction does not insert these rows. Grant and consumption updates/deletes are trigger-prohibited; all table access and private grant/aggregate functions are revoked from application and worker roles. A local operator command can grant and query `sum(grants)`, `count(consumptions)`, and their remaining difference without exposing source metadata to a fan API.
 
 ## Fairness state
 

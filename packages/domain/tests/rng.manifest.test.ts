@@ -4,10 +4,12 @@ import {
   canonicalizePublishedManifest,
   hashPublishedManifest,
   maximumSignedBigint,
+  parseOpeningV2PublishedManifest,
   parsePublishedManifest,
   RngError,
   verifyPublishedManifestHash,
   type PublishedManifest,
+  type OpeningV2PublishedManifest,
 } from '../src/index.js';
 
 const baseManifest: PublishedManifest = {
@@ -24,6 +26,25 @@ const baseManifest: PublishedManifest = {
     },
   ],
   priceMinor: '1000',
+  totalWeight: '5',
+};
+
+const openingV2Manifest: OpeningV2PublishedManifest = {
+  algorithmVersion: 'hmac-sha256-rejection-v1',
+  boxId: '019c0000-0000-7000-8000-000000000010',
+  boxVersionId: '019c0000-0000-7000-8000-000000000020',
+  entries: [
+    {
+      boxVersionRewardId: '019c0000-0000-7000-8000-000000000030',
+      position: 0,
+      rarity: 'common',
+      rarityPolicyVersion: 'rarity-v1',
+      rewardVersionId: '019c0000-0000-7000-8000-000000000040',
+      weight: '5',
+    },
+  ],
+  maxOpeningsPerUser: '3',
+  openingCompatibilityVersion: 'opening-v2',
   totalWeight: '5',
 };
 
@@ -73,6 +94,63 @@ describe('published manifest verification', () => {
     expect(canonicalizePublishedManifest(reverseInsertionOrder)).toBe(
       canonicalizePublishedManifest(baseManifest),
     );
+  });
+
+  it('canonicalizes opening-v2 without financial fields and binds its opening policy', () => {
+    const entry = openingV2Manifest.entries[0];
+    if (entry === undefined) throw new Error('Expected an opening-v2 manifest entry.');
+    const canonical = canonicalizePublishedManifest(openingV2Manifest);
+    expect(canonical).toBe(
+      '{"algorithmVersion":"hmac-sha256-rejection-v1","boxId":"019c0000-0000-7000-8000-000000000010","boxVersionId":"019c0000-0000-7000-8000-000000000020","entries":[{"boxVersionRewardId":"019c0000-0000-7000-8000-000000000030","position":0,"rarity":"common","rarityPolicyVersion":"rarity-v1","rewardVersionId":"019c0000-0000-7000-8000-000000000040","weight":"5"}],"maxOpeningsPerUser":"3","openingCompatibilityVersion":"opening-v2","totalWeight":"5"}',
+    );
+    expect(canonical).not.toContain('priceMinor');
+    expect(canonical).not.toContain('currency');
+    expect(parseOpeningV2PublishedManifest(openingV2Manifest)).toEqual(openingV2Manifest);
+    expect(hashPublishedManifest({ ...openingV2Manifest, maxOpeningsPerUser: '4' })).not.toBe(
+      hashPublishedManifest(openingV2Manifest),
+    );
+    expect(
+      hashPublishedManifest({
+        ...openingV2Manifest,
+        entries: [{ ...entry, weight: '6' }],
+        totalWeight: '6',
+      }),
+    ).not.toBe(hashPublishedManifest(openingV2Manifest));
+    expect(() =>
+      parseOpeningV2PublishedManifest({ ...openingV2Manifest, currency: 'USD' }),
+    ).toThrow(RngError);
+  });
+
+  it('binds opening-v2 entry order and immutable rarity snapshots into the hash', () => {
+    const firstEntry = openingV2Manifest.entries[0];
+    if (firstEntry === undefined) throw new Error('Expected an opening-v2 manifest entry.');
+    const secondEntry = {
+      boxVersionRewardId: '019c0000-0000-7000-8000-000000000031',
+      position: 1,
+      rarity: 'legendary' as const,
+      rarityPolicyVersion: 'rarity-v1' as const,
+      rewardVersionId: '019c0000-0000-7000-8000-000000000041',
+      weight: '1',
+    };
+    const ordered: OpeningV2PublishedManifest = {
+      ...openingV2Manifest,
+      entries: [{ ...firstEntry, weight: '5' }, secondEntry],
+      totalWeight: '6',
+    };
+    const reordered: OpeningV2PublishedManifest = {
+      ...ordered,
+      entries: [
+        { ...secondEntry, position: 0 },
+        { ...firstEntry, position: 1 },
+      ],
+    };
+    const reclassified: OpeningV2PublishedManifest = {
+      ...ordered,
+      entries: [{ ...firstEntry, rarity: 'uncommon', weight: '5' }, secondEntry],
+    };
+
+    expect(hashPublishedManifest(reordered)).not.toBe(hashPublishedManifest(ordered));
+    expect(hashPublishedManifest(reclassified)).not.toBe(hashPublishedManifest(ordered));
   });
 
   it('changes the hash when selection-relevant content changes', () => {

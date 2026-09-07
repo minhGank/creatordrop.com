@@ -21,6 +21,7 @@ import { usePrefersReducedMotion } from '../accessibility/use-prefers-reduced-mo
 import type { SessionState } from '../auth/session-context-value.js';
 import { formatMinorUnits } from '../formatting/money.js';
 import { formatProbability } from '../formatting/probability.js';
+import { isOpeningV1Catalog, type OpeningV1Catalog } from './opening-catalog.js';
 import { calculateReelWinnerTranslation } from './reel-geometry.js';
 
 type Opening = BoxOpeningResponse['opening'];
@@ -106,7 +107,11 @@ const generateClientSeed = (): string => {
   return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
 };
 
-const catalogMatchesOpening = (catalog: PublishedBoxVersionResponse, opening: Opening): boolean => {
+const catalogMatchesOpening = (
+  catalog: PublishedBoxVersionResponse,
+  opening: Opening,
+): catalog is OpeningV1Catalog => {
+  if (!isOpeningV1Catalog(catalog)) return false;
   if (
     catalog.manifest.boxId !== opening.boxId ||
     catalog.manifest.boxVersionId !== opening.boxVersionId ||
@@ -264,7 +269,7 @@ export const OpeningExperience = ({
   session,
 }: {
   readonly api: CreatorDropApiClient;
-  readonly box: PublishedBoxVersionResponse;
+  readonly box: OpeningV1Catalog;
   readonly customSlug: string;
   readonly onCatalogChange: (catalog: PublishedBoxVersionResponse) => void;
   readonly session: SessionState;
@@ -272,8 +277,8 @@ export const OpeningExperience = ({
   const reducedMotion = usePrefersReducedMotion();
   const [stage, setStage] = useState<Stage>('idle');
   const [opening, setOpening] = useState<Opening>();
-  const [confirmationCatalog, setConfirmationCatalog] = useState<PublishedBoxVersionResponse>();
-  const [committedCatalog, setCommittedCatalog] = useState<PublishedBoxVersionResponse>();
+  const [confirmationCatalog, setConfirmationCatalog] = useState<OpeningV1Catalog>();
+  const [committedCatalog, setCommittedCatalog] = useState<OpeningV1Catalog>();
   const [error, setError] = useState<string>();
   const [resultError, setResultError] = useState<string>();
   const [clientSeed, setClientSeed] = useState<string>();
@@ -349,12 +354,12 @@ export const OpeningExperience = ({
     throw new Error('Fairness setup changed repeatedly. Review it and try again.');
   }, [api]);
 
-  const loadCurrentCatalog = useCallback(async (): Promise<PublishedBoxVersionResponse> => {
+  const loadCurrentCatalog = useCallback(async (): Promise<OpeningV1Catalog> => {
     const current = await api.getCreatorBox(customSlug, box.manifest.boxId);
     if (
       current.creator.customSlug !== customSlug ||
       current.box.manifest.boxId !== box.manifest.boxId ||
-      current.box.version.openingCompatibilityVersion !== 'opening-v1'
+      !isOpeningV1Catalog(current.box)
     ) {
       throw new Error('The current box version is not available for opening.');
     }
@@ -721,48 +726,65 @@ export const OpeningExperience = ({
         <h2 id="opening-confirm-heading" ref={confirmationHeading} tabIndex={-1}>
           Open {confirmationCatalog.version.name}?
         </h2>
-        <p>
-          This spends{' '}
+        <p className="opening-confirmation-price">
           {formatMinorUnits(
             confirmationCatalog.version.priceMinor,
             confirmationCatalog.version.currency,
-          )}{' '}
-          from your wallet balance for published version{' '}
-          {confirmationCatalog.version.versionNumber.toString()}. The backend will open only this
-          exact confirmed version and configuration.
+          )}
         </p>
-        <p>
-          Active server-seed commitment: <span className="hash-value">{serverSeedCommitment}</span>.
-          This commitment was published before your opening and does not reveal the hidden server
-          seed.
+        <p className="opening-confirmation-charge">
+          This amount will be deducted from your wallet.
         </p>
-        <p>
-          Active seed-set ID: <span className="hash-value">{seedSetId}</span>.
-        </p>
-        <label className="client-seed-control">
-          Client seed
-          <input
-            aria-describedby="client-seed-help"
-            autoComplete="off"
-            disabled={stage === 'submitting'}
-            maxLength={64}
-            onChange={(event) => setClientSeed(event.target.value)}
-            spellCheck={false}
-            value={clientSeed ?? ''}
-          />
-        </label>
-        <p id="client-seed-help" className="field-help">
-          Your current 32-byte lowercase hexadecimal seed is committed with the server seed and
-          nonce. Changing it is saved before this opening.
-        </p>
-        <button
-          className="text-button"
-          disabled={stage === 'submitting'}
-          onClick={() => setClientSeed(generateClientSeed())}
-          type="button"
-        >
-          Generate a new client seed
-        </button>
+        <details className="opening-confirmation-fairness">
+          <summary>
+            <span className="opening-confirmation-fairness-status">
+              <span aria-hidden="true">🔒</span>
+              Provably fair
+            </span>
+            <span className="opening-confirmation-fairness-label">Fairness details</span>
+          </summary>
+          <div className="opening-confirmation-fairness-content">
+            <p>
+              CreatorDrop fixed a hidden server seed before this opening. The commitment lets you
+              verify the result after that seed is revealed; your client seed and nonce also
+              contribute to the result.
+            </p>
+            <dl>
+              <div>
+                <dt>Server-seed commitment</dt>
+                <dd className="hash-value">{serverSeedCommitment}</dd>
+              </div>
+              <div>
+                <dt>Seed-set ID</dt>
+                <dd className="hash-value">{seedSetId}</dd>
+              </div>
+            </dl>
+            <label className="client-seed-control">
+              Client seed
+              <input
+                aria-describedby="client-seed-help"
+                autoComplete="off"
+                disabled={stage === 'submitting'}
+                maxLength={64}
+                onChange={(event) => setClientSeed(event.target.value)}
+                spellCheck={false}
+                value={clientSeed ?? ''}
+              />
+            </label>
+            <p id="client-seed-help" className="field-help">
+              This seed is combined with the hidden server seed and nonce. If you generate a new
+              one, CreatorDrop saves it before submitting the opening.
+            </p>
+            <button
+              className="text-button"
+              disabled={stage === 'submitting'}
+              onClick={() => setClientSeed(generateClientSeed())}
+              type="button"
+            >
+              Generate a new client seed
+            </button>
+          </div>
+        </details>
         {error === undefined ? null : (
           <p className="inline-error" role="alert">
             {error}
@@ -774,7 +796,7 @@ export const OpeningExperience = ({
             disabled={stage === 'submitting' || !/^[0-9a-f]{64}$/u.test(clientSeed ?? '')}
             onClick={() => void confirm()}
           >
-            {stage === 'submitting' ? 'Committing opening…' : 'Confirm and open'}
+            {stage === 'submitting' ? 'Committing opening…' : 'Open box'}
           </button>
           <button
             className="button secondary"

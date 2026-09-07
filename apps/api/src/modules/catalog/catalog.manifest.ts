@@ -10,8 +10,10 @@ import type {
   BoxVersionId,
   BoxVersionRewardId,
   MoneyMinor,
+  OpeningV2PublishedManifest,
   ProbabilityWeight,
   PublishedManifest,
+  RewardRarity,
   RewardVersionId,
 } from './catalog.js';
 
@@ -30,6 +32,15 @@ export interface ManifestInput {
   readonly currency: string;
   readonly entries: readonly ManifestEntryInput[];
   readonly priceMinor: MoneyMinor;
+}
+
+export interface OpeningV2ManifestInput {
+  readonly boxId: BoxId;
+  readonly boxVersionId: BoxVersionId;
+  readonly entries: readonly (ManifestEntryInput & {
+    readonly rarity: RewardRarity;
+  })[];
+  readonly maxOpeningsPerUser: bigint;
 }
 
 export const totalProbabilityWeight = (
@@ -76,11 +87,32 @@ export const createPublishedManifest = (input: ManifestInput): PublishedManifest
   };
 };
 
+export const createOpeningV2PublishedManifest = (
+  input: OpeningV2ManifestInput,
+): OpeningV2PublishedManifest => {
+  const entries = [...input.entries].sort((left, right) => left.position - right.position);
+  return {
+    algorithmVersion: rngAlgorithmVersion,
+    boxId: input.boxId,
+    boxVersionId: input.boxVersionId,
+    entries: entries.map((entry) => ({
+      boxVersionRewardId: entry.id,
+      position: entry.position,
+      rarity: entry.rarity,
+      rarityPolicyVersion: 'rarity-v1',
+      rewardVersionId: entry.rewardVersionId,
+      weight: entry.weight.toString(),
+    })),
+    maxOpeningsPerUser: input.maxOpeningsPerUser.toString(),
+    openingCompatibilityVersion: 'opening-v2',
+    totalWeight: totalProbabilityWeight(entries).toString(),
+  };
+};
+
 // The shared domain canonicalizer preserves the exact Phase 5 persisted byte format.
-export const canonicalizePublishedManifest = (manifest: PublishedManifest): string =>
+export const canonicalizePublishedManifest = (manifest: unknown): string =>
   canonicalizeDomainManifest(manifest);
 
-export const hashPublishedManifest = (manifest: PublishedManifest): string =>
-  hashDomainManifest(manifest);
+export const hashPublishedManifest = (manifest: unknown): string => hashDomainManifest(manifest);
 
 export { rngAlgorithmVersion };

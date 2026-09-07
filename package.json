@@ -42,6 +42,7 @@
     "seed:demo": "npm run build --workspace @creatordrop/app-api && node --env-file-if-exists=.env scripts/seed-phase15-demo.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "grant:entitlement:dev": "npm run build --workspace @creatordrop/config && npm run build --workspace @creatordrop/database && node --env-file-if-exists=.env scripts/grant-opening-entitlement.mjs",
     "lint": "eslint . --max-warnings=0",
     "secrets:scan": "secretlint \"**/*\"",
     "test": "vitest run",

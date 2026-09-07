@@ -101,16 +101,13 @@ export type RewardRarity = (typeof rewardRarities)[number];
 export const rarityPolicyVersions = ['rarity-v1'] as const;
 export type RarityPolicyVersion = (typeof rarityPolicyVersions)[number];
 
-export interface BoxVersionContract {
+interface BoxVersionContractBase {
   readonly configurationHash: string | null;
   readonly createdAt: string;
-  readonly currency: string;
   readonly description: string;
   readonly id: string;
   readonly imageUrl: string | null;
   readonly name: string;
-  readonly openingCompatibilityVersion: 'opening-v1' | null;
-  readonly priceMinor: string;
   readonly publishedAt: string | null;
   readonly rngAlgorithmVersion: string | null;
   readonly state: BoxVersionState;
@@ -118,6 +115,22 @@ export interface BoxVersionContract {
   readonly updatedAt: string;
   readonly versionNumber: number;
 }
+
+export interface LegacyBoxVersionContract extends BoxVersionContractBase {
+  readonly currency: string;
+  readonly maxOpeningsPerUser: null;
+  readonly openingCompatibilityVersion: 'opening-v1' | null;
+  readonly priceMinor: string;
+}
+
+export interface OpeningV2BoxVersionContract extends BoxVersionContractBase {
+  readonly currency: null;
+  readonly maxOpeningsPerUser: string;
+  readonly openingCompatibilityVersion: 'opening-v2';
+  readonly priceMinor: null;
+}
+
+export type BoxVersionContract = LegacyBoxVersionContract | OpeningV2BoxVersionContract;
 
 export interface BoxContract {
   readonly createdAt: string;
@@ -217,10 +230,30 @@ export interface PublishedManifestContract {
   readonly totalWeight: string;
 }
 
+export interface OpeningV2PublishedManifestContract {
+  readonly algorithmVersion: 'hmac-sha256-rejection-v1';
+  readonly boxId: string;
+  readonly boxVersionId: string;
+  readonly entries: readonly {
+    readonly boxVersionRewardId: string;
+    readonly position: number;
+    readonly rarity: RewardRarity;
+    readonly rarityPolicyVersion: 'rarity-v1';
+    readonly rewardVersionId: string;
+    readonly weight: string;
+  }[];
+  readonly maxOpeningsPerUser: string;
+  readonly openingCompatibilityVersion: 'opening-v2';
+  readonly totalWeight: string;
+}
+
+export type VersionedPublishedManifestContract =
+  PublishedManifestContract | OpeningV2PublishedManifestContract;
+
 export interface PublishedBoxVersionResponse {
   readonly configurationHash: string;
   readonly entries: readonly BoxDraftRewardContract[];
-  readonly manifest: PublishedManifestContract;
+  readonly manifest: VersionedPublishedManifestContract;
   readonly version: BoxVersionContract;
 }
 
@@ -230,20 +263,32 @@ export interface PublicCreatorSummaryContract {
   readonly handle: string;
 }
 
-export interface PublicBoxSummaryContract {
-  readonly availability: 'legacy' | 'openable';
+interface PublicBoxSummaryBase {
   readonly configurationHash: string;
-  readonly currency: string;
   readonly currentPublishedVersionId: string;
   readonly description: string;
   readonly id: string;
   readonly imageUrl: string | null;
   readonly name: string;
-  readonly openingCompatibilityVersion: 'opening-v1' | null;
-  readonly priceMinor: string;
   readonly publishedAt: string;
   readonly versionNumber: number;
 }
+
+export type PublicBoxSummaryContract =
+  | (PublicBoxSummaryBase & {
+      readonly availability: 'legacy' | 'openable';
+      readonly currency: string;
+      readonly maxOpeningsPerUser: null;
+      readonly openingCompatibilityVersion: 'opening-v1' | null;
+      readonly priceMinor: string;
+    })
+  | (PublicBoxSummaryBase & {
+      readonly availability: 'opening-v2';
+      readonly currency: null;
+      readonly maxOpeningsPerUser: string;
+      readonly openingCompatibilityVersion: 'opening-v2';
+      readonly priceMinor: null;
+    });
 
 export interface PublicCreatorsResponse {
   readonly creators: readonly PublicCreatorSummaryContract[];
@@ -408,7 +453,7 @@ export interface OpeningFairnessProofResponse {
     readonly algorithmVersion: 'hmac-sha256-rejection-v1';
     readonly clientSeed: string;
     readonly configurationHash: string;
-    readonly manifest: PublishedManifestContract;
+    readonly manifest: VersionedPublishedManifestContract;
     readonly nonce: string;
     readonly openedAt: string;
     readonly openingId: string;

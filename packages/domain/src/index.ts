@@ -31,17 +31,22 @@ export { RngError, rngErrorCodes, type RngErrorCode } from './rng/errors.js';
 export {
   canonicalizePublishedManifest,
   hashPublishedManifest,
+  parseOpeningV2PublishedManifest,
   parsePublishedManifest,
+  parseVersionedPublishedManifest,
   verifyPublishedManifestHash,
 } from './rng/manifest.js';
 export { sampleWithRejection } from './rng/rejection-sampling.js';
 export { selectReward } from './rng/select-reward.js';
 export type {
   DigestSource,
+  OpeningV2PublishedManifest,
+  OpeningV2PublishedManifestEntry,
   PublishedManifest,
   PublishedManifestEntry,
   RejectionSample,
   RewardSelectionInput,
   RewardSelectionResult,
+  VersionedPublishedManifest,
 } from './rng/types.js';
 export { selectWeightedEntry } from './rng/weighted-selection.js';

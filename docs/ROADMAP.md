@@ -135,27 +135,81 @@ Build confirmation, client-seed controls, idempotent submission, result-driven F
 
 Completed: immutable server-derived per-entry `rarity-v1` snapshots with legacy-null preservation, the public PostgreSQL-authoritative opening-proof endpoint, a separate Web Crypto independent verifier, and the authenticated opening confirmation/reel/result flow. Confirmation refreshes and binds the exact current version/configuration while PostgreSQL retains price authority; a changed version fails before debit/RNG and requires fresh confirmation. One session-stored command key and expectation automatically recover only ambiguous lost responses; definitive failures clear them and retry-required responses wait for explicit user action. Reel/result data is bound to the committed immutable version, measured reel geometry centers that winner across font and viewport changes, and skip/reduced-motion paths reveal the same committed outcome.
 
+## Product Model Rebase — Free-entry CreatorDrop
+
+Completed historical phases remain accurate: `opening-v1` is the paid wallet/ledger opening model
+implemented in Phases 8–15. The target product removes fan payment from newly published Drops
+without rewriting that immutable financial or fairness history.
+
+### R1A — opening-v2 + entitlement foundation
+
+Completed: explicit non-financial `opening-v2` catalog versions, a separate deterministic manifest,
+positive immutable `maxOpeningsPerUser`, zero legacy base rewards, version-aware domain/verifier
+parsing, and immutable PostgreSQL entitlement grant/consumption preparation scoped to stable box
+identities. Local operator grants are source-idempotent and application-role inaccessible.
+Historical `opening-v1` bytes, hashes, proofs, and paid opening behavior remain unchanged. R1A does
+not consume entitlements or make v2 boxes openable.
+
+### R1B — Atomic free opening
+
+Planned: make the `opening-v2` transaction require and atomically consume an opening entitlement,
+enforce the published per-user successful-opening maximum, and omit wallet debit, sale/allocation
+ledger postings, platform fee, and creator earnings from that path. Preserve one caller-owned
+transaction, nonce/RNG, inventory, opening/win/fulfillment, idempotency, and outbox invariants.
+
+### R1C — Runtime/product switch
+
+Planned: switch active API/frontend product surfaces to free-entry Drops, disable fan wallet and
+funding surfaces, provide the minimum new consumer flow, and complete the rebased normative docs.
+Historical financial records and their audit/read requirements remain preserved.
+
+### R2 — Entry claims & manual verification
+
+Planned: screenshot evidence, authoritative usernames/handles, proof-review records, and creator
+approval/rejection workflows. Provider-specific Twitch, YouTube, Instagram, or Shopify integration
+requires its own approved design rather than being inferred by R1A.
+
+### R3 — XP, levels & Universal Entries
+
+Planned: retire active points/leaderboards, introduce global XP and levels, and define Universal
+Entries. Finalized historical rankings/achievements remain immutable history.
+
+### R4 — Creator SaaS plans & hosted-opening quotas
+
+Planned: creator hosting plans, monthly usage limits, and later Stripe Billing. No creator billing
+or hosted-opening quota is introduced by R1A.
+
 ## Phase 16 — Creator management UI
 
-Depends on: Phases 4, 5, 12, and 14.
+Depends on: Phases 4, 5, 12, 14, and the R1 runtime/product switch.
 
-Implement role-aware creator settings, box/reward drafts, probability preview/publication confirmation, and fulfillment workflow. Tests cover client-side ergonomics plus authoritative server failures, stale revisions, permission changes mid-session, exact weight display, and inaccessible cross-creator navigation.
+Implement role-aware creator settings, free-entry Drop/reward drafts, eligibility configuration from
+R2, probability preview/publication confirmation, and fulfillment workflow. Do not restore a paid
+fan-opening prerequisite. Tests cover client-side ergonomics plus authoritative server failures,
+stale revisions, permission changes mid-session, exact weight display, and inaccessible
+cross-creator navigation.
 
 ## Phase 17 — Dashboard and live community UI
 
-Depends on: Phases 10, 13, and 14.
+Depends on: Phases 10, 13, 14, and R3.
 
-Implement live drop feed, leaderboards with freshness indicators, creator aggregates,
-reconnect/deduplication, presentation-only privacy controls, and currency separation. Privacy
-presentation changes must not remove ranking/champion eligibility or rewrite finalized rankings
-and achievements. Tests cover duplicate/out-of-order events, stale projections, Redis fallback,
-safe identity presentation, and high-volume rendering.
+Implement the live Drop/community feed, XP/level progress, Universal Entry presentation, creator
+aggregates, and reconnect/deduplication. Historical Phase 13 leaderboard results and achievements
+remain readable immutable history, not the active progression system. Tests cover
+duplicate/out-of-order events, stale projections, Redis fallback, safe identity presentation, and
+high-volume rendering.
 
 ## Phase 18 — Operational hardening and launch gate
 
-Depends on: all launch-scope phases.
+Depends on: all launch-scope phases and completed R1–R4 product decisions.
 
-Perform load/concurrency tests, external security review, fairness implementation review, restore/disaster exercise, ledger/provider reconciliation rehearsal, seed/key rotation drill, abuse/rate-limit tuning, accessibility review, data retention jobs, dashboards/alerts/runbooks, and legal/product sign-off. Tests include fault injection (database/Redis/worker/provider), sustained open load, backup restore, key compromise, webhook backlog, and incident rollback/feature-stop controls.
+Perform load/concurrency tests, external security review, fairness implementation review,
+restore/disaster exercise, legacy ledger/provider reconciliation rehearsal, entitlement/claim
+reconciliation, seed/key rotation drill, abuse/rate-limit tuning, accessibility review, data
+retention jobs, dashboards/alerts/runbooks, and legal/product sign-off. Tests include fault
+injection (database/Redis/worker/provider), sustained free-opening load, backup restore, key
+compromise, claim/entitlement races, webhook backlog for retained integrations, and incident
+rollback/feature-stop controls.
 
 No production money is accepted until the launch checklist has named owners and evidence for every gate.
 

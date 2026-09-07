@@ -20,6 +20,7 @@ interface PublicBoxRow {
   readonly description: unknown;
   readonly id: unknown;
   readonly imageUrl: unknown;
+  readonly maxOpeningsPerUser: unknown;
   readonly name: unknown;
   readonly openingCompatibilityVersion: unknown;
   readonly priceMinor: unknown;
@@ -87,27 +88,51 @@ const parseBox = (row: PublicBoxRow): PublicBoxRecord => {
     'opening compatibility version',
   );
   if (openingCompatibilityVersion !== null && openingCompatibilityVersion !== 'opening-v1') {
-    throw new Error('Database returned invalid opening compatibility version.');
+    if (openingCompatibilityVersion !== 'opening-v2') {
+      throw new Error('Database returned invalid opening compatibility version.');
+    }
   }
-
+  const common = {
+    configurationHash: requiredString(row.configurationHash, 'configuration hash'),
+    currentPublishedVersionId: requiredString(
+      row.currentPublishedVersionId,
+      'current published version ID',
+    ),
+    description: requiredString(row.description, 'box description'),
+    id,
+    imageUrl: nullableString(row.imageUrl, 'box image URL'),
+    name: requiredString(row.name, 'box name'),
+    publishedAt: requiredTimestamp(row.publishedAt, 'box publication timestamp'),
+    versionNumber: requiredInteger(row.versionNumber, 'box version number'),
+  };
+  if (openingCompatibilityVersion === 'opening-v2') {
+    if (row.currency !== null || row.priceMinor !== null) {
+      throw new Error('Database returned financial fields for opening-v2.');
+    }
+    return {
+      id,
+      summary: {
+        ...common,
+        availability: 'opening-v2',
+        currency: null,
+        maxOpeningsPerUser: requiredString(row.maxOpeningsPerUser, 'maximum openings per user'),
+        openingCompatibilityVersion,
+        priceMinor: null,
+      },
+    };
+  }
+  if (row.maxOpeningsPerUser !== null) {
+    throw new Error('Database returned a legacy box with maximum openings.');
+  }
   return {
     id,
     summary: {
+      ...common,
       availability: openingCompatibilityVersion === 'opening-v1' ? 'openable' : 'legacy',
-      configurationHash: requiredString(row.configurationHash, 'configuration hash'),
       currency: requiredString(row.currency, 'box currency'),
-      currentPublishedVersionId: requiredString(
-        row.currentPublishedVersionId,
-        'current published version ID',
-      ),
-      description: requiredString(row.description, 'box description'),
-      id,
-      imageUrl: nullableString(row.imageUrl, 'box image URL'),
-      name: requiredString(row.name, 'box name'),
+      maxOpeningsPerUser: null,
       openingCompatibilityVersion,
       priceMinor: requiredString(row.priceMinor, 'box price'),
-      publishedAt: requiredTimestamp(row.publishedAt, 'box publication timestamp'),
-      versionNumber: requiredInteger(row.versionNumber, 'box version number'),
     },
   };
 };
@@ -196,6 +221,7 @@ export const listPublicCreatorBoxes = async (
        bv.name,
        bv.description,
        bv.image_url as "imageUrl",
+       bv.max_openings_per_user::text as "maxOpeningsPerUser",
        bv.price_minor::text as "priceMinor",
        bv.currency,
        bv.version_number as "versionNumber",

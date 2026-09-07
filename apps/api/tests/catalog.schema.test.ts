@@ -46,6 +46,67 @@ describe('catalog request validation', () => {
     },
   );
 
+  it('parses an explicitly non-financial opening-v2 draft', () => {
+    expect(
+      parseBoxDraftInput({
+        description: 'Free entry',
+        maxOpeningsPerUser: '3',
+        name: 'Free Drop',
+        openingCompatibilityVersion: 'opening-v2',
+      }),
+    ).toMatchObject({
+      currency: null,
+      maxOpeningsPerUser: 3n,
+      openingCompatibilityVersion: 'opening-v2',
+      priceMinor: null,
+    });
+    for (const maxOpeningsPerUser of ['0', '-1', '1.5', 3, '01']) {
+      expect(() =>
+        parseBoxDraftInput({
+          description: '',
+          maxOpeningsPerUser,
+          name: 'Free Drop',
+          openingCompatibilityVersion: 'opening-v2',
+        }),
+      ).toThrow();
+    }
+    expect(() =>
+      parseBoxDraftInput({
+        currency: 'USD',
+        description: '',
+        maxOpeningsPerUser: '3',
+        name: 'Free Drop',
+        openingCompatibilityVersion: 'opening-v2',
+      }),
+    ).toThrow();
+  });
+
+  it('accepts opening-v2 reward configuration without a base-reward field', () => {
+    expect(
+      parseDraftRewardConfiguration({
+        entries: [
+          {
+            rewardVersionId: '019c0000-0000-7000-8000-000000000040',
+            weight: '5',
+          },
+        ],
+        openingCompatibilityVersion: 'opening-v2',
+      }),
+    ).toMatchObject({ openingCompatibilityVersion: 'opening-v2' });
+    expect(() =>
+      parseDraftRewardConfiguration({
+        entries: [
+          {
+            isBaseReward: false,
+            rewardVersionId: '019c0000-0000-7000-8000-000000000040',
+            weight: '5',
+          },
+        ],
+        openingCompatibilityVersion: 'opening-v2',
+      }),
+    ).toThrow();
+  });
+
   it('supports unlimited and finite inventory with paired declared values', () => {
     expect(
       parseRewardDraftInput({

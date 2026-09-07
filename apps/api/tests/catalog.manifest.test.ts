@@ -4,6 +4,7 @@ import { CatalogPublicationError } from '../src/modules/catalog/catalog.errors.j
 import {
   canonicalizePublishedManifest,
   createPublishedManifest,
+  createOpeningV2PublishedManifest,
   hashPublishedManifest,
 } from '../src/modules/catalog/catalog.manifest.js';
 import {
@@ -24,6 +25,7 @@ describe('published catalog manifest', () => {
       name: 'Box',
       priceMinor: '1000',
     }).priceMinor;
+    if (price === null) throw new Error('Expected a legacy catalog price.');
     const weight = parseDraftRewardConfiguration({
       entries: [
         {
@@ -83,13 +85,39 @@ describe('published catalog manifest', () => {
           rewardVersionId: entry.rewardVersionId,
           weight: entry.weight,
         })),
-        priceMinor: parseBoxDraftInput({
-          currency: 'USD',
-          description: '',
-          name: 'Box',
-          priceMinor: '1000',
-        }).priceMinor,
+        priceMinor: (() => {
+          const price = parseBoxDraftInput({
+            currency: 'USD',
+            description: '',
+            name: 'Box',
+            priceMinor: '1000',
+          }).priceMinor;
+          if (price === null) throw new Error('Expected a legacy catalog price.');
+          return price;
+        })(),
       }),
     ).toThrow(CatalogPublicationError);
+  });
+
+  it('creates a deterministic non-financial opening-v2 manifest', () => {
+    const entry = {
+      id: parseBoxVersionRewardId('019c0000-0000-7000-8000-000000000030'),
+      position: 0,
+      rarity: 'common' as const,
+      rewardVersionId: parseRewardVersionId('019c0000-0000-7000-8000-000000000040'),
+      weight: 5n as ReturnType<typeof parseDraftRewardConfiguration>['entries'][number]['weight'],
+    };
+    const manifest = createOpeningV2PublishedManifest({
+      boxId: parseBoxId('019c0000-0000-7000-8000-000000000010'),
+      boxVersionId: parseBoxVersionId('019c0000-0000-7000-8000-000000000020'),
+      entries: [entry],
+      maxOpeningsPerUser: 3n,
+    });
+    expect(manifest).not.toHaveProperty('priceMinor');
+    expect(manifest).not.toHaveProperty('currency');
+    expect(manifest.maxOpeningsPerUser).toBe('3');
+    expect(canonicalizePublishedManifest(manifest)).toContain(
+      '"openingCompatibilityVersion":"opening-v2"',
+    );
   });
 });

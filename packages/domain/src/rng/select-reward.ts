@@ -3,7 +3,7 @@ import { createHmacSha256DigestSource } from './crypto.js';
 import { RngError } from './errors.js';
 import {
   hashPublishedManifest,
-  parsePublishedManifest,
+  parseVersionedPublishedManifest,
   verifyPublishedManifestHash,
 } from './manifest.js';
 import { sampleWithRejection } from './rejection-sampling.js';
@@ -14,7 +14,7 @@ export const selectReward = (input: RewardSelectionInput): RewardSelectionResult
   if (input.algorithmVersion !== rngAlgorithmVersion) {
     throw new RngError('UNSUPPORTED_ALGORITHM');
   }
-  const manifest = parsePublishedManifest(input.manifest);
+  const manifest = parseVersionedPublishedManifest(input.manifest);
   const manifestHash =
     input.expectedManifestHash === undefined
       ? hashPublishedManifest(manifest)

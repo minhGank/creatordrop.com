@@ -356,6 +356,30 @@ npx vitest run apps/api/tests/opening-proof.service.test.ts packages/rng-verifie
 
 Never read/decrypt an active seed or alter seed status directly to manufacture a local result.
 
+## R1A opening-v2 and entitlement foundation
+
+R1A preserves the paid `opening-v1` runtime while adding publishable `opening-v2` catalog data and
+operator-only non-financial entitlement records. An `opening-v2` version has no price/currency or
+base reward; it has a positive immutable `maxOpeningsPerUser`. It is visible as staged catalog data
+but cannot be opened until R1B atomically consumes an entitlement. Do not use wallet/test-credit
+terminology for entitlement grants.
+
+The repeatable development grant command loads the root `.env`, requires raw
+`NODE_ENV=development|test`, rejects non-local PostgreSQL, and uses `DATABASE_MIGRATION_URL` so the
+shared application role never gains grant authority:
+
+```bash
+npm run grant:entitlement:dev -- \
+  <userId> <creatorId> <boxId> 3 development_manual \
+  r1a-local-grant-001 "Local R1A opening entitlement"
+```
+
+The command prints the immutable grant ID/replay flag and aggregate `granted`, `consumed`, and
+`remaining` quantities. Repeating the exact source identity and semantics returns the original
+grant without adding quantity; reuse with different scope or quantity fails. Obtain IDs from local
+test fixtures or PostgreSQL operator inspection. There is intentionally no HTTP mint/read route in
+R1A, no fan can grant itself entries, and no opening consumes these records yet.
+
 ## Full validation
 
 With the local stack running:

@@ -17,6 +17,23 @@ export interface PublishedManifest {
   readonly totalWeight: string;
 }
 
+export interface OpeningV2PublishedManifestEntry extends PublishedManifestEntry {
+  readonly rarity: 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
+  readonly rarityPolicyVersion: 'rarity-v1';
+}
+
+export interface OpeningV2PublishedManifest {
+  readonly algorithmVersion: typeof rngAlgorithmVersion;
+  readonly boxId: string;
+  readonly boxVersionId: string;
+  readonly entries: readonly OpeningV2PublishedManifestEntry[];
+  readonly maxOpeningsPerUser: string;
+  readonly openingCompatibilityVersion: 'opening-v2';
+  readonly totalWeight: string;
+}
+
+export type VersionedPublishedManifest = PublishedManifest | OpeningV2PublishedManifest;
+
 export type DigestSource = (round: bigint) => Uint8Array;
 
 export interface RejectionSample {
