@@ -27,6 +27,7 @@ import { createFairnessService } from './modules/fairness/fairness.service.js';
 import { createEnvironmentFulfillmentActorBindingProvider } from './modules/fulfillment/fulfillment.actor-binding.js';
 import { createEnvironmentFulfillmentKeyProvider } from './modules/fulfillment/fulfillment.key-provider.js';
 import { createFulfillmentService } from './modules/fulfillment/fulfillment.service.js';
+import { createCreatorUsageService } from './modules/usage/usage.service.js';
 import { createOpeningService } from './modules/openings/opening.service.js';
 import { createEntryService } from './modules/entries/entry.service.js';
 import { createEntryActorSigner } from './modules/entries/entry.actor-binding.js';
@@ -92,6 +93,7 @@ const fairnessService = createFairnessService({
     maxOpenings: rngEnvironment.maxOpeningsPerSeed,
   },
 });
+const usageService = createCreatorUsageService({ database });
 const openingService = createOpeningService({ database, fairnessService, logger });
 const entryService = createEntryService({
   database,
@@ -130,6 +132,7 @@ const app = createApp({
   fulfillmentService,
   logger,
   openingService,
+  usageService,
   entryService,
   publicCatalogService,
   security: {

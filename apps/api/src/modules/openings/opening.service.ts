@@ -28,6 +28,10 @@ import {
 import type { UserId } from '../creators/creator.js';
 import type { FairnessService } from '../fairness/fairness.service.js';
 import type { ClientSeed, RngSeedSetId } from '../fairness/fairness.js';
+import {
+  unrestrictedCreatorOpeningCapacity,
+  type CreatorOpeningCapacity,
+} from '../usage/creator-opening-capacity.js';
 import { IdempotencyKeyReusedError } from '../wallet/wallet.errors.js';
 import {
   claimBoxOpeningIdempotency,
@@ -100,6 +104,7 @@ export interface OpeningServiceOptions {
   /** Explicit opt-in for legacy regression tooling, never configured by active startup. */
   readonly allowLegacyPaidOpenings?: boolean;
   readonly createId?: () => string;
+  readonly creatorOpeningCapacity?: CreatorOpeningCapacity;
   readonly database: Database;
   readonly earningsHoldMs?: number;
   readonly enabledCurrencies?: readonly Currency[];
@@ -575,6 +580,7 @@ const retryableTransaction = async <Result>(
 export const createOpeningService = ({
   allowLegacyPaidOpenings = false,
   createId = uuidv7,
+  creatorOpeningCapacity = unrestrictedCreatorOpeningCapacity,
   database,
   earningsHoldMs = defaultEarningsHoldMs,
   enabledCurrencies = [parseCurrency('USD')],
@@ -680,6 +686,13 @@ export const createOpeningService = ({
             }
 
             const timestamp = await readOpeningDatabaseTimestamp(transaction);
+            await creatorOpeningCapacity.check(transaction, {
+              creatorId: catalog.creatorId,
+              boxId: catalog.boxId,
+              boxVersionId: catalog.boxVersionId,
+              openingId: identifiers.openingId,
+              occurredAt: timestamp,
+            });
             markSelectionStarted();
             const selection = await fairnessService.selectForOpening(transaction, {
               clientSeed: command.clientSeed,

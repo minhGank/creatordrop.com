@@ -766,3 +766,54 @@ web and verifier readers and refresh older browser bundles. Historical bytes and
 supported. The legacy leaderboard and public
 champion/achievement routes listed above are **unregistered** (404), with history retained in
 PostgreSQL; no active runtime Redis ranking writes or season jobs remain.
+
+## R4 creator hosted usage
+
+`GET /v1/creators/:creatorId/usage` requires an active authenticated owner or manager of an active
+creator. The actor is derived only from the verified JWT/session. Nonmembers, other creators and
+unavailable creators receive concealed 404; same-creator editor/viewer receives 403. Anonymous
+access returns 401; suspended/closed accounts follow the existing 403 policy. Responses use
+`Cache-Control: private, no-store`. Read abuse limits are 200 requests/IP/minute before auth and
+120 requests/actor/minute after auth; these are transport controls, not hosted-opening quotas.
+
+| Query          | Meaning                                                                                                                            |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `period`       | `current_month` (default), `lifetime`, `previous_month`, `last_30_days`, `custom`                                                  |
+| `start`, `end` | Required only for custom; valid ISO timestamps with explicit timezone and at most millisecond precision, start strictly before end |
+| `limit`        | Canonical integer string 1–100, default 25; bounds the Drop page                                                                   |
+| `after`        | Optional stable Drop UUID cursor; ascending UUID order                                                                             |
+
+Unknown/repeated/invalid query fields return 400. No arbitrary actor/user ID is accepted.
+All ranges are start-inclusive/end-exclusive in UTC. Calendar months start at 00:00 UTC on day
+one; last 30 days means the preceding 720 hours. Preset current/lifetime/rolling ranges end at
+`asOf`; previous month ends at the current month's start. Custom boundaries normalize to UTC;
+all aggregates additionally exclude timestamps at/after `asOf`. At exact month start the current
+month is empty. These are analytics calendar ranges, not subscription billing periods.
+
+The response is `{ usage: { asOf, range: { period, start, end }, totals, drops, nextCursor } }`.
+`start` is null for lifetime. `totals` contains `lifetime`, `currentMonth`, `previousMonth`,
+`last30Days`, and `selected`, each with the following nonnegative decimal-string counts:
+
+```json
+{
+  "hostedOpenings": "12",
+  "creatorEntitlementOpenings": "10",
+  "universalEntryOpenings": "2"
+}
+```
+
+`drops` contains `{ boxId, name, hostedOpenings, creatorEntitlementOpenings,
+universalEntryOpenings }` for Drops with usage in the selected range. Versions aggregate by
+stable public `boxId`, using the latest published name (including retained history of inactive
+Drops). Totals cover all matching Drops regardless of page. `nextCursor` is the last returned
+Drop ID when another page exists, otherwise null. Each request is a consistent database snapshot;
+separate page requests may see newly committed openings. Sources sum to total; all pages with
+the same facts/filters reconcile to the selected total. No fan identity, evidence, opening IDs,
+grant IDs, internal version IDs or capacity state is returned.
+
+Compatibility review: additive v1 GET endpoint and shared strict response schema; existing
+opening commands, receipts, manifests, Socket.io events and verifiers are unchanged. Deploy the
+forward migration before the API, then the matching web UI. There is no usage mutation API.
+
+R4 usage cutoffs use a PostgreSQL timestamp sampled before the aggregate statement; the test
+clock is injectable. Application-server clock skew cannot move usage into a different period.

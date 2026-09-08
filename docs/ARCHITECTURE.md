@@ -63,7 +63,7 @@ R3 removes public ranking/achievement route registration and all leaderboard Red
 reconciliation and season finalization from normal startup. Historical tables, seasons,
 champions, points, old v1 code/parsers and isolated regression modules remain preserved. Those
 modules are history support, not an active point economy. R3 does not implement farming detection,
-collusion scoring, R4 quotas/billing or provider verification.
+collusion scoring, future commercial quotas/billing or provider verification.
 
 ### R2A entry methods and manual-evidence authority
 
@@ -400,7 +400,7 @@ test-credit grants, funding-intent creation, or the fan Stripe webhook, and star
 or require their former environment settings. The Phase 8–11 modules and the following rules are
 retained solely to preserve immutable financial history, legacy v1 behavior, audit tools, and
 regression coverage. They are not authority to expose a fan funding product. A future creator SaaS
-billing integration belongs to R4 and must use a separately approved boundary.
+billing integration is future work beyond the R4 usage/capacity foundation and requires separately approved product policy.
 
 Wallet funding is an asynchronous state machine driven by signed, idempotent Stripe webhooks. The API creates the local intent before the test-mode Stripe PaymentIntent; Stripe network work stays outside PostgreSQL transactions. Browser redirects and client state are informational only. The webhook verifies the signature over exact raw bytes before any event is trusted, stores a unique provider event ID plus SHA-256 payload hash, validates the bound local intent/user/wallet/amount/currency, and credits the wallet only from `payment_intent.succeeded`.
 
@@ -537,3 +537,39 @@ These must be resolved before their affected phase:
 - **Mutable reward rows on openings:** this destroys reproducibility when creators edit boxes.
 - **Storing a server seed on each opening in plaintext:** it either leaks active secrets or creates unnecessary secret sprawl. Openings reference a protected seed-set and retain its commitment; the plaintext is published only after retirement.
 - **Provider payment during opening:** network calls inside an atomic path create uncertain outcomes and duplicate-charge risk. The active v2 product uses an earned entitlement and no payment; retained v1 behavior only opened against settled historical wallet funds.
+
+## R4 hosted usage and future capacity
+
+One successfully committed `opening-v2` row is one hosted opening for the destination Drop's
+creator. Creator-specific entitlements (including R2 approvals) and R3 Universal Entries each
+count once. Rejections, authentication failures, unavailable inventory, per-user cap failures,
+rollbacks and replays create no additional usage. PostgreSQL's immutable `box_opens` primary key
+is the durable usage identity; the private `hosted_opening_usage` view exposes that fact without
+a second write, counter, outbox consumer, Redis dependency or reset job. Existing compatible v2
+history is included immediately; legacy v1 openings remain historical and are excluded. No
+opening/proof bytes or RNG algorithm change.
+
+`GET /v1/creators/:creatorId/usage` and Studio → Usage give owners/managers private UTC lifetime,
+calendar-month, previous-month, rolling-30-day and custom-range analytics, with source totals
+and stable-Drop grouping. Authorization and aggregates share one PostgreSQL statement snapshot.
+Reads use the existing creator/time opening index and unique consumption linkage; pagination
+bounds returned Drop rows, not the underlying authoritative totals. Each refresh is a fresh
+snapshot. A future disposable summary may accelerate reads only if it reconciles to these facts.
+
+`CreatorOpeningCapacity.check(transaction, context)` is called on a new v2 command after the
+existing entitlement consumption/locks and database timestamp, before RNG selection. R4's
+implementation always permits and performs no SQL or network work. Replay returns before the
+hook. Existing lock order, timestamp allocation, entitlement precedence, inventory, XP, outbox
+and fairness behavior remain intact. Any future allowance implementation must serialize the
+creator/period capacity decision in this same opening transaction and explicitly review its
+additional lock ordering. An analytics response is never opening authorization.
+
+Future boundary: Stripe Billing → subscription state → CreatorDrop commercial entitlement →
+hosted-opening allowance for arbitrary period `[start,end)` → capacity decision. Provider I/O
+belongs outside the opening transaction. Plan names, prices, allowances, subscription periods,
+overages, trials, payment-failure policy and Stripe integration remain undecided future work.
+R4 has no enforced commercial quota, persisted plan records, billing configuration or active
+commercial error contract. Fans continue to open without paying CreatorDrop.
+
+R4 usage cutoffs use a PostgreSQL timestamp sampled before the aggregate statement; the test
+clock is injectable. Application-server clock skew cannot move usage into a different period.

@@ -1,4 +1,7 @@
 import {
+  creatorUsageResponseSchema,
+  type CreatorUsageQuery,
+  type CreatorUsageResponse,
   xpRewardSchema,
   progressionResponseSchema,
   openingProgressionSchema,
@@ -452,6 +455,11 @@ export interface CreatorDropApiClient extends EntryApiClient {
     publicOpeningId: string,
     signal?: AbortSignal,
   ): Promise<OpeningFairnessProofResponse>;
+  getCreatorUsage(
+    creatorId: string,
+    query: CreatorUsageQuery,
+    signal?: AbortSignal,
+  ): Promise<CreatorUsageResponse>;
   getProgression(signal?: AbortSignal): Promise<ProgressionResponse>;
   getOpeningEntitlementState(
     boxId: string,
@@ -653,6 +661,16 @@ export const createApiClient = ({
         publicCreatorBoxResponseSchema,
         signal === undefined ? {} : { signal },
       ),
+    getCreatorUsage: (creatorId, query, signal) => {
+      const parameters = new URLSearchParams();
+      for (const [key, value] of Object.entries(query))
+        if (value !== undefined) parameters.set(key, value);
+      return request(
+        `/v1/creators/${encodeURIComponent(creatorId)}/usage?${parameters.toString()}`,
+        creatorUsageResponseSchema,
+        signal === undefined ? {} : { signal },
+      );
+    },
     getProgression: (signal) =>
       request(
         '/v1/me/progression',

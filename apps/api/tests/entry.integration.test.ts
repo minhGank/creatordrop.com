@@ -1,3 +1,5 @@
+import { creatorUsageQuerySchema } from '@creatordrop/contracts';
+import { createCreatorUsageService } from '../src/modules/usage/usage.service.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -922,6 +924,10 @@ describe('R2A authoritative entry claims and private evidence', { concurrent: fa
       expectedSeedSetId: initialized.fairness.activeSeedSet.id,
       expectedServerSeedCommitment: initialized.fairness.activeSeedSet.commitment,
     };
+    const usage = createCreatorUsageService({ database });
+    const usageScope = { creatorId, actorUserId: owner.id };
+    const usageQuery = creatorUsageQuerySchema.parse({ period: 'lifetime' });
+    const beforeUsage = (await usage.read(usageScope, usageQuery)).usage.totals.lifetime;
     const result = await opening.openBox(command);
     expect(result.body.opening).toMatchObject({
       openingCompatibilityVersion: 'opening-v2',
@@ -930,6 +936,12 @@ describe('R2A authoritative entry claims and private evidence', { concurrent: fa
     expect(result.body.opening).not.toHaveProperty('wallet');
     expect(result.body.opening).not.toHaveProperty('cost');
     expect(await opening.openBox(command)).toEqual({ ...result, replayed: true });
+    const afterUsage = (await usage.read(usageScope, usageQuery)).usage.totals.lifetime;
+    expect(BigInt(afterUsage.hostedOpenings) - BigInt(beforeUsage.hostedOpenings)).toBe(1n);
+    expect(
+      BigInt(afterUsage.creatorEntitlementOpenings) -
+        BigInt(beforeUsage.creatorEntitlementOpenings),
+    ).toBe(1n);
   });
 
   it('R3 takes an approved R2 claim through XP and a cross-creator Universal Entry opening', async () => {

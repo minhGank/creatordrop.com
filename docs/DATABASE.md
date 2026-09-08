@@ -460,3 +460,29 @@ security-definer reads return allowlisted state; opening consumption retains its
 boundary. Account locking precedes existing R1 box/grant/fairness locks. No Redis state is consulted.
 Legacy leaderboard, season, champion, queue and point records remain untouched as history; active
 runtime projection/finalization is retired. No migration converts historical points into XP.
+
+## R4 hosted-opening read model
+
+Migration `20260908191312_r4_hosted_opening_usage.sql` creates the private security-barrier view
+`app_private.hosted_opening_usage` and scoped security-definer reader
+`app.read_creator_hosted_usage`. The view selects completed `opening-v2` records with their
+internal opening identity, destination creator, stable box, immutable opening timestamp and
+creator-entitlement/Universal-Entry source. Opening PK uniqueness and the existing one-source
+consumption constraints guarantee one fact per opening. Universal consumption has a unique
+opening identity, so the join cannot multiply rows. No additional usage table, mutable counter,
+backfill rewrite, reset schedule or grants to mutate usage are introduced.
+
+This migration is safe on populated databases: compatible pre-R4 v2 records become visible
+through the view; v1 is excluded. Opening inserts, source consumption, progression and usage
+visibility commit/roll back together by PostgreSQL MVCC. Retries reuse the original opening.
+The restricted runtime cannot read/write the private view; only `creatordrop_app` can execute
+the reader, which checks active actor, creator and owner/manager membership. Anonymous,
+authenticated-browser and worker roles have no reader execution. Its `STABLE` declaration and
+fixed empty search path keep authorization and aggregates on the calling statement snapshot.
+
+The reader uses creator/time indexed immutable opening history and unique source linkage. Counts
+are PostgreSQL bigint rendered as decimal strings. It returns lifetime/preset/custom `[start,end)`
+aggregates, source sums and deterministic stable-box UUID cursor pages. Month boundaries are
+explicit UTC; rolling periods use 720 hours, independent of database session timezone or DST.
+Existing records are the reconciliation reference. Future period allowances can query arbitrary
+boundaries without changing these facts, but quota policy/enforcement is outside R4.

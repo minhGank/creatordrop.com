@@ -18,6 +18,8 @@ import {
 export const createTestApiClient = (
   overrides: Partial<CreatorDropApiClient> = {},
 ): CreatorDropApiClient => ({
+  getCreatorUsage:
+    overrides.getCreatorUsage ?? (() => Promise.reject(new Error('Unexpected usage read'))),
   getProgression:
     overrides.getProgression ??
     (() =>

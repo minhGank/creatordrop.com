@@ -73,6 +73,7 @@ import {
   FundingUnavailableError,
   FundingWebhookSignatureError,
 } from '../modules/payments/payment.errors.js';
+import { UsageAccountNotActiveError } from '../modules/usage/usage.errors.js';
 import { ApiError } from './errors.js';
 import { EntryError, entryErrorStatuses } from '../modules/entries/entry.errors.js';
 
@@ -104,6 +105,8 @@ const normalizeError = (error: unknown): ApiError => {
     return new ApiError(400, 'MALFORMED_JSON', 'The request body is not valid JSON.');
   }
 
+  if (error instanceof UsageAccountNotActiveError)
+    return new ApiError(403, 'ACCOUNT_NOT_ACTIVE', 'This account is not active.');
   if (error instanceof CreatorNotFoundError) {
     return new ApiError(404, 'CREATOR_NOT_FOUND', 'The creator workspace was not found.');
   }

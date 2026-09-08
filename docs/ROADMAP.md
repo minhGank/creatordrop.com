@@ -213,10 +213,24 @@ consumption with a forward linkage guard and isolated opening receipts/async wor
 changes. Eight web and six PostgreSQL regressions cover those fixes; populated pre-R3/R3 upgrade
 checks preserve historical records and progression.
 
-### R4 — Creator SaaS plans & hosted-opening quotas (planned)
+### R4 — Hosted usage & SaaS foundation ✅
 
-Planned: creator hosting plans, monthly usage limits, and later Stripe Billing. No creator billing
-or hosted-opening quota is introduced by R1.
+Immutable committed opening-v2 history supplies exactly one hosted usage fact per opening,
+including creator entitlements and Universal Entries, attributed to the destination creator.
+Owner/manager Studio Usage and the private creator API show UTC lifetime, calendar month,
+previous month, last 30 days, custom ranges, source breakdown and stable-Drop pages. PostgreSQL
+remains authoritative; replays and rollbacks cannot overcount. The opening capacity interface
+currently permits all otherwise-valid openings with no commercial enforcement.
+
+Validated with full CI: 587 unit/API/web tests, 193 real PostgreSQL integration tests, 34
+migrations reset/linted, build and quality gates. A populated pre-R4 upgrade preserved all row
+data and row versions while including compatible history. Chrome verified approved R2/XP
+openings, rejected-attempt zero usage, destination Universal Entry attribution, fresh sessions,
+creator tenancy, UTC date controls and keyboard-accessible 390/768/1440 layouts.
+
+Future SaaS work remains separate: plan names, pricing, allowances, subscription periods,
+overages/trials and Stripe Billing require product decisions. R4 implements none of them.
+Broad Phase 16/17/18 work and provider automation remain future scope.
 
 ## Phase 16 — Creator management UI (future)
 

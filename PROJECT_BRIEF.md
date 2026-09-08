@@ -29,5 +29,9 @@ status, plus an owner/manager review inbox. R3 adds account-wide XP, levels, and
 consumed first; Universal Entries satisfy entry requirements on otherwise eligible Drops while
 all opening limits and fairness rules remain authoritative. XP rewards follow a bounded platform
 policy and grant one Universal Entry per level gained. Legacy points/rankings are retired, with
-history preserved and no conversion to XP. Provider automation, creator SaaS billing, and the
+history preserved and no conversion to XP. R4 measures each committed opening-v2 exactly once
+for the destination creator, from immutable PostgreSQL opening history. Owner/manager Usage
+shows UTC period, source and stable-Drop analytics. A permissive capacity boundary prepares for
+future allowances without current commercial limits. Plans, pricing, quotas and Stripe remain
+undecided and unimplemented. Provider automation, creator SaaS billing, and the
 broader creator management redesign remain future roadmap work.

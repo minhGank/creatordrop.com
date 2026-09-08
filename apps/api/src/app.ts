@@ -25,6 +25,8 @@ import type { OpeningService } from './modules/openings/opening.service.js';
 import type { EntryService } from './modules/entries/entry.service.js';
 import { createEntryRouter } from './modules/entries/entry.route.js';
 
+import { createUsageRouter } from './modules/usage/usage.route.js';
+import type { CreatorUsageService } from './modules/usage/usage.service.js';
 const sendStatus =
   (status: ServiceStatusResponse['status']) =>
   (_request: Request, response: Response<ServiceStatusResponse>): void => {
@@ -40,6 +42,7 @@ export interface AppOptions {
   readonly logger: Logger;
   readonly openingService?: OpeningService;
   readonly entryService?: EntryService;
+  readonly usageService?: CreatorUsageService;
   readonly publicCatalogService?: PublicCatalogService;
   readonly security: {
     readonly allowedOrigins: readonly string[];
@@ -64,6 +67,7 @@ export const createApp = ({
   logger,
   openingService,
   entryService,
+  usageService,
   publicCatalogService,
   security,
 }: AppOptions): Express => {
@@ -77,6 +81,8 @@ export const createApp = ({
   app.use(express.json({ limit: security.requestBodyLimitBytes }));
   if (entryService !== undefined)
     app.use('/v1', createEntryRouter({ authenticate, service: entryService }));
+  if (usageService !== undefined)
+    app.use('/v1', createUsageRouter({ authenticate, service: usageService }));
   app.get('/health', sendStatus('ok'));
   app.get('/ready', sendStatus('ready'));
   // R3 retires public point rankings and champion/season surfaces.

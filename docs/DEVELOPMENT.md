@@ -502,3 +502,30 @@ integration suites, progression API authorization and web account/reveal/fallbac
 verification uses synthetic local Auth actors, manual R2 approval, +250 XP, creator precedence,
 Universal Entry on another creator's Drop, fresh-session restoration and desktop/mobile widths.
 `npm run ci` resets the local database and runs all suites, migrations and quality gates.
+
+## R4 hosted usage validation
+
+Creator Studio → Usage (`/studio/:creatorId/usage`) is available to owners/managers. It displays
+Hosted Openings, lifetime/current/previous month/last 30 days, custom UTC dates, source breakdown
+and paginated totals by stable Drop. The inclusive “Through” date is sent as midnight of the next
+UTC day, exclusive. Apply range resets pagination; refresh, focus and a fresh session load server
+data. The page contains no pricing, subscription or quota UI.
+
+Run `npm run db:start`, then `npm run db:migrations:validate` (resets local development data).
+Focused checks:
+
+```bash
+npx vitest run apps/api/tests/usage.test.ts apps/web/tests/usage.test.tsx
+npm run test:integration -- apps/api/tests/usage.integration.test.ts apps/api/tests/entry.integration.test.ts apps/api/tests/opening.integration.test.ts apps/api/tests/progression-linkage.integration.test.ts
+npm run ci
+git diff --check
+```
+
+Usage integration fixtures have unique synthetic creator/user identities and use the restricted
+application role with real migrations. Fixed timestamp cases override only the database clock
+query, retaining normal immutable inserts and constraints. Tests include 100 concurrent fans
+with a transaction rendezvous, concurrent/idempotent replay, rollback after all opening writes,
+UTC leap-month boundaries, version grouping, pagination and cross-creator/role denial. Existing
+R2 approval and R3 cross-creator/XP flows remain regression requirements. Browser verification
+uses local Auth and real openings, checks refreshed/fresh-session counts and desktop/mobile
+layout. No provider account, hosted service, Stripe secret or plan fixture is needed for R4.

@@ -6,6 +6,7 @@ import { useSession } from '../auth/use-session.js';
 import { LoadingState } from '../components/page-states.js';
 import { CreatorMethods } from '../entries/creator-methods.js';
 import { ClaimsInbox } from '../entries/claims-inbox.js';
+import { CreatorUsage } from '../usage/creator-usage.js';
 import { entryError } from '../entries/presentation.js';
 
 export const CreatorStudioPage = () => {
@@ -53,16 +54,27 @@ const StudioContent = () => {
               {membership.creator.displayName} · Drops
             </Link>
             {membership.role === 'owner' || membership.role === 'manager' ? (
-              <Link to={`/studio/${membership.creator.id}/claims`}>Entry Claims</Link>
+              <>
+                <Link to={`/studio/${membership.creator.id}/claims`}>Entry Claims</Link>
+                <Link to={`/studio/${membership.creator.id}/usage`}>Usage</Link>
+              </>
             ) : null}
           </nav>
-          <Workspace
-            key={membership.creator.id}
-            creatorId={membership.creator.id}
-            role={membership.role}
-            boxId={params.boxId}
-            inbox={location.pathname.endsWith('/claims')}
-          />
+          {location.pathname.endsWith('/usage') ? (
+            <CreatorUsage
+              key={membership.creator.id}
+              creatorId={membership.creator.id}
+              role={membership.role}
+            />
+          ) : (
+            <Workspace
+              key={membership.creator.id}
+              creatorId={membership.creator.id}
+              role={membership.role}
+              boxId={params.boxId}
+              inbox={location.pathname.endsWith('/claims')}
+            />
+          )}
         </>
       ) : (
         <>

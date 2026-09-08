@@ -42,6 +42,7 @@ export const AppRoutes = () => {
             <Route path="/account" element={<AccountPage />} />
             <Route path="/studio" element={<CreatorStudioPage />} />
             <Route path="/studio/:creatorId" element={<CreatorStudioPage />} />
+            <Route path="/studio/:creatorId/usage" element={<CreatorStudioPage />} />
             <Route path="/studio/:creatorId/claims" element={<CreatorStudioPage />} />
             <Route path="/studio/:creatorId/boxes/:boxId/entries" element={<CreatorStudioPage />} />
             <Route path="/creators" element={<CreatorListPage />} />
