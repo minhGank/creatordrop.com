@@ -99,7 +99,11 @@ const BoxDetailContent = ({
               )}
               <div className="reward-copy">
                 <div>
-                  <h3>{entry.rewardVersion.name}</h3>
+                  <h3>
+                    {entry.rewardVersion.xpReward === undefined
+                      ? entry.rewardVersion.name
+                      : `+${entry.rewardVersion.xpReward.amount} XP`}
+                  </h3>
                   {!openingV2 && entry.isBaseReward ? (
                     <span className="base-label">Base reward</span>
                   ) : null}
@@ -138,6 +142,7 @@ const BoxDetailContent = ({
 
       {openingV2 ? (
         <OpeningExperience
+          key={`opening:${session.status === 'authenticated' ? session.user.id : session.status}`}
           api={api}
           box={box}
           customSlug={creator.customSlug}

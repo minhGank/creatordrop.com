@@ -932,6 +932,141 @@ describe('R2A authoritative entry claims and private evidence', { concurrent: fa
     expect(await opening.openBox(command)).toEqual({ ...result, replayed: true });
   });
 
+  it('R3 takes an approved R2 claim through XP and a cross-creator Universal Entry opening', async () => {
+    const actor = await newActor();
+    const catalog = createCatalogService({ database, logger });
+    const makeDrop = async (creator: CreatorId, ownerActor: Actor, xp: boolean) => {
+      const scope = { creatorId: creator, actorUserId: ownerActor.id, requestId: randomUUID() };
+      const reward = await catalog.createReward({
+        ...scope,
+        ...parseRewardDraftInput({
+          name: xp ? 'Synthetic 250 XP' : 'Synthetic universal reward',
+          description: '',
+          rewardType: xp ? 'xp' : 'digital',
+          inventoryMode: 'unlimited',
+          ...(xp ? { xpAmount: '250' } : {}),
+        }),
+      });
+      if (reward.draft === null) throw new Error('Expected draft');
+      const box = await catalog.createBox({
+        ...scope,
+        ...parseBoxDraftInput({
+          name: 'Synthetic R3 Drop',
+          description: '',
+          openingCompatibilityVersion: 'opening-v2',
+          maxOpeningsPerUser: '3',
+        }),
+      });
+      await catalog.replaceDraftConfiguration({
+        ...scope,
+        boxId: box.id,
+        entries: [{ rewardVersionId: reward.draft.id, weight: 1n as ProbabilityWeight }],
+        openingCompatibilityVersion: 'opening-v2',
+        expectedRevision: 1,
+      });
+      return catalog.publishBox({ ...scope, boxId: box.id, expectedRevision: 2 });
+    };
+    const xpDrop = await makeDrop(creatorId, owner, true);
+    const otherDrop = await makeDrop(otherCreatorId, other, false);
+    const methodScope = { actorId: owner.id, creatorId, boxId: xpDrop.manifest.boxId };
+    const draft = await entries.createMethod({ ...methodScope, definition });
+    const published = await entries.publishMethod({
+      ...methodScope,
+      methodId: draft.id,
+      boxVersionId: xpDrop.version.id,
+      expectedRevision: draft.revision,
+    });
+    if (published.published === null) throw new Error('Expected policy');
+    const claim = await entries.submitClaim({
+      actorId: actor.id,
+      boxId: xpDrop.manifest.boxId,
+      policyId: published.published.id,
+      evidence: { note: 'Synthetic R3 proof' },
+      idempotencyKey: `r3_${randomUUID()}`,
+    });
+    await approve(claim.id);
+    const fairness = createFairnessService({
+      database,
+      logger,
+      generateSeed: () => randomBytes(32),
+      keyProvider: createEnvironmentSeedEncryptionKeyProvider({
+        historicalKeys: {},
+        keyHex: '00'.repeat(32),
+        version: 'local-dev-v1',
+      }),
+      policy: { maxAgeMs: 86400000, maxOpenings: 1000n },
+    });
+    const initialized = await fairness.initialize({ userId: actor.id, requestId: randomUUID() });
+    const clientSeed = 'ab'.repeat(32) as ClientSeed;
+    await fairness.updateClientSeed({
+      userId: actor.id,
+      requestId: randomUUID(),
+      clientSeed,
+      expectedRevision: initialized.fairness.revision,
+      expectedSeedSetId: initialized.fairness.activeSeedSet.id,
+      expectedServerSeedCommitment: initialized.fairness.activeSeedSet.commitment,
+    });
+    const opening = createOpeningService({ database, logger, fairnessService: fairness });
+    const command = (drop: typeof xpDrop) => ({
+      userId: actor.id,
+      requestId: randomUUID(),
+      clientSeed,
+      boxId: drop.manifest.boxId as BoxId,
+      expectedBoxVersionId: drop.version.id,
+      expectedConfigurationHash: drop.configurationHash,
+      expectedSeedSetId: initialized.fairness.activeSeedSet.id,
+      expectedServerSeedCommitment: initialized.fairness.activeSeedSet.commitment,
+      idempotencyKey: `r3_${randomUUID()}`,
+    });
+    const xpResult = await opening.openBox(command(xpDrop));
+    expect(xpResult.body.opening).toMatchObject({
+      progression: { lifetimeXp: '250', level: '2', universalEntriesAvailable: '1' },
+      entitlement: { source: 'creator' },
+    });
+    const useCommand = command(otherDrop);
+    const used = await opening.openBox(useCommand);
+    expect(used.body.opening).toMatchObject({
+      entitlement: { source: 'universal', universalEntriesRemaining: '0' },
+      fulfillmentStatus: 'pending_fulfillment',
+    });
+    expect(await opening.openBox(useCommand)).toEqual({ ...used, replayed: true });
+    expect(await grants(claim.id)).toEqual([{ count: '1', quantity: '1' }]);
+    const progressionApi = createTestApp({
+      openingService: opening,
+      authenticate: createAuthenticationMiddleware({
+        bootstrapUsers: createUserBootstrapService({ database }),
+        verifyAccessToken: createJwtVerifier({
+          issuer: `${baseUrl}/auth/v1`,
+          jwksUrl: `${baseUrl}/auth/v1/.well-known/jwks.json`,
+          audience: 'authenticated',
+          provider: 'supabase',
+        }),
+      }),
+    });
+    const read = await request(progressionApi)
+      .get('/v1/me/progression')
+      .set('Authorization', `Bearer ${actor.token}`)
+      .expect(200);
+    expect(read.body).toMatchObject({
+      progression: { lifetimeXp: '250', universalEntriesAvailable: '0' },
+    });
+    const otherRead = await request(progressionApi)
+      .get('/v1/me/progression')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .expect(200);
+    expect(otherRead.body).toMatchObject({ progression: { lifetimeXp: '0' } });
+    await request(progressionApi)
+      .get(`/v1/me/progression?userId=${actor.id}`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .expect(400);
+    await request(progressionApi).get('/v1/me/progression').expect(401);
+    await admin.query("update app.users set status='suspended' where id=$1", [actor.id]);
+    await request(progressionApi)
+      .get('/v1/me/progression')
+      .set('Authorization', `Bearer ${actor.token}`)
+      .expect(403);
+  });
+
   it('completes the Instagram configuration, upload, pending review and approval entirely over HTTP', async () => {
     const methodsPath = `/v1/creators/${creatorId}/boxes/${boxId}/entry-methods`;
     const rules = {

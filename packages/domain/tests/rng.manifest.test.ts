@@ -96,6 +96,22 @@ describe('published manifest verification', () => {
     );
   });
 
+  it('commits XP amount and policy without changing historical manifests', () => {
+    const xp = (amount: string) => ({
+      ...openingV2Manifest,
+      entries: openingV2Manifest.entries.map((entry) => ({
+        ...entry,
+        xpReward: { amount, policyVersion: 'xp-v1' },
+      })),
+    });
+    expect(canonicalizePublishedManifest(xp('250'))).toContain(
+      '"xpReward":{"amount":"250","policyVersion":"xp-v1"}',
+    );
+    expect(hashPublishedManifest(xp('250'))).not.toBe(hashPublishedManifest(xp('251')));
+    expect(hashPublishedManifest(xp('250'))).not.toBe(hashPublishedManifest(openingV2Manifest));
+    expect(() => hashPublishedManifest(xp('1000000'))).toThrow(RngError);
+    expect(() => hashPublishedManifest(xp('0'))).toThrow(RngError);
+  });
   it('canonicalizes opening-v2 without financial fields and binds its opening policy', () => {
     const entry = openingV2Manifest.entries[0];
     if (entry === undefined) throw new Error('Expected an opening-v2 manifest entry.');

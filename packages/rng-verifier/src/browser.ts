@@ -27,6 +27,7 @@ interface ParsedEntry {
   readonly position: number;
   readonly rarity?: 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
   readonly rarityPolicyVersion?: 'rarity-v1';
+  readonly xpReward?: { readonly amount: string; readonly policyVersion: 'xp-v1' };
   readonly rewardVersionId: string;
   readonly weight: bigint;
   readonly weightText: string;
@@ -130,6 +131,7 @@ const parseManifest = (value: unknown): ParsedManifest => {
         'rarityPolicyVersion',
         'rewardVersionId',
         'weight',
+        ...(isObject(value) && value.xpReward !== undefined ? ['xpReward'] : []),
       ]);
       if (
         entry.position !== expectedPosition ||
@@ -139,6 +141,14 @@ const parseManifest = (value: unknown): ParsedManifest => {
       ) {
         throw new VerifierError('MALFORMED_MANIFEST');
       }
+      let xpReward: ParsedEntry['xpReward'];
+      if (entry.xpReward !== undefined) {
+        const rawXp = objectWithFields(entry.xpReward, ['amount', 'policyVersion']);
+        const amount = decimal(rawXp.amount, true);
+        if (amount > 500n || rawXp.policyVersion !== 'xp-v1')
+          throw new VerifierError('MALFORMED_MANIFEST');
+        xpReward = { amount: amount.toString(), policyVersion: 'xp-v1' };
+      }
       const weight = decimal(entry.weight, true);
       if (weight > maximumSignedBigint) throw new VerifierError('WEIGHT_OVERFLOW');
       return {
@@ -146,6 +156,7 @@ const parseManifest = (value: unknown): ParsedManifest => {
         position: expectedPosition,
         rarity: entry.rarity as NonNullable<ParsedEntry['rarity']>,
         rarityPolicyVersion: 'rarity-v1',
+        ...(xpReward === undefined ? {} : { xpReward }),
         rewardVersionId: uuid(entry.rewardVersionId),
         weight,
         weightText: weight.toString(),
@@ -249,7 +260,7 @@ const canonicalManifest = (manifest: ParsedManifest): string => {
         if (entry.rarity === undefined || entry.rarityPolicyVersion === undefined) {
           throw new VerifierError('MALFORMED_MANIFEST');
         }
-        return `{"boxVersionRewardId":${quote(entry.boxVersionRewardId)},"position":${entry.position.toString()},"rarity":${quote(entry.rarity)},"rarityPolicyVersion":${quote(entry.rarityPolicyVersion)},"rewardVersionId":${quote(entry.rewardVersionId)},"weight":${quote(entry.weightText)}}`;
+        return `{"boxVersionRewardId":${quote(entry.boxVersionRewardId)},"position":${entry.position.toString()},"rarity":${quote(entry.rarity)},"rarityPolicyVersion":${quote(entry.rarityPolicyVersion)},"rewardVersionId":${quote(entry.rewardVersionId)},"weight":${quote(entry.weightText)}${entry.xpReward === undefined ? '' : `,"xpReward":{"amount":${quote(entry.xpReward.amount)},"policyVersion":"xp-v1"}`}}`;
       })
       .join(',');
     return `{"algorithmVersion":${quote(manifest.algorithmVersion)},"boxId":${quote(manifest.boxId)},"boxVersionId":${quote(manifest.boxVersionId)},"entries":[${entries}],"maxOpeningsPerUser":${quote(manifest.maxOpeningsPerUser)},"openingCompatibilityVersion":"opening-v2","totalWeight":${quote(manifest.totalWeightText)}}`;

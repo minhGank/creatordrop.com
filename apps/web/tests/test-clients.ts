@@ -18,6 +18,19 @@ import {
 export const createTestApiClient = (
   overrides: Partial<CreatorDropApiClient> = {},
 ): CreatorDropApiClient => ({
+  getProgression:
+    overrides.getProgression ??
+    (() =>
+      Promise.resolve({
+        progression: {
+          lifetimeXp: '0',
+          level: '1',
+          xpInLevel: '0',
+          xpForNextLevel: '100',
+          universalEntriesAvailable: '0',
+          universalEntriesEarned: '0',
+        },
+      })),
   listMyWorkspaces: overrides.listMyWorkspaces ?? (() => Promise.resolve({ memberships: [] })),
   listWorkspaceBoxes: overrides.listWorkspaceBoxes ?? (() => Promise.resolve({ boxes: [] })),
   listEntryMethods: overrides.listEntryMethods ?? (() => Promise.resolve({ methods: [] })),

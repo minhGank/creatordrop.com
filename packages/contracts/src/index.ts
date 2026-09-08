@@ -1,3 +1,5 @@
+import type { XpReward, OpeningProgression } from './progression.js';
+export * from './progression.js';
 export const serviceStates = ['ok', 'ready'] as const;
 
 export type ServiceState = (typeof serviceStates)[number];
@@ -87,7 +89,7 @@ export type RewardStatus = (typeof rewardStatuses)[number];
 export const rewardVersionStates = ['draft', 'published', 'retired'] as const;
 export type RewardVersionState = (typeof rewardVersionStates)[number];
 
-export const rewardTypes = ['digital', 'physical', 'experience'] as const;
+export const rewardTypes = ['digital', 'physical', 'experience', 'xp'] as const;
 export type RewardType = (typeof rewardTypes)[number];
 
 export const inventoryModes = ['unlimited', 'finite'] as const;
@@ -145,6 +147,7 @@ export interface BoxContract {
 }
 
 export interface RewardVersionContract {
+  readonly xpReward?: XpReward | undefined;
   readonly createdAt: string;
   readonly declaredValueCurrency: string | null;
   readonly declaredValueMinor: string | null;
@@ -239,6 +242,7 @@ export interface OpeningV2PublishedManifestContract {
     readonly position: number;
     readonly rarity: RewardRarity;
     readonly rarityPolicyVersion: 'rarity-v1';
+    readonly xpReward?: XpReward | undefined;
     readonly rewardVersionId: string;
     readonly weight: string;
   }[];
@@ -436,6 +440,8 @@ interface BoxOpeningRewardContract {
 }
 
 export interface OpeningV2EntitlementStateContract {
+  readonly universalEntriesAvailable?: string | undefined;
+  readonly source?: 'creator' | 'universal' | null | undefined;
   readonly available: boolean;
   readonly boxId: string;
   readonly consumed: string;
@@ -466,20 +472,24 @@ interface PaidBoxOpeningContract {
 }
 
 interface EntitlementBoxOpeningContract {
+  readonly progression?: OpeningProgression | undefined;
   readonly boxId: string;
   readonly boxVersionId: string;
   readonly entitlement: {
+    readonly source?: 'creator' | 'universal' | undefined;
+    readonly universalEntriesRemaining?: string | undefined;
     readonly maxOpeningsPerUser: string;
     readonly remaining: string;
     readonly successfulOpenings: string;
   };
   readonly fairness: BoxOpeningFairnessContract;
-  readonly fulfillmentStatus: 'awaiting_restock' | 'pending_fulfillment';
+  readonly fulfillmentStatus: 'awaiting_restock' | 'pending_fulfillment' | 'not_required';
   readonly id: string;
   readonly openingCompatibilityVersion: 'opening-v2';
   readonly reward: Omit<BoxOpeningRewardContract, 'rarity' | 'rarityPolicyVersion'> & {
     readonly rarity: RewardRarity;
     readonly rarityPolicyVersion: 'rarity-v1';
+    readonly xpReward?: XpReward | undefined;
   };
 }
 

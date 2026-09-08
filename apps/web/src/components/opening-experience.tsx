@@ -1,3 +1,4 @@
+import { ProgressionDisplay } from './fan-progression.js';
 import { motion } from 'framer-motion';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -138,7 +139,9 @@ const catalogMatchesOpening = (
       entry.position !== index ||
       manifestEntry.position !== index ||
       entry.rewardVersion.id !== manifestEntry.rewardVersionId ||
-      entry.weight !== manifestEntry.weight
+      entry.weight !== manifestEntry.weight ||
+      entry.rewardVersion.xpReward?.amount !== manifestEntry.xpReward?.amount ||
+      entry.rewardVersion.xpReward?.policyVersion !== manifestEntry.xpReward?.policyVersion
     ) {
       return false;
     }
@@ -154,6 +157,8 @@ const catalogMatchesOpening = (
   return (
     winningEntry?.rewardVersion.name === opening.reward.name &&
     winningEntry.rewardVersion.imageUrl === opening.reward.imageUrl &&
+    winningEntry.rewardVersion.xpReward?.amount === opening.reward.xpReward?.amount &&
+    winningEntry.rewardVersion.xpReward?.policyVersion === opening.reward.xpReward?.policyVersion &&
     winningEntry.rarity === opening.reward.rarity &&
     winningEntry.rarityPolicyVersion === opening.reward.rarityPolicyVersion
   );
@@ -163,7 +168,11 @@ const rarityLabel = (rarity: RewardRarity | null): string =>
   rarity === null ? 'Unspecified' : `${rarity[0]?.toUpperCase() ?? ''}${rarity.slice(1)}`;
 
 const fulfillmentLabel = (status: Opening['fulfillmentStatus']): string =>
-  status === 'awaiting_restock' ? 'Reward is awaiting restock' : 'Reward ready for fulfillment';
+  status === 'not_required'
+    ? 'XP added to your account'
+    : status === 'awaiting_restock'
+      ? 'Reward is awaiting restock'
+      : 'Reward ready for fulfillment';
 
 const openingErrorMessage = (error: CreatorDropApiError): string => {
   switch (error.code) {
@@ -317,20 +326,35 @@ export const OpeningExperience = ({
   const confirming = useRef(false);
   const preparingConfirmation = useRef(false);
   const recovered = useRef(false);
+  const activeWorkflow = useRef(false);
+  useLayoutEffect(() => {
+    activeWorkflow.current = true;
+    return () => {
+      activeWorkflow.current = false;
+    };
+  }, []);
+  const isWorkflowActive = useCallback((): boolean => activeWorkflow.current, []);
+  const requireActiveWorkflow = useCallback(() => {
+    if (!isWorkflowActive()) throw new Error('The opening session changed.');
+  }, [isWorkflowActive]);
   const entitlementAvailability =
     entitlementState === undefined
       ? 'Checking Drop availability…'
       : entitlementState.limitReached
         ? "You've reached the opening limit for this Drop."
         : entitlementState.remaining === '0'
-          ? 'No Drops available'
+          ? entitlementState.source === 'universal'
+            ? `${entitlementState.universalEntriesAvailable ?? '0'} Universal Entries available`
+            : 'No Drops available'
           : `${entitlementState.remaining} ${entitlementState.remaining === '1' ? 'Drop' : 'Drops'} available`;
 
   const loadOrInitializeFairness = useCallback(async () => {
+    requireActiveWorkflow();
     let fairness: CurrentFairnessResponse;
     try {
       fairness = await api.getCurrentFairness();
     } catch (currentError) {
+      requireActiveWorkflow();
       if (
         !(currentError instanceof CreatorDropApiError) ||
         currentError.code !== 'FAIRNESS_NOT_INITIALIZED'
@@ -345,6 +369,7 @@ export const OpeningExperience = ({
           initializationError instanceof CreatorDropProtocolError;
         if (!ambiguousResponse) throw initializationError;
       }
+      requireActiveWorkflow();
       try {
         fairness = await api.getCurrentFairness();
       } catch {
@@ -353,6 +378,7 @@ export const OpeningExperience = ({
     }
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      requireActiveWorkflow();
       if (fairness.fairness.clientSeed !== null) return fairness;
       const generatedClientSeed = generateClientSeed();
       try {
@@ -367,6 +393,7 @@ export const OpeningExperience = ({
         }
         return updated;
       } catch (updateError) {
+        requireActiveWorkflow();
         const retryableConflict =
           updateError instanceof CreatorDropApiError &&
           (updateError.code === 'FAIRNESS_REVISION_CONFLICT' ||
@@ -383,10 +410,11 @@ export const OpeningExperience = ({
       }
     }
     throw new Error('Fairness setup changed repeatedly. Review it and try again.');
-  }, [api]);
+  }, [api, requireActiveWorkflow]);
 
   const loadCurrentCatalog = useCallback(async (): Promise<OpeningV2Catalog> => {
     const current = await api.getCreatorBox(customSlug, box.manifest.boxId);
+    requireActiveWorkflow();
     if (
       current.creator.customSlug !== customSlug ||
       current.box.manifest.boxId !== box.manifest.boxId
@@ -398,7 +426,7 @@ export const OpeningExperience = ({
     }
     onCatalogChange(current.box);
     return current.box;
-  }, [api, box, customSlug, onCatalogChange]);
+  }, [api, box, customSlug, onCatalogChange, requireActiveWorkflow]);
 
   useEffect(() => {
     if (session.status !== 'authenticated') {
@@ -430,6 +458,7 @@ export const OpeningExperience = ({
                 committedOpening.boxId,
                 committedOpening.boxVersionId,
               );
+        if (!isWorkflowActive()) return;
         if (!catalogMatchesOpening(catalog, committedOpening)) {
           throw new Error('The published version did not match the committed opening.');
         }
@@ -438,6 +467,7 @@ export const OpeningExperience = ({
         onCatalogChange(catalog);
         setStage(reducedMotion ? 'result' : 'reel');
       } catch {
+        if (!isWorkflowActive()) return;
         setCommittedCatalog(undefined);
         setResultError(
           'Your result is safely recorded, but its reward details could not be loaded.',
@@ -445,11 +475,12 @@ export const OpeningExperience = ({
         setStage('result-error');
       }
     },
-    [api, box, onCatalogChange, reducedMotion],
+    [api, box, isWorkflowActive, onCatalogChange, reducedMotion],
   );
 
   const submit = useCallback(
     async (pending: PendingOpening) => {
+      if (!isWorkflowActive()) return;
       setError(undefined);
       setStage('submitting');
       try {
@@ -462,6 +493,7 @@ export const OpeningExperience = ({
           pending.expectedSeedSetId,
           pending.expectedServerSeedCommitment,
         );
+        if (!isWorkflowActive()) return;
         if (
           response.opening.fairness.clientSeed !== pending.clientSeed ||
           response.opening.fairness.seedSetId !== pending.expectedSeedSetId ||
@@ -474,11 +506,16 @@ export const OpeningExperience = ({
         }
         void api
           .getOpeningEntitlementState(response.opening.boxId)
-          .then(({ entitlement }) => setEntitlementState(entitlement))
-          .catch(() => setEntitlementState(undefined));
+          .then(({ entitlement }) => {
+            if (isWorkflowActive()) setEntitlementState(entitlement);
+          })
+          .catch(() => {
+            if (isWorkflowActive()) setEntitlementState(undefined);
+          });
         setOpening(response.opening);
         await resolveCommittedCatalog(response.opening);
       } catch (submissionError) {
+        if (!isWorkflowActive()) return;
         if (submissionError instanceof CreatorDropApiError) {
           if (submissionError.code === 'OPENING_RETRY_REQUIRED') {
             writePending(box.manifest.boxId, { ...pending, recovery: 'manual' });
@@ -488,6 +525,7 @@ export const OpeningExperience = ({
           if (submissionError.code === 'FAIRNESS_CONFIRMATION_STALE') {
             try {
               const refreshed = await api.getCurrentFairness();
+              if (!isWorkflowActive()) return;
               if (refreshed.fairness.clientSeed === null) {
                 setError('The fairness information changed. Please try again.');
                 setStage('idle');
@@ -502,6 +540,7 @@ export const OpeningExperience = ({
               setStage('confirm');
               return;
             } catch {
+              if (!isWorkflowActive()) return;
               setError('The fairness information changed. Please try again.');
               setStage('idle');
               return;
@@ -513,12 +552,14 @@ export const OpeningExperience = ({
               const { entitlement } = await api.getOpeningEntitlementState(
                 currentCatalog.manifest.boxId,
               );
+              if (!isWorkflowActive()) return;
               setEntitlementState(entitlement);
               setConfirmationCatalog(currentCatalog);
               setError('This Drop changed after you reviewed it. Check it and confirm again.');
               setStage('confirm');
               return;
             } catch {
+              if (!isWorkflowActive()) return;
               setConfirmationCatalog(undefined);
               setError(
                 'This Drop changed, but its current details could not be loaded. Try again.',
@@ -538,7 +579,7 @@ export const OpeningExperience = ({
         setStage('confirm');
       }
     },
-    [api, box.manifest.boxId, loadCurrentCatalog, resolveCommittedCatalog],
+    [api, box.manifest.boxId, isWorkflowActive, loadCurrentCatalog, resolveCommittedCatalog],
   );
 
   useEffect(() => {
@@ -554,7 +595,7 @@ export const OpeningExperience = ({
   }, [stage]);
 
   const confirm = async (): Promise<void> => {
-    if (confirming.current) return;
+    if (!isWorkflowActive() || confirming.current) return;
     confirming.current = true;
     try {
       if (session.status !== 'authenticated') {
@@ -590,6 +631,7 @@ export const OpeningExperience = ({
             seedSetId,
             serverSeedCommitment,
           );
+          if (!isWorkflowActive()) return;
           if (
             updated.fairness.clientSeed === null ||
             updated.fairness.activeSeedSet.id !== seedSetId ||
@@ -617,6 +659,7 @@ export const OpeningExperience = ({
       writePending(box.manifest.boxId, submittedPending);
       await submit(submittedPending);
     } catch (confirmationError) {
+      if (!isWorkflowActive()) return;
       if (
         confirmationError instanceof CreatorDropApiError &&
         (confirmationError.code === 'FAIRNESS_REVISION_CONFLICT' ||
@@ -625,6 +668,7 @@ export const OpeningExperience = ({
         clearPending(box.manifest.boxId);
         try {
           const refreshed = await api.getCurrentFairness();
+          if (!isWorkflowActive()) return;
           if (refreshed.fairness.clientSeed === null) {
             setError('Your fairness settings changed. Reload them before opening.');
             setStage('idle');
@@ -639,6 +683,7 @@ export const OpeningExperience = ({
           setStage('confirm');
           return;
         } catch {
+          if (!isWorkflowActive()) return;
           setError('Your fairness settings changed. Reload them before opening.');
           setStage('idle');
           return;
@@ -656,7 +701,7 @@ export const OpeningExperience = ({
   };
 
   const beginConfirmation = async (): Promise<void> => {
-    if (preparingConfirmation.current) return;
+    if (!isWorkflowActive() || preparingConfirmation.current) return;
     preparingConfirmation.current = true;
     setError(undefined);
     setStage('preparing-confirmation');
@@ -669,6 +714,7 @@ export const OpeningExperience = ({
         loadCurrentCatalog(),
         api.getOpeningEntitlementState(box.manifest.boxId),
       ]);
+      if (!isWorkflowActive()) return;
       setEntitlementState(entitlementResponse.entitlement);
       if (entitlementResponse.entitlement.limitReached) {
         throw new Error("You've reached the opening limit for this Drop.");
@@ -697,6 +743,7 @@ export const OpeningExperience = ({
       setServerSeedCommitment(fairness.fairness.activeSeedSet.commitment);
       setStage('confirm');
     } catch (loadError) {
+      if (!isWorkflowActive()) return;
       setConfirmationCatalog(undefined);
       setSeedSetId(undefined);
       setServerSeedCommitment(undefined);
@@ -778,7 +825,7 @@ export const OpeningExperience = ({
           disabled={!entitlementState?.available}
           onClick={() => void beginConfirmation()}
         >
-          Open Drop
+          {entitlementState?.source === 'universal' ? 'Use Universal Entry' : 'Open Drop'}
         </button>
       </section>
     );
@@ -798,7 +845,9 @@ export const OpeningExperience = ({
       <section aria-labelledby="opening-confirm-heading" className="opening-dialog">
         <p className="eyebrow">Confirm opening</p>
         <h2 id="opening-confirm-heading" ref={confirmationHeading} tabIndex={-1}>
-          Open one of your available Drops?
+          {entitlementState?.source === 'universal'
+            ? 'Use one Universal Entry on this Drop?'
+            : 'Open one of your available Drops?'}
         </h2>
         <p>{confirmationCatalog.version.name}</p>
         <p className="opening-confirmation-fairness-status">Provably Fair</p>
@@ -813,7 +862,11 @@ export const OpeningExperience = ({
             disabled={stage === 'submitting' || !/^[0-9a-f]{64}$/u.test(clientSeed ?? '')}
             onClick={() => void confirm()}
           >
-            {stage === 'submitting' ? 'Opening…' : 'Open Drop'}
+            {stage === 'submitting'
+              ? 'Opening…'
+              : entitlementState?.source === 'universal'
+                ? 'Use Universal Entry'
+                : 'Open Drop'}
           </button>
           <button
             className="button secondary"
@@ -922,7 +975,9 @@ export const OpeningExperience = ({
         )}
       </div>
       <h2 id="opening-result-heading" ref={resultHeading} tabIndex={-1}>
-        {winnerEntry.rewardVersion.name}
+        {opening.reward.xpReward === undefined
+          ? winnerEntry.rewardVersion.name
+          : `+${opening.reward.xpReward.amount} XP`}
       </h2>
       <p className="rarity-name">
         {rarityLabel(winnerEntry.rarity)} ·{' '}
@@ -934,6 +989,28 @@ export const OpeningExperience = ({
           remaining
         </strong>
       </p>
+      {opening.entitlement.source === 'universal' && (
+        <p>Universal Entry used · {opening.entitlement.universalEntriesRemaining} remaining</p>
+      )}
+      {opening.progression !== undefined && (
+        <>
+          {opening.progression.levelsGained !== '0' && (
+            <div className="level-up" role="status">
+              <p className="eyebrow">Level up</p>
+              <h3>Level {opening.progression.level}</h3>
+              <p>
+                +{opening.progression.universalEntriesGranted}{' '}
+                {opening.progression.universalEntriesGranted === '1'
+                  ? 'Universal Entry'
+                  : 'Universal Entries'}{' '}
+                · {opening.progression.levelsGained}{' '}
+                {opening.progression.levelsGained === '1' ? 'level gained' : 'levels gained'}
+              </p>
+            </div>
+          )}
+          <ProgressionDisplay progression={opening.progression} />
+        </>
+      )}
       <p>{fulfillmentLabel(opening.fulfillmentStatus)}</p>
       <FairnessProof api={api} opening={opening} />
       <button
@@ -945,7 +1022,10 @@ export const OpeningExperience = ({
           setStage('idle');
         }}
       >
-        {opening.entitlement.remaining === '0' ? 'Done' : 'Open another Drop'}
+        {opening.entitlement.remaining === '0' &&
+        (opening.entitlement.universalEntriesRemaining ?? '0') === '0'
+          ? 'Done'
+          : 'Open another Drop'}
       </button>
     </section>
   );

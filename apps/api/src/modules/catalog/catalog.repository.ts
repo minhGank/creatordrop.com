@@ -1,3 +1,4 @@
+import { xpRewardSchema } from '@creatordrop/contracts';
 import { assertTransactionExecutor } from '@creatordrop/database';
 import type { QueryExecutor, TransactionExecutor } from '@creatordrop/database';
 
@@ -70,6 +71,8 @@ interface RewardRow {
   readonly draftName: unknown;
   readonly draftPublishedAt: unknown;
   readonly draftRewardType: unknown;
+  readonly draftXpAmount: unknown;
+  readonly draftXpPolicyVersion: unknown;
   readonly draftState: unknown;
   readonly draftUpdatedAt: unknown;
   readonly draftVersionNumber: unknown;
@@ -117,6 +120,8 @@ interface RewardVersionRow {
   readonly name: unknown;
   readonly publishedAt: unknown;
   readonly rewardType: unknown;
+  readonly xpAmount: unknown;
+  readonly xpPolicyVersion: unknown;
   readonly state: unknown;
   readonly updatedAt: unknown;
   readonly versionNumber: unknown;
@@ -354,6 +359,14 @@ const parseRewardVersion = (row: RewardVersionRow): RewardVersion => {
     name: requiredString(row.name, 'reward name'),
     publishedAt: nullableTimestamp(row.publishedAt, 'reward publication timestamp'),
     rewardType: row.rewardType,
+    ...(row.rewardType === 'xp'
+      ? {
+          xpReward: xpRewardSchema.parse({
+            amount: row.xpAmount,
+            policyVersion: row.xpPolicyVersion,
+          }),
+        }
+      : {}),
     state: row.state,
     updatedAt: timestamp(row.updatedAt, 'reward version updated timestamp'),
     versionNumber: requiredNumber(row.versionNumber, 'reward version number'),
@@ -375,6 +388,8 @@ const rewardVersionFromJoinedRow = (row: RewardRow): RewardVersion | null => {
     name: row.draftName,
     publishedAt: row.draftPublishedAt,
     rewardType: row.draftRewardType,
+    xpAmount: row.draftXpAmount,
+    xpPolicyVersion: row.draftXpPolicyVersion,
     state: row.draftState,
     updatedAt: row.draftUpdatedAt,
     versionNumber: row.draftVersionNumber,
@@ -438,6 +453,8 @@ const rewardColumns = `
   draft.description as "draftDescription",
   draft.image_url as "draftImageUrl",
   draft.reward_type as "draftRewardType",
+  draft.xp_amount::text as "draftXpAmount",
+  draft.xp_policy_version as "draftXpPolicyVersion",
   draft.inventory_mode as "draftInventoryMode",
   draft.inventory_quantity::text as "draftInventoryQuantity",
   draft.inventory_stockout_policy as "draftInventoryStockoutPolicy",
@@ -473,6 +490,8 @@ const rewardVersionColumns = `
   rv.description,
   rv.image_url as "imageUrl",
   rv.reward_type as "rewardType",
+  rv.xp_amount::text as "xpAmount",
+  rv.xp_policy_version as "xpPolicyVersion",
   rv.inventory_mode as "inventoryMode",
   rv.inventory_quantity::text as "inventoryQuantity",
   rv.inventory_stockout_policy as "inventoryStockoutPolicy",
@@ -547,8 +566,8 @@ export const insertRewardAndDraft = async (
     `insert into app.reward_versions (
        id, reward_id, version_number, name, description, image_url, reward_type,
        inventory_mode, inventory_quantity, declared_value_minor, declared_value_currency,
-       inventory_stockout_policy, created_by_user_id
-     ) values ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+       inventory_stockout_policy, created_by_user_id, xp_amount, xp_policy_version
+     ) values ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
     [
       identifiers.versionId,
       identifiers.rewardId,
@@ -562,6 +581,8 @@ export const insertRewardAndDraft = async (
       input.declaredValueCurrency,
       input.inventoryStockoutPolicy,
       actorUserId,
+      input.xpAmount?.toString() ?? null,
+      input.rewardType === 'xp' ? 'xp-v1' : null,
     ],
   );
 };
@@ -699,7 +720,7 @@ export const updateRewardDraft = async (
         set name = $3, description = $4, image_url = $5, reward_type = $6,
             inventory_mode = $7, inventory_quantity = $8,
             declared_value_minor = $9, declared_value_currency = $10,
-            inventory_stockout_policy = $11,
+            inventory_stockout_policy = $11, xp_amount = $12, xp_policy_version = $13,
             updated_at = statement_timestamp()
        from app.rewards r
       where rv.reward_id = r.id and rv.state = 'draft'
@@ -716,6 +737,8 @@ export const updateRewardDraft = async (
       input.declaredValueMinor?.toString() ?? null,
       input.declaredValueCurrency,
       input.inventoryStockoutPolicy,
+      input.xpAmount?.toString() ?? null,
+      input.rewardType === 'xp' ? 'xp-v1' : null,
     ],
   );
   if (result.rowCount !== 1) throw new Error('Expected one scoped reward draft update.');
@@ -980,13 +1003,13 @@ export const insertRewardDraftClone = async (
     `insert into app.reward_versions (
        id, reward_id, version_number, name, description, image_url, reward_type,
        inventory_mode, inventory_quantity, declared_value_minor, declared_value_currency,
-       inventory_stockout_policy, inventory_pool_id, fulfillment_definition, created_by_user_id
+       inventory_stockout_policy, inventory_pool_id, fulfillment_definition, created_by_user_id, xp_amount, xp_policy_version
      )
      select $2, r.id, source.version_number + 1, source.name, source.description,
             source.image_url, source.reward_type, source.inventory_mode,
             source.inventory_quantity, source.declared_value_minor,
             source.declared_value_currency, source.inventory_stockout_policy,
-            source.inventory_pool_id, source.fulfillment_definition, $3
+            source.inventory_pool_id, source.fulfillment_definition, $3, source.xp_amount, source.xp_policy_version
        from app.rewards r
        join app.reward_versions source on source.reward_id = r.id
       where r.id = $1 and source.state = 'published'

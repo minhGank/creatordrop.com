@@ -71,7 +71,7 @@ Phase 5 creates the stable identity with `id`, `creator_id`, `status` (`active`,
 
 ### `reward_versions`
 
-Versioned content snapshot: `id`, `reward_id`, `version_number`, `state` (`draft`, `published`, `retired`), `name`, `description`, `image_url`, `reward_type` (`digital`, `physical`, `experience`), inventory configuration, optional declared value, an empty Phase 5 `fulfillment_definition` object, timestamps, and `created_by_user_id`. Unique `(reward_id, version_number)` with one draft per reward. Drafts may change. A reward version becomes published when a box publication first references it; a trigger then prevents updates/deletes, including through another box draft. Later edits lazily create a new reward version.
+Versioned content snapshot: `id`, `reward_id`, `version_number`, `state` (`draft`, `published`, `retired`), `name`, `description`, `image_url`, `reward_type` (`digital`, `physical`, `experience`, `xp`), inventory configuration, optional declared value, an empty Phase 5 `fulfillment_definition` object, timestamps, and `created_by_user_id`. Unique `(reward_id, version_number)` with one draft per reward. Drafts may change. A reward version becomes published when a box publication first references it; a trigger then prevents updates/deletes, including through another box draft. Later edits lazily create a new reward version.
 
 Inventory configuration is either `unlimited` with a null quantity/policy/pool or `finite` with a nonnegative `bigint` quantity, `pause_box` (default) or `backorder`, and an immutable `inventory_pool_id` reference. A zero finite quantity is allowed while drafting but cannot be newly published. Inventory-pool identity is independent of reward-version identity: a new finite reward creates a distinct pool, while a later immutable metadata/catalog version retains the same pool and cannot replenish consumed stock. Multiple versions and boxes can therefore reference one physical stock resource without rewriting historical snapshots. Openings lock and consume only the selected pool after RNG. Existing finite versions are mapped to their original Phase 9 pool during the forward migration, while legacy box versions remain non-openable.
 
@@ -166,11 +166,11 @@ Unique `(actor_user_id, operation, idempotency_key)`. Keys are opaque allowliste
 - identity: `id`, `public_id` unique, `user_id`, `creator_id`, `box_id`, `box_version_id`, immutable `opening_compatibility_version`, selected association/reward version, optional selected inventory pool;
 - v1-only money snapshot: gross price/currency, platform fee basis points/amount, creator share, earnings availability timestamp, and unique sale/allocation ledger references;
 - v1-only points snapshot: `leaderboard-v1`, base 5, bonus 0/15, total 5/20, and creator scope;
-- v2 shape: every money, ledger, earnings-hold, and legacy-points column is null and exactly one scoped entitlement consumption is required;
+- v2 shape: every money, ledger, earnings-hold, and legacy-points column is null and exactly one creator-scoped or Universal Entry consumption is required;
 - fairness proof: `rng_seed_set_id`, commitment, client seed, nonce, algorithm version, HMAC digest, unbiased `numeric(78,0)` selection, rejection round, and configuration hash;
 - references: unique idempotency record, immutable completed status, and timestamp.
 
-Unique `(rng_seed_set_id, nonce)` guarantees no nonce reuse. Indexes `(user_id, created_at desc, id)`, `(box_id, created_at desc, id)`, `(box_version_id)`, and `(box_version_reward_id)`. The proof columns and all references are immutable. `selection_value` is the unbiased integer in `[0,total_weight)`, not a floating-point roll. Both models require one win, one fulfillment obligation, matching inventory history, completed idempotency, and exactly the private/public outbox pair. Only v1 may have a creator earning or enter `leaderboard-v1`; v2 has neither.
+Unique `(rng_seed_set_id, nonce)` guarantees no nonce reuse. Indexes `(user_id, created_at desc, id)`, `(box_id, created_at desc, id)`, `(box_version_id)`, and `(box_version_reward_id)`. The proof columns and all references are immutable. `selection_value` is the unbiased integer in `[0,total_weight)`, not a floating-point roll. Both models require one win, matching inventory history, completed idempotency, and exactly the private/public outbox pair. Non-XP wins require one fulfillment obligation; R3 XP wins require the matching XP award and no obligation. Only v1 may have a creator earning or enter `leaderboard-v1`; v2 has neither.
 
 ### `reward_wins`, `fulfillment_obligations`, and `creator_earnings`
 
@@ -432,3 +432,31 @@ Use `READ COMMITTED` plus explicit `SELECT ... FOR UPDATE`/conditional updates f
 ## Retention and deletion
 
 Idempotency response bodies may expire after a policy-defined window (recommended minimum 24 hours, longer than all client retry windows), but opening and ledger uniqueness references persist. Seed ciphertext/reveals, opening proofs, configuration versions, ledger, provider event identifiers, and audit records follow financial/legal retention. Account deletion pseudonymizes public/profile data while retaining minimally required financial/fairness records. Exact periods require legal approval.
+
+## R3 progression storage
+
+`20260908161858_r3_global_progression.sql` extends immutable reward versions with nullable
+`xp_amount` and `xp_policy_version`. The `xp` discriminator requires xp-v1 integer 1–500, unlimited
+inventory and no monetary value; other types require both columns null. XP publications require
+opening-v2. Historical versions are not updated or rehashed.
+
+Private, RLS-enabled `progression_accounts` holds a nonnegative signed-64 lifetime XP projection;
+`xp_awards` uniquely references its authoritative opening/user and records the immutable amount,
+resulting XP and before/after levels. Deferred reconciliation checks projection totals and the
+number of earned level entries. `universal_entry_grants` uniquely binds `(user_id, source_level)`
+to the award that crossed it. `universal_entry_consumptions` uniquely binds a grant and an opening,
+with user-scoped foreign keys and deferred opening linkage. Grants/awards/consumptions are immutable.
+`20260908174734_r3_universal_entry_linkage_guard.sql` adds the consumption's requested creator,
+box, version and configuration hash, backfilling existing rows from their immutable openings
+under the migration's exclusive table lock. Deferred guards on both entitlement sources require
+exactly one source and match Universal consumption to that complete opening-v2 scope. The runtime
+consumption command rejects already-existing openings after acquiring the account lock; it cannot
+retroactively spend another entry against an earlier result.
+The opening's deferred guard requires exactly one entitlement source and preserves all existing
+inventory/idempotency/outbox invariants. XP fulfillment is explicitly not required.
+
+The runtime cannot read/write private tables or execute private grant/trigger primitives. Public
+security-definer reads return allowlisted state; opening consumption retains its transaction-owned
+boundary. Account locking precedes existing R1 box/grant/fairness locks. No Redis state is consulted.
+Legacy leaderboard, season, champion, queue and point records remain untouched as history; active
+runtime projection/finalization is retired. No migration converts historical points into XP.

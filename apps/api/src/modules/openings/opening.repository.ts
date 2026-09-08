@@ -1,8 +1,14 @@
+import {
+  xpRewardSchema,
+  progressionSchema,
+  openingProgressionSchema,
+  type XpReward,
+} from '@creatordrop/contracts';
 import { validate as isUuid } from 'uuid';
 
 import { assertTransactionExecutor } from '@creatordrop/database';
 import type { QueryExecutor, TransactionExecutor } from '@creatordrop/database';
-import { parseCurrency, toMoneyMinor } from '@creatordrop/domain';
+import { parseCurrency, toMoneyMinor, progressionForXp } from '@creatordrop/domain';
 import type { Currency, MoneyMinor } from '@creatordrop/domain';
 
 import type {
@@ -33,6 +39,8 @@ interface CatalogHeaderRow {
 }
 
 interface CatalogEntryRow {
+  readonly xpAmount: unknown;
+  readonly xpPolicyVersion: unknown;
   readonly entryId: unknown;
   readonly imageUrl: unknown;
   readonly inventoryMode: unknown;
@@ -56,6 +64,7 @@ interface InventoryPoolRow {
 }
 
 export interface OpeningCatalogEntry {
+  readonly xpReward?: XpReward;
   readonly id: BoxVersionRewardId;
   readonly imageUrl: string | null;
   readonly inventoryMode: 'finite' | 'unlimited';
@@ -145,6 +154,8 @@ export interface OpeningV2HistoryInsert {
 }
 
 interface EntitlementConsumptionRow {
+  readonly source: unknown;
+  readonly universalEntriesAvailable: unknown;
   readonly maxOpeningsPerUser: unknown;
   readonly outcome: unknown;
   readonly remainingEntitlements: unknown;
@@ -152,6 +163,8 @@ interface EntitlementConsumptionRow {
 }
 
 export interface OpeningV2EntitlementConsumption {
+  readonly source: 'creator' | 'universal' | null;
+  readonly universalEntriesAvailable: string;
   readonly maxOpeningsPerUser: string;
   readonly outcome: 'consumed' | 'entitlement_required' | 'max_reached';
   readonly remainingEntitlements: string;
@@ -159,6 +172,8 @@ export interface OpeningV2EntitlementConsumption {
 }
 
 interface EntitlementStateRow {
+  readonly source: unknown;
+  readonly universalEntriesAvailable: unknown;
   readonly available: unknown;
   readonly boxId: unknown;
   readonly consumed: unknown;
@@ -170,6 +185,8 @@ interface EntitlementStateRow {
 }
 
 export interface OpeningV2EntitlementState {
+  readonly source: 'creator' | 'universal' | null;
+  readonly universalEntriesAvailable: string;
   readonly available: boolean;
   readonly boxId: BoxId;
   readonly consumed: string;
@@ -246,7 +263,8 @@ export const findOpeningCatalog = async (
             version.rng_algorithm_version as "rngAlgorithmVersion"
        from app.boxes as box
        join app.box_versions as version on version.id = box.current_published_version_id
-      where box.id = $1 and version.state = 'published'`,
+      where box.id = $1 and version.state = 'published'
+        and exists(select 1 from app.creators c where c.id=box.creator_id and c.status='active')`,
     [boxId],
   );
   const header = headerResult.rows[0];
@@ -262,6 +280,7 @@ export const findOpeningCatalog = async (
             entry.rarity, entry.rarity_policy_version as "rarityPolicyVersion",
             reward.id::text as "rewardId", reward_version.name,
             reward_version.image_url as "imageUrl",
+            reward_version.xp_amount::text as "xpAmount", reward_version.xp_policy_version as "xpPolicyVersion",
             reward_version.inventory_mode as "inventoryMode",
             pool.id::text as "inventoryPoolId", pool.stockout_policy as "stockoutPolicy",
             (base.id is not null) as "isBaseReward"
@@ -309,6 +328,14 @@ export const findOpeningCatalog = async (
           : (requiredUuid(row.inventoryPoolId, 'inventory pool ID') as InventoryPoolId),
       isBaseReward: row.isBaseReward === true,
       name: requiredString(row.name, 'reward name'),
+      ...(row.xpAmount == null
+        ? {}
+        : {
+            xpReward: xpRewardSchema.parse({
+              amount: row.xpAmount,
+              policyVersion: row.xpPolicyVersion,
+            }),
+          }),
       position: requiredNumber(row.position, 'reward position'),
       rarity,
       rarityPolicyVersion,
@@ -461,7 +488,7 @@ export const consumeOpeningV2Entitlement = async (
     `select outcome,
             max_openings_per_user as "maxOpeningsPerUser",
             successful_openings as "successfulOpenings",
-            remaining_entitlements as "remainingEntitlements"
+            remaining_entitlements as "remainingEntitlements", source, universal_entries_remaining as "universalEntriesAvailable"
        from app.consume_opening_v2_entitlement(
          $1, $2, $3, $4, $5, $6, decode($7, 'hex')
        )`,
@@ -492,6 +519,11 @@ export const consumeOpeningV2Entitlement = async (
       'remaining entitlements',
     ).toString(),
     successfulOpenings: requiredBigint(row.successfulOpenings, 'successful openings').toString(),
+    source: nullableOneOf(row.source, ['creator', 'universal'] as const, 'entitlement source'),
+    universalEntriesAvailable: requiredBigint(
+      row.universalEntriesAvailable,
+      'Universal Entries',
+    ).toString(),
   };
 };
 
@@ -504,7 +536,7 @@ export const readOpeningV2EntitlementState = async (
     `select box_id::text as "boxId",
             max_openings_per_user as "maxOpeningsPerUser",
             successful_openings as "successfulOpenings",
-            granted, consumed, remaining, available, limit_reached as "limitReached"
+            granted, consumed, remaining, available, limit_reached as "limitReached", source, universal_entries_available as "universalEntriesAvailable"
        from app.read_opening_v2_entitlement_state($1, $2)`,
     [userId, boxId],
   );
@@ -522,6 +554,11 @@ export const readOpeningV2EntitlementState = async (
     ).toString(),
     remaining: requiredBigint(row.remaining, 'remaining entitlements').toString(),
     successfulOpenings: requiredBigint(row.successfulOpenings, 'successful openings').toString(),
+    source: nullableOneOf(row.source, ['creator', 'universal'] as const, 'entitlement source'),
+    universalEntriesAvailable: requiredBigint(
+      row.universalEntriesAvailable,
+      'Universal Entries',
+    ).toString(),
   };
 };
 
@@ -715,18 +752,20 @@ export const insertOpeningV2History = async (
       input.createdAt,
     ],
   );
-  await transaction.query(
-    `insert into app.fulfillment_obligations (
+  if (input.selectedEntry.xpReward === undefined) {
+    await transaction.query(
+      `insert into app.fulfillment_obligations (
        id, opening_id, reward_win_id, status, created_at
      ) values ($1, $2, $3, $4, $5)`,
-    [
-      input.fulfillmentId,
-      input.openingId,
-      input.rewardWinId,
-      input.fulfillmentStatus,
-      input.createdAt,
-    ],
-  );
+      [
+        input.fulfillmentId,
+        input.openingId,
+        input.rewardWinId,
+        input.fulfillmentStatus,
+        input.createdAt,
+      ],
+    );
+  }
   await transaction.query(
     `insert into app.event_outbox (
        id, aggregate_type, aggregate_id, event_type, audience, payload, occurred_at, created_at
@@ -765,4 +804,40 @@ export const insertOpeningV2History = async (
       input.createdAt,
     ],
   );
+};
+
+export const readProgression = async (executor: QueryExecutor, userId: UserId) => {
+  const result = await executor.query<{ state: unknown }>(
+    'select app.read_progression($1) as state',
+    [userId],
+  );
+  const state = progressionSchema.parse(result.rows[0]?.state);
+  validateProgressionMath(state);
+  return state;
+};
+export const readOpeningProgression = async (
+  executor: TransactionExecutor,
+  userId: UserId,
+  openingId: OpeningId,
+) => {
+  const result = await executor.query<{ state: unknown }>(
+    'select app.read_opening_progression($1,$2) as state',
+    [userId, openingId],
+  );
+  const state = openingProgressionSchema.parse(result.rows[0]?.state);
+  validateProgressionMath(state);
+  return state;
+};
+
+const validateProgressionMath = (state: ReturnType<typeof progressionSchema.parse>): void => {
+  const derived = progressionForXp(BigInt(state.lifetimeXp));
+  if (
+    derived.level.toString() !== state.level ||
+    derived.xpInLevel.toString() !== state.xpInLevel ||
+    derived.xpForNextLevel.toString() !== state.xpForNextLevel ||
+    (derived.level - 1n).toString() !== state.universalEntriesEarned ||
+    BigInt(state.universalEntriesAvailable) > BigInt(state.universalEntriesEarned)
+  ) {
+    throw new Error('Database progression state is inconsistent.');
+  }
 };

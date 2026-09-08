@@ -1,3 +1,5 @@
+import { ApiError } from '../src/http/errors.js';
+import { parseRewardDraftInput } from '../src/modules/catalog/catalog.schema.js';
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -17,10 +19,65 @@ const clientSeed = 'ab'.repeat(32);
 
 describe('box opening API boundary', () => {
   const openingService = (openBox: OpeningService['openBox']): OpeningService => ({
+    getProgression: vi.fn<OpeningService['getProgression']>(),
     getEntitlementState: vi
       .fn<OpeningService['getEntitlementState']>()
       .mockRejectedValue(new Error('Entitlement state was not configured for this test.')),
     openBox,
+  });
+  it('reads only the authenticated progression and rejects arbitrary-user input', async () => {
+    const service = openingService(vi.fn());
+    const getProgression = vi.fn<OpeningService['getProgression']>().mockResolvedValue({
+      progression: {
+        lifetimeXp: '0',
+        level: '1',
+        xpInLevel: '0',
+        xpForNextLevel: '100',
+        universalEntriesAvailable: '0',
+        universalEntriesEarned: '0',
+      },
+    });
+    const app = createTestApp({ openingService: { ...service, getProgression } });
+    await request(app)
+      .get('/v1/me/progression')
+      .expect(200)
+      .expect('Cache-Control', 'private, no-store');
+    expect(getProgression).toHaveBeenCalledWith('019c0000-0000-7000-8000-000000000001');
+    await request(app).get('/v1/me/progression?userId=another-user').expect(400);
+    expect(getProgression).toHaveBeenCalledOnce();
+    for (const status of [401, 403]) {
+      const denied = createTestApp({
+        openingService: { ...service, getProgression },
+        authenticate: (_req, _res, next) => next(new ApiError(status, 'AUTH_DENIED', 'Denied')),
+      });
+      await request(denied).get('/v1/me/progression').expect(status);
+    }
+    expect(getProgression).toHaveBeenCalledOnce();
+    await request(app).post('/v1/me/progression').send({ xp: '100' }).expect(404);
+  });
+  it('validates platform-governed XP configuration and rejects legacy point rewards', () => {
+    const valid = {
+      description: '',
+      name: 'XP',
+      rewardType: 'xp',
+      inventoryMode: 'unlimited',
+      xpAmount: '250',
+    };
+    expect(parseRewardDraftInput(valid).xpAmount).toBe(250n);
+    for (const invalid of [
+      { xpAmount: '0' },
+      { xpAmount: '501' },
+      { xpAmount: '1000000' },
+      { xpAmount: '2.5' },
+      { xpAmount: 250 },
+      { rewardType: 'points' },
+      { rewardType: 'digital' },
+      { inventoryMode: 'finite', inventoryQuantity: '1' },
+      { declaredValueMinor: '10', declaredValueCurrency: 'USD' },
+      { xpPolicyVersion: 'creator-choice' },
+    ]) {
+      expect(() => parseRewardDraftInput({ ...valid, ...invalid })).toThrow(ApiError);
+    }
   });
   it('derives the actor, validates exact input, and returns an allowlisted response', async () => {
     const body = {
@@ -154,6 +211,7 @@ describe('box opening API boundary', () => {
       },
     });
     const service: OpeningService = {
+      getProgression: vi.fn<OpeningService['getProgression']>(),
       getEntitlementState,
       openBox: vi.fn<OpeningService['openBox']>(),
     };

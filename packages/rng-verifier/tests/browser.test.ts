@@ -78,6 +78,38 @@ describe('browser persisted-opening verifier', () => {
     ).resolves.toMatchObject({ valid: true, computed: { manifestHash: configurationHash } });
   });
 
+  it('independently verifies persisted XP proof material with unchanged winner', async () => {
+    const vector = vectors.vectors[1];
+    if (vector === undefined) throw new Error('Expected a vector.');
+    const manifest = {
+      algorithmVersion: vector.manifest.algorithmVersion,
+      boxId: vector.manifest.boxId,
+      boxVersionId: vector.manifest.boxVersionId,
+      entries: vector.manifest.entries.map((entry) => ({
+        boxVersionRewardId: entry.boxVersionRewardId,
+        position: entry.position,
+        rarity: 'common',
+        rarityPolicyVersion: 'rarity-v1',
+        rewardVersionId: entry.rewardVersionId,
+        weight: entry.weight,
+        xpReward: { amount: '250', policyVersion: 'xp-v1' },
+      })),
+      maxOpeningsPerUser: '3',
+      openingCompatibilityVersion: 'opening-v2',
+      totalWeight: vector.manifest.totalWeight,
+    } as const;
+    const configurationHash = createHash('sha256')
+      .update(JSON.stringify(manifest), 'utf8')
+      .digest('hex');
+    await expect(
+      verifyPersistedRewardSelectionProof({
+        ...proofFor(vector),
+        configurationHash,
+        manifest,
+      }),
+    ).resolves.toMatchObject({ valid: true, computed: { manifestHash: configurationHash } });
+  });
+
   it('detects recorded digest, round, selection, and winner tampering', async () => {
     const vector = vectors.vectors[1];
     if (vector === undefined) throw new Error('Expected a vector.');

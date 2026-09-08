@@ -60,3 +60,13 @@ export const createOpeningEntitlementStateController =
       response.status(200).json(result);
     }, next);
   };
+
+export const createProgressionController =
+  (service: OpeningService): RequestHandler =>
+  (request, response, next) => {
+    run(async () => {
+      parseEmptyOpeningQuery(request.query);
+      response.set('Cache-Control', 'private, no-store');
+      response.status(200).json(await service.getProgression(requireActorUserId(request)));
+    }, next);
+  };

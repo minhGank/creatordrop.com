@@ -645,9 +645,10 @@ roles cannot decrypt. Restock accepts only a published/shared pool and changes o
 and history; it does not resolve an
 obligation or resume a box automatically.
 
-## Public leaderboards and achievements
+## Historical leaderboard and achievement contracts (retired by R3)
 
-Phase 13 leaderboard/profile-badge reads are public and require no bearer token:
+These Phase 13 paths are unregistered in R3 and return 404. The following response descriptions
+are historical compatibility documentation; PostgreSQL records remain preserved:
 
 | Method | Path                                                    | Purpose                                 |
 | ------ | ------------------------------------------------------- | --------------------------------------- |
@@ -717,3 +718,51 @@ feed UI remain later phases.
 - Add fields compatibly within `/v1`; breaking semantics require a new API/algorithm/event version.
 - Deprecation never makes historical fairness verification unavailable.
 - Use field allowlists for logs, outbox, analytics, and public responses. Treat usernames, IPs, shipping data, and payment metadata according to the privacy classification policy.
+
+## R3 fan progression and Universal Entries
+
+`GET /v1/me/progression` requires an active authenticated user and accepts no query parameters.
+The actor comes from the verified session/JWT. It returns `Cache-Control: private, no-store`.
+Reads share the opening route IP limiter and have a 120-per-window actor limit (the configured
+opening window). Unauthenticated/suspended requests follow existing 401/403 policy; arbitrary
+user queries fail validation. There is no XP or Universal Entry grant mutation endpoint.
+
+```json
+{
+  "progression": {
+    "lifetimeXp": "640",
+    "level": "4",
+    "xpInLevel": "40",
+    "xpForNextLevel": "400",
+    "universalEntriesAvailable": "3",
+    "universalEntriesEarned": "3"
+  }
+}
+```
+
+All progression integers are decimal strings. The opening-entitlement read retains existing
+creator-specific `granted`, `consumed`, `remaining` fields and adds `universalEntriesAvailable` and
+`source` (`creator`, `universal`, or null). `available` includes Universal Entry fallback while
+honoring the published per-user maximum. These reads are informational, never capability tokens.
+
+New v2 opening responses add `entitlement.source`, `entitlement.universalEntriesRemaining`, and
+`progression` (the progression state above plus `xpAwarded`, `levelsGained`, and
+`universalEntriesGranted`). They describe the committed result; idempotent replay returns that
+original snapshot even if account progression has since changed. The server chooses creator
+entitlements first. Neither the request nor response exposes grant IDs or accepts a balance/source
+as authorization. Existing historical opening responses without R3 fields remain supported.
+
+Creator reward draft APIs accept `rewardType: "xp"` and decimal `xpAmount: "250"`, constrained to
+1–500 by xp-v1 in both API and database. XP requires unlimited inventory and no monetary value.
+Published reward DTOs and XP manifest entries contain `xpReward: { "amount": "250",
+"policyVersion": "xp-v1" }`; other reward DTOs omit it. Only opening-v2 may publish XP. New XP
+opening results include the same reward object and `fulfillmentStatus: "not_required"`. All other
+fulfillment rules and both existing outbox event versions are unchanged.
+
+Compatibility: R3 is an additive v2 DTO/manifest extension requiring updated API/web readers to
+ship together. Pre-R3 web schemas reject the new entitlement/progression fields even on non-XP
+v2 responses; pre-R3 verifiers reject the new XP manifest entry fields. Deploy matching API,
+web and verifier readers and refresh older browser bundles. Historical bytes and parsers remain
+supported. The legacy leaderboard and public
+champion/achievement routes listed above are **unregistered** (404), with history retained in
+PostgreSQL; no active runtime Redis ranking writes or season jobs remain.

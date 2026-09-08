@@ -36,6 +36,35 @@ product and unregisters fan wallet, test-credit, funding-intent, and Stripe fund
 from normal API composition. Historical financial data, migrations, services, and v1 parsers are
 preserved for compatibility and audit; they are not active fan product surfaces.
 
+### R3 global progression and Universal Entries
+
+PostgreSQL owns lifetime XP and immutable opening-derived XP awards, level-up grants and one-time
+Universal Entry consumptions. Every account starts effectively at Level 1 and zero XP; legacy
+points are never converted. Level is derived from integer lifetime XP, with `L × 100` required
+for the next level and `50 × N × (N - 1)` cumulative XP to reach Level N. Every newly crossed
+level grants one Universal Entry, uniquely constrained by user and source level.
+
+The versioned `xp-v1` platform policy permits integer rewards from 1 through 500 XP, unlimited
+inventory, and no declared monetary value. API and database enforce this policy. XP rewards are
+explicit immutable reward versions; their amount and policy version are included in the v2
+manifest. Existing manifest bytes and RNG mathematics remain unchanged (see [RNG.md](./RNG.md)).
+An XP win awards progression through an opening insert trigger, with one reward win and no fake
+fulfillment obligation. Physical/digital/experience obligations retain their existing invariants.
+
+V2 acquires an account-wide progression transaction lock before the existing user/box guard.
+It consumes a creator-specific grant first, then an available Universal Entry if necessary. The
+same transaction commits consumption, nonce/selection, inventory, opening, XP, all level grants,
+idempotency and outbox. Failure rolls everything back. A raw XP insert arriving in reverse lock
+order fails retryably rather than waiting with RNG locks held. Private progression tables and
+trigger functions have no runtime write/grant capability; there is no XP-grant HTTP command.
+Reads are informational, authenticated and user-scoped, with PostgreSQL rechecking every opening.
+
+R3 removes public ranking/achievement route registration and all leaderboard Redis processing,
+reconciliation and season finalization from normal startup. Historical tables, seasons,
+champions, points, old v1 code/parsers and isolated regression modules remain preserved. Those
+modules are history support, not an active point economy. R3 does not implement farming detection,
+collusion scoring, R4 quotas/billing or provider verification.
+
 ### R2A entry methods and manual-evidence authority
 
 The typed contract registry models Platform → supported Action → creator entry method. Only
@@ -197,8 +226,8 @@ slug with a globally addressed box. Shared loading/error/empty states, semantic 
 visible focus, skip navigation, responsive layouts, and `prefers-reduced-motion` support form the
 accessibility baseline for later phases.
 
-R1C supersedes Phase 14's active wallet and synthetic-credit presentation. The account page is
-session-only guidance, browser configuration has no wallet/test-credit switch, and active v2
+R1C supersedes Phase 14's active wallet and synthetic-credit presentation. The account page initially provided
+session guidance; R3 adds authoritative progression, browser configuration has no wallet/test-credit switch, and active v2
 catalog pages show percentages derived from immutable integer weights without exposing raw
 fractions. They show neither money nor a synthetic zero price. An `opening-v1` catalog version may
 remain readable as explicitly labeled historical content, but the web app supplies no opening
@@ -238,14 +267,16 @@ The retained paid `opening-v1` implementation is a short PostgreSQL transaction 
 7. affected box identity rows in UUID order (shared availability check, upgraded for atomic pause);
 8. ledger/open/fulfillment/outbox inserts.
 
-The non-financial `opening-v2` order is idempotency claim → per-user/stable-box guard → oldest
-eligible grant row → `fairness_profiles` → active `rng_seed_sets` → selected inventory pool →
-affected box rows → opening/win/fulfillment/entitlement/outbox inserts. The guard is keyed by
+The non-financial `opening-v2` order is idempotency claim → account progression lock →
+per-user/stable-box guard → oldest eligible creator grant or Universal Entry row → `fairness_profiles` → active `rng_seed_sets` → selected inventory pool →
+affected box rows → opening/win/applicable fulfillment/entitlement/progression/outbox inserts. The guard is keyed by
 `(user_id, box_id)`, so every version of one stable Drop shares its personal-limit and entitlement
-serialization boundary while different users or boxes remain concurrent. After taking the guard,
+serialization boundary while different users remain concurrent. Different boxes for the same user serialize progression
+and Universal Entry spending before their box guards. After taking the guard,
 PostgreSQL counts committed v2 openings for the stable box, checks the immutable maximum, chooses
 the oldest still-available grant ordered by `(created_at, id)`, locks it, and appends one deferred
-opening-linked consumption. The maximum is checked before entitlement availability, so unused
+opening-linked consumption. If no creator grant is available, it selects the earliest unconsumed
+Universal Entry by `(source_level, id)` instead. Both the Drop and its creator must be active. The maximum is checked before entitlement availability, so unused
 grants cannot bypass a reached limit.
 
 Season finalization takes the same season row exclusively before deriving permanent results. An
@@ -327,7 +358,7 @@ Phase 10 uses process-local Socket.io rooms and an acknowledged worker-to-API co
 horizontally scaled Socket.io deployment will need an approved cross-node adapter and sticky
 connection policy before production scaling.
 
-### Redis projections and leaderboards
+### Historical Redis projections and leaderboards (retired by R3)
 
 Phase 13 projects immutable `box_opens.points_awarded` into disposable Redis leaderboards. The
 private `opening.completed.v1` outbox UUID is the sole event identity/source; the public drop

@@ -1286,3 +1286,50 @@ h2 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+.progression-card {
+  margin-block: 1.25rem;
+  padding: clamp(1rem, 3vw, 1.75rem);
+  border: 1px solid rgba(151, 115, 255, 0.35);
+  border-radius: 1.2rem;
+  background: linear-gradient(135deg, #251d3c, #141822);
+  text-align: left;
+}
+.progression-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+.progression-heading h2 {
+  margin: 0;
+}
+.universal-entry-count {
+  display: grid;
+  gap: 0.2rem;
+}
+.universal-entry-count strong {
+  font-size: 2rem;
+  color: #c4b2ff;
+}
+.progression-card progress {
+  width: 100%;
+  height: 0.7rem;
+  accent-color: #a68aff;
+}
+.progression-card .muted {
+  font-size: 0.85rem;
+  color: #bdc0ce;
+}
+.level-up {
+  padding: 1rem;
+  margin-block: 1rem;
+  border: 1px solid #a68aff;
+  border-radius: 1rem;
+  background: #292040;
+}
+
+.account-card h1 {
+  overflow-wrap: anywhere;
+}

@@ -296,6 +296,9 @@ export const buildPublishedCatalog = async (
               position: entry.position,
               rarity: entry.rarity,
               rewardVersionId: entry.rewardVersion.id,
+              ...(entry.rewardVersion.xpReward === undefined
+                ? {}
+                : { xpReward: entry.rewardVersion.xpReward }),
               weight: asWeight(entry.weight),
             };
           }),
@@ -309,6 +312,9 @@ export const buildPublishedCatalog = async (
             id: entry.id,
             position: entry.position,
             rewardVersionId: entry.rewardVersion.id,
+            ...(entry.rewardVersion.xpReward === undefined
+              ? {}
+              : { xpReward: entry.rewardVersion.xpReward }),
             weight: asWeight(entry.weight),
           })),
           priceMinor: asMoney(version.priceMinor),
@@ -349,7 +355,11 @@ const validatePublicationEntries = (
     );
   }
   for (const { entry, rewardStatus } of records) {
-    if (rewardStatus !== 'active' || !['draft', 'published'].includes(entry.rewardVersion.state)) {
+    if (
+      rewardStatus !== 'active' ||
+      !['draft', 'published'].includes(entry.rewardVersion.state) ||
+      (entry.rewardVersion.rewardType === 'xp' && compatibility !== 'opening-v2')
+    ) {
       throw new CatalogPublicationError(
         'INELIGIBLE_REWARD',
         'Every configured reward must be active and publishable.',
@@ -734,6 +744,9 @@ export const createCatalogService = ({
             id: entry.id,
             position: entry.position,
             rewardVersionId: entry.rewardVersion.id,
+            ...(entry.rewardVersion.xpReward === undefined
+              ? {}
+              : { xpReward: entry.rewardVersion.xpReward }),
             weight: asWeight(entry.weight),
           })),
         );
@@ -751,6 +764,9 @@ export const createCatalogService = ({
                   position: entry.position,
                   rarity: deriveRarityV1(BigInt(entry.weight), totalWeight),
                   rewardVersionId: entry.rewardVersion.id,
+                  ...(entry.rewardVersion.xpReward === undefined
+                    ? {}
+                    : { xpReward: entry.rewardVersion.xpReward }),
                   weight: asWeight(entry.weight),
                 })),
                 maxOpeningsPerUser: BigInt(lockedDraft.maxOpeningsPerUser),
@@ -763,6 +779,9 @@ export const createCatalogService = ({
                   id: entry.id,
                   position: entry.position,
                   rewardVersionId: entry.rewardVersion.id,
+                  ...(entry.rewardVersion.xpReward === undefined
+                    ? {}
+                    : { xpReward: entry.rewardVersion.xpReward }),
                   weight: asWeight(entry.weight),
                 })),
                 priceMinor: asMoney(lockedDraft.priceMinor),

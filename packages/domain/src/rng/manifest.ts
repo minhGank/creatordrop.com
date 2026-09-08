@@ -85,7 +85,19 @@ const parseOpeningV2Entry = (
   expectedPosition: number,
 ): OpeningV2PublishedManifestEntry => {
   if (!isRecord(value)) throw new RngError('MALFORMED_MANIFEST');
-  requireExactFields(value, openingV2EntryFields);
+  requireExactFields(
+    value,
+    value.xpReward === undefined ? openingV2EntryFields : [...openingV2EntryFields, 'xpReward'],
+  );
+  let xpReward: OpeningV2PublishedManifestEntry['xpReward'];
+  if (value.xpReward !== undefined) {
+    if (!isRecord(value.xpReward)) throw new RngError('MALFORMED_MANIFEST');
+    requireExactFields(value.xpReward, ['amount', 'policyVersion']);
+    const amount = parsePositiveSignedBigint(value.xpReward.amount, 'MALFORMED_MANIFEST');
+    if (amount > 500n || value.xpReward.policyVersion !== 'xp-v1')
+      throw new RngError('MALFORMED_MANIFEST');
+    xpReward = { amount: amount.toString(), policyVersion: 'xp-v1' };
+  }
   if (
     typeof value.position !== 'number' ||
     !Number.isSafeInteger(value.position) ||
@@ -102,6 +114,7 @@ const parseOpeningV2Entry = (
     position: expectedPosition,
     rarity: value.rarity as OpeningV2PublishedManifestEntry['rarity'],
     rarityPolicyVersion: 'rarity-v1',
+    ...(xpReward === undefined ? {} : { xpReward }),
     rewardVersionId: requireCanonicalUuid(value.rewardVersionId, 'MALFORMED_MANIFEST'),
     weight: weight.toString(),
   };
@@ -202,7 +215,7 @@ const canonicalizeOpeningV2Manifest = (manifest: OpeningV2PublishedManifest): st
   const entries = manifest.entries
     .map(
       (entry) =>
-        `{"boxVersionRewardId":${quoted(entry.boxVersionRewardId)},"position":${entry.position.toString()},"rarity":${quoted(entry.rarity)},"rarityPolicyVersion":${quoted(entry.rarityPolicyVersion)},"rewardVersionId":${quoted(entry.rewardVersionId)},"weight":${quoted(entry.weight)}}`,
+        `{"boxVersionRewardId":${quoted(entry.boxVersionRewardId)},"position":${entry.position.toString()},"rarity":${quoted(entry.rarity)},"rarityPolicyVersion":${quoted(entry.rarityPolicyVersion)},"rewardVersionId":${quoted(entry.rewardVersionId)},"weight":${quoted(entry.weight)}${entry.xpReward !== undefined ? `,"xpReward":{"amount":${quoted(entry.xpReward.amount)},"policyVersion":"xp-v1"}` : ''}}`,
     )
     .join(',');
   return `{"algorithmVersion":${quoted(manifest.algorithmVersion)},"boxId":${quoted(manifest.boxId)},"boxVersionId":${quoted(manifest.boxVersionId)},"entries":[${entries}],"maxOpeningsPerUser":${quoted(manifest.maxOpeningsPerUser)},"openingCompatibilityVersion":${quoted(manifest.openingCompatibilityVersion)},"totalWeight":${quoted(manifest.totalWeight)}}`;

@@ -50,3 +50,5 @@ export type {
   VersionedPublishedManifest,
 } from './rng/types.js';
 export { selectWeightedEntry } from './rng/weighted-selection.js';
+
+export * from './progression.js';

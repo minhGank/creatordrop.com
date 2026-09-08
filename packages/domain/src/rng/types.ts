@@ -18,6 +18,7 @@ export interface PublishedManifest {
 }
 
 export interface OpeningV2PublishedManifestEntry extends PublishedManifestEntry {
+  readonly xpReward?: { readonly amount: string; readonly policyVersion: 'xp-v1' };
   readonly rarity: 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
   readonly rarityPolicyVersion: 'rarity-v1';
 }

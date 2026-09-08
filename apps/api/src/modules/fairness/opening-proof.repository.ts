@@ -1,3 +1,4 @@
+import { xpRewardSchema, type XpReward } from '@creatordrop/contracts';
 import { validate as isUuid } from 'uuid';
 
 import type { QueryExecutor } from '@creatordrop/database';
@@ -34,6 +35,8 @@ interface OpeningProofHeaderRow {
 }
 
 interface OpeningProofManifestEntryRow {
+  readonly xpAmount: unknown;
+  readonly xpPolicyVersion: unknown;
   readonly boxVersionRewardId: unknown;
   readonly position: unknown;
   readonly rarity: unknown;
@@ -76,6 +79,7 @@ export interface OpeningProofHeader {
 }
 
 export interface OpeningProofManifestEntry {
+  readonly xpReward?: XpReward;
   readonly boxVersionRewardId: string;
   readonly position: number;
   readonly rarity: 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary' | null;
@@ -254,10 +258,11 @@ export const listOpeningProofManifestEntries = async (
   boxVersionId: string,
 ): Promise<readonly OpeningProofManifestEntry[]> => {
   const result = await executor.query<OpeningProofManifestEntryRow>(
-    `select id::text as "boxVersionRewardId", position, rarity,
+    `select e.id::text as "boxVersionRewardId", position, rarity,
             rarity_policy_version as "rarityPolicyVersion",
-            reward_version_id::text as "rewardVersionId", weight::text as weight
-       from app.box_version_rewards
+            reward_version_id::text as "rewardVersionId", weight::text as weight,
+            r.xp_amount::text as "xpAmount", r.xp_policy_version as "xpPolicyVersion"
+       from app.box_version_rewards e join app.reward_versions r on r.id=e.reward_version_id
       where box_version_id = $1
       order by position`,
     [boxVersionId],
@@ -275,6 +280,14 @@ export const listOpeningProofManifestEntries = async (
       throw new Error('Database returned an incomplete manifest rarity snapshot.');
     }
     return {
+      ...(row.xpAmount == null
+        ? {}
+        : {
+            xpReward: xpRewardSchema.parse({
+              amount: row.xpAmount,
+              policyVersion: row.xpPolicyVersion,
+            }),
+          }),
       boxVersionRewardId: canonicalUuid(row.boxVersionRewardId, 'manifest entry ID'),
       position: position(row.position),
       rarity,

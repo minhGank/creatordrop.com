@@ -32,7 +32,7 @@ describe('service status contract', () => {
     expect(boxVersionStates).toEqual(['draft', 'published', 'retired']);
     expect(rewardStatuses).toEqual(['active', 'archived']);
     expect(rewardVersionStates).toEqual(['draft', 'published', 'retired']);
-    expect(rewardTypes).toEqual(['digital', 'physical', 'experience']);
+    expect(rewardTypes).toEqual(['digital', 'physical', 'experience', 'xp']);
     expect(inventoryModes).toEqual(['unlimited', 'finite']);
   });
 });

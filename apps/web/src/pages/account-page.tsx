@@ -1,3 +1,4 @@
+import { FanProgression } from '../components/fan-progression.js';
 import { Navigate, useLocation } from 'react-router-dom';
 
 import { useSession } from '../auth/use-session.js';
@@ -20,6 +21,7 @@ export const AccountPage = () => {
         <h1>{session.state.user.username}</h1>
         <p>Your session is active. Visit a creator page to see and open your available Drops.</p>
       </section>
+      <FanProgression key={session.state.user.id} />
     </div>
   );
 };

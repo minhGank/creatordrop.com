@@ -4,6 +4,7 @@ import { rateLimit } from 'express-rate-limit';
 import { ApiError } from '../../http/errors.js';
 import {
   createOpeningController,
+  createProgressionController,
   createOpeningEntitlementStateController,
 } from './opening.controller.js';
 import type { OpeningService } from './opening.service.js';
@@ -31,6 +32,16 @@ export const createOpeningRouter = (options: {
     if (request.actor === undefined) throw new Error('Authenticated opening actor is missing.');
     return request.actor.user.id;
   });
+  router.get(
+    '/me/progression',
+    preAuthenticationLimit,
+    options.authenticate,
+    createLimit(120, (request) => {
+      if (request.actor === undefined) throw new Error('Authenticated actor is missing.');
+      return request.actor.user.id;
+    }),
+    createProgressionController(options.service),
+  );
   router.get(
     '/boxes/:boxId/opening-entitlement',
     preAuthenticationLimit,

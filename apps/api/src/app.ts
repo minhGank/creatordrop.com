@@ -20,8 +20,6 @@ import { createFairnessRouter } from './modules/fairness/fairness.route.js';
 import type { FairnessService } from './modules/fairness/fairness.service.js';
 import { createFulfillmentRouter } from './modules/fulfillment/fulfillment.route.js';
 import type { FulfillmentService } from './modules/fulfillment/fulfillment.service.js';
-import { createLeaderboardRouter } from './modules/leaderboards/leaderboard.route.js';
-import type { LeaderboardService } from './modules/leaderboards/leaderboard.service.js';
 import { createOpeningRouter } from './modules/openings/opening.route.js';
 import type { OpeningService } from './modules/openings/opening.service.js';
 import type { EntryService } from './modules/entries/entry.service.js';
@@ -40,7 +38,6 @@ export interface AppOptions {
   readonly fairnessService: FairnessService;
   readonly fulfillmentService?: FulfillmentService;
   readonly logger: Logger;
-  readonly leaderboardService?: LeaderboardService;
   readonly openingService?: OpeningService;
   readonly entryService?: EntryService;
   readonly publicCatalogService?: PublicCatalogService;
@@ -64,7 +61,6 @@ export const createApp = ({
   creatorService,
   fairnessService,
   fulfillmentService,
-  leaderboardService,
   logger,
   openingService,
   entryService,
@@ -83,9 +79,7 @@ export const createApp = ({
     app.use('/v1', createEntryRouter({ authenticate, service: entryService }));
   app.get('/health', sendStatus('ok'));
   app.get('/ready', sendStatus('ready'));
-  if (leaderboardService !== undefined) {
-    app.use('/v1', createLeaderboardRouter(leaderboardService));
-  }
+  // R3 retires public point rankings and champion/season surfaces.
   if (publicCatalogService !== undefined) {
     app.use('/v1', createPublicCatalogRouter(publicCatalogService));
   }

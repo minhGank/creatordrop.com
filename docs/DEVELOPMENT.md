@@ -339,13 +339,11 @@ row means the realtime gateway acknowledged the broadcast, not that a browser wa
 Clients deduplicate durable event IDs and refetch/replay authoritative HTTP commands after every
 `realtime.ready.v1` reconnect signal. Current rooms are process-local; define a supported
 cross-node Socket.io adapter and sticky-connection policy before horizontally scaling the API.
-Phase 13 adds an independent leaderboard projection loop to this worker when `REDIS_URL` is set.
-Realtime outbox delivery continues when Redis is absent; leaderboard reads fall back to
-PostgreSQL, and no financial/opening/payment/fulfillment command uses Redis. Projection claims use
-`LEADERBOARD_PROJECTION_BATCH_SIZE`, `LEADERBOARD_PROJECTION_LEASE_MS`, and
-`LEADERBOARD_PROJECTION_MAX_ATTEMPTS`.
+R3 retires the Phase 13 leaderboard projection and season-finalization loops. Normal worker
+startup runs outbox delivery only; it does not read or write Redis rankings. Historical modules,
+queues, seasons and champion records remain preserved for regression/audit work.
 
-## Local Redis and leaderboard maintenance
+## Local Redis and historical leaderboard maintenance
 
 Start/stop the disposable Redis 7.4 development container:
 
@@ -354,27 +352,15 @@ npm run redis:start
 npm run redis:stop
 ```
 
-The local endpoint is `redis://127.0.0.1:56379`. The integration runner starts it when needed and
-uses real Redis; financial tests remain valid with Redis unavailable. `REDIS_URL` enables both the
-API's leaderboard/catalog reads and the worker projection. `PUBLIC_CATALOG_CACHE_TTL_SECONDS`
-defaults to 300. Cached catalog documents are accepted only when their canonical manifest box and
-version UUIDs match the requested cache identity; mismatches are discarded and reloaded from
-PostgreSQL.
+The local endpoint is `redis://127.0.0.1:56379`. The integration runner starts it for retained
+legacy projection regressions. Active API Redis use is limited to public catalog caching;
+`PUBLIC_CATALOG_CACHE_TTL_SECONDS` defaults to 300. Cached documents must match the canonical
+requested box/version identity or are discarded and reloaded from PostgreSQL. XP and Universal
+Entries remain available without Redis.
 
-Rebuild all generations from PostgreSQL or report drift without changing PostgreSQL:
-
-```bash
-npm run leaderboards:rebuild
-npm run leaderboards:reconcile
-```
-
-Both commands require the restricted `WORKER_DATABASE_URL` plus `REDIS_URL`. Rebuild writes a new
-generation, dual-writes live events during the operation, atomically swaps it active, and is safe
-to repeat. Reconciliation reports missing/extra scopes, row/stat/tie drift, and freshness drift.
-Season windows are explicit operator-managed PostgreSQL rows (normally about three months):
-provision a scheduled row, activate it with the private migration/operator function, and let the
-worker reconcile and finalize after `ends_at`. Do not insert champion results or achievements
-manually.
+R3 removes the leaderboard rebuild/reconcile npm commands and automatic season finalization.
+Do not schedule new point seasons. Existing history and isolated maintenance implementation are
+retained without rewriting or deleting scores, seasons or achievements.
 
 ## R1C local free-entry rarity demo
 
@@ -491,3 +477,28 @@ npm run ci
 ```
 
 This matches the repository CI quality sequence, including a destructive migration reset and real PostgreSQL integration tests.
+
+## R3 global progression
+
+Configure XP with the existing creator reward API: `rewardType: "xp"`, `xpAmount: "250"`,
+`inventoryMode: "unlimited"`, name/description, and no declared monetary value. Publish it in an
+opening-v2 Drop through the existing catalog API; broad reward-management UI remains Phase 16.
+The initial deliberate platform policy is xp-v1, integer 1–500. Changing it requires a new policy
+version/forward migration and compatible manifest readers, not a creator setting.
+
+Use an ordinary approved R2 claim to earn a Drop, then open it. XP and every crossed level grant
+commit with the result. Account shows Level, within-level/lifetime XP, and Universal Entries.
+When no creator entitlement remains, another eligible Drop offers **Use Universal Entry**; creator
+entitlements take precedence whenever both are available. Reload/fresh sessions read PostgreSQL.
+The reveal reports XP, all levels gained, and the actual consumed source without internal IDs.
+
+Legacy leaderboard startup and npm rebuild/reconcile commands are retired. The historical
+modules and database records remain for compatibility/regression work; retained Phase 13 modules are historical, not active runtime commands. XP starts at zero with no
+point conversion. No progression depends on Redis. Fraud/farming/collusion detection is Phase 18;
+R3 supplies bounded XP, immutable awards, unique level grants and one-time consumption only.
+
+Focused validation covers domain boundary arithmetic, both independent verifiers, opening/R2
+integration suites, progression API authorization and web account/reveal/fallback tests. Browser
+verification uses synthetic local Auth actors, manual R2 approval, +250 XP, creator precedence,
+Universal Entry on another creator's Drop, fresh-session restoration and desktop/mobile widths.
+`npm run ci` resets the local database and runs all suites, migrations and quality gates.

@@ -110,6 +110,19 @@ R1A adds a separate `opening-v2` non-financial shape:
 
 All 64-bit integers are decimal strings in the manifest and public JSON. Entry order is ascending `position`. The v2 manifest must not contain price, currency, wallet, fee, share, or entitlement-source fields. Publication derives the rarity snapshots from authoritative weights before hashing. Separate exact parsers/canonicalizers prevent any v1 history from being reinterpreted with v2 semantics. Both shapes normalize to the same ordered weights for the unchanged HMAC/rejection selector. The publish operation calculates the manifest and hash once inside its database transaction. R1B opening proofs carry the exact committed v1 or v2 historical manifest; entitlement selection never enters the RNG message or proof.
 
+R3 adds an explicit optional `xpReward` object to **XP entries only** in opening-v2 manifests:
+`{"amount":"250","policyVersion":"xp-v1"}`. Canonical entry keys remain lexicographically sorted,
+with `xpReward` after `weight` and its `amount` before `policyVersion`. Its amount must satisfy the
+immutable xp-v1 1–500 policy. Non-XP and historical entries omit the object entirely, preserving
+their original bytes/hashes. Removing or changing an XP amount/policy changes the configuration
+hash. Catalog reads, opening selection and proof reconstruction use the same immutable snapshot;
+the independent Node/browser verifiers understand this explicitly versioned extension.
+
+Compatibility review: the RNG algorithm/message/weights and interval mathematics are unchanged.
+The v2 manifest extension and new response fields require deployment of the updated API and web
+parsers together. All historical v1/v2 proofs remain readable/verifiable. Account XP, level and
+entitlement source are never RNG inputs or weight modifiers.
+
 ## Seed lifecycle
 
 ### 1. Generate and commit

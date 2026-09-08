@@ -35,8 +35,6 @@
     "dev:api": "npm run dev --workspace @creatordrop/app-api",
     "dev:web": "npm run dev --workspace @creatordrop/app-web",
     "dev:worker": "npm run dev --workspace @creatordrop/app-worker",
-    "leaderboards:rebuild": "npm run leaderboard:rebuild --workspace @creatordrop/app-worker",
-    "leaderboards:reconcile": "npm run leaderboard:reconcile --workspace @creatordrop/app-worker",
     "redis:start": "node scripts/start-local-redis.mjs",
     "redis:stop": "node scripts/stop-local-redis.mjs",
     "seed:demo": "npm run build --workspace @creatordrop/app-api && node --env-file-if-exists=.env scripts/seed-phase15-demo.mjs",

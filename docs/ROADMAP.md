@@ -195,10 +195,23 @@ availability → unchanged R1 opening, plus rejection, self-review guidance, key
 390/768/1440 layouts. Usernames/screenshots remain proof for manual review. Provider integrations,
 platform-team review authority and broad creator management require separate approved designs.
 
-### R3 — XP, levels & Universal Entries (planned)
+### R3 — XP, levels & Universal Entries ✅
 
-Planned: retire active points/leaderboards, introduce global XP and levels, and define Universal
-Entries. Finalized historical rankings/achievements remain immutable history.
+Account-global lifetime XP derives levels using integer thresholds. Immutable xp-v1 rewards are
+platform-bounded to 1–500 XP and committed in the existing fairness manifest. Each crossed level
+grants one uniquely sourced Universal Entry; atomic opening-v2 consumes creator entitlements
+first, then Universal Entries, while preserving caps, inventory, nonce/RNG and idempotency.
+Fan Account and Drop reveal show authoritative progression, level-ups and actual source use.
+Active leaderboard APIs, Redis projection and season jobs are retired; all historical points,
+seasons and champion data remain preserved with no XP conversion. Manual R2 review is unchanged.
+Validated with full CI (551 unit/API/web tests, 186 real PostgreSQL integration tests, 33 migrations,
+reset/lint, build and quality gates) and real Chrome desktop/mobile flows: R2 approval → XP →
+level grants → another creator's Universal Entry opening, creator-entitlement precedence,
+fresh-session progression and independent verification of persisted proofs. Farming/collusion
+controls remain Phase 18. The focused R3 audit fixed retroactive/mismatched Universal Entry
+consumption with a forward linkage guard and isolated opening receipts/async work across account
+changes. Eight web and six PostgreSQL regressions cover those fixes; populated pre-R3/R3 upgrade
+checks preserve historical records and progression.
 
 ### R4 — Creator SaaS plans & hosted-opening quotas (planned)
 
@@ -284,7 +297,8 @@ E2E suite; lower layers cover permutations.
 Generate command sequences and assert: ledger sums zero per currency, posted entries never change,
 wallet equals its ledger projection, wallet never goes negative, every successful v1 opening has
 exactly one debit/win/fulfillment, every successful v2 opening has exactly one entitlement
-consumption/win/fulfillment and no financial mutation, failed openings have none, and every
+consumption/win and applicable fulfillment or atomic XP award, with no financial mutation; failed
+openings have none, and every
 provider settlement maps at most once.
 
 ## Definition of done for every implementation phase

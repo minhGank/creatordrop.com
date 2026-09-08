@@ -1,3 +1,9 @@
+import {
+  xpRewardSchema,
+  progressionResponseSchema,
+  openingProgressionSchema,
+  type ProgressionResponse,
+} from '@creatordrop/contracts';
 import { z } from 'zod';
 import { createEntryApi, type EntryApiClient, type RequestOptions } from './entry-client.js';
 
@@ -140,7 +146,8 @@ const rewardVersionSchema = z
     inventoryStockoutPolicy: z.union([z.enum(['backorder', 'pause_box']), z.null()]),
     name: z.string().min(1).max(120),
     publishedAt: z.union([z.iso.datetime({ offset: true }), z.null()]),
-    rewardType: z.enum(['digital', 'experience', 'physical']),
+    rewardType: z.enum(['digital', 'experience', 'physical', 'xp']),
+    xpReward: xpRewardSchema.optional(),
     state: z.enum(['draft', 'published', 'retired']),
     updatedAt: z.iso.datetime({ offset: true }),
     versionNumber: z.number().int().positive(),
@@ -193,6 +200,7 @@ const openingV2PublishedManifestSchema = z
           position: z.number().int().nonnegative(),
           rarity: raritySchema,
           rarityPolicyVersion: z.literal('rarity-v1'),
+          xpReward: xpRewardSchema.optional(),
           rewardVersionId: uuidSchema,
           weight: positiveDecimalSchema,
         })
@@ -246,6 +254,7 @@ const openingV2RewardSchema = z
     name: z.string().min(1).max(120),
     rarity: raritySchema,
     rarityPolicyVersion: z.literal('rarity-v1'),
+    xpReward: xpRewardSchema.optional(),
     rewardVersionId: uuidSchema,
   })
   .strict();
@@ -277,15 +286,18 @@ const entitlementBoxOpeningSchema = z
   .object({
     boxId: uuidSchema,
     boxVersionId: uuidSchema,
+    progression: openingProgressionSchema.optional(),
     entitlement: z
       .object({
+        source: z.enum(['creator', 'universal']).optional(),
+        universalEntriesRemaining: canonicalDecimalSchema.optional(),
         maxOpeningsPerUser: positiveDecimalSchema,
         remaining: canonicalDecimalSchema,
         successfulOpenings: positiveDecimalSchema,
       })
       .strict(),
     fairness: openingFairnessSchema,
-    fulfillmentStatus: z.enum(['awaiting_restock', 'pending_fulfillment']),
+    fulfillmentStatus: z.enum(['awaiting_restock', 'pending_fulfillment', 'not_required']),
     id: uuidSchema,
     openingCompatibilityVersion: z.literal('opening-v2'),
     reward: openingV2RewardSchema,
@@ -300,6 +312,8 @@ const openingV2EntitlementStateResponseSchema = z
   .object({
     entitlement: z
       .object({
+        source: z.enum(['creator', 'universal']).nullable().optional(),
+        universalEntriesAvailable: canonicalDecimalSchema.optional(),
         available: z.boolean(),
         boxId: uuidSchema,
         consumed: canonicalDecimalSchema,
@@ -438,6 +452,7 @@ export interface CreatorDropApiClient extends EntryApiClient {
     publicOpeningId: string,
     signal?: AbortSignal,
   ): Promise<OpeningFairnessProofResponse>;
+  getProgression(signal?: AbortSignal): Promise<ProgressionResponse>;
   getOpeningEntitlementState(
     boxId: string,
     signal?: AbortSignal,
@@ -636,6 +651,12 @@ export const createApiClient = ({
       request(
         `/v1/catalog/creators/${encodeURIComponent(customSlug)}/boxes/${encodeURIComponent(boxId)}`,
         publicCreatorBoxResponseSchema,
+        signal === undefined ? {} : { signal },
+      ),
+    getProgression: (signal) =>
+      request(
+        '/v1/me/progression',
+        progressionResponseSchema,
         signal === undefined ? {} : { signal },
       ),
     getOpeningEntitlementState: (boxId, signal) =>

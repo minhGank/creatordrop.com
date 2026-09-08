@@ -1025,6 +1025,120 @@ describe('R1C active fan product', () => {
     }
   });
 
+  it('restores account-global progression from the server with readable progress text', async () => {
+    const getProgression = vi.fn().mockResolvedValue({
+      progression: {
+        lifetimeXp: '640',
+        level: '4',
+        xpInLevel: '40',
+        xpForNextLevel: '400',
+        universalEntriesAvailable: '3',
+        universalEntriesEarned: '3',
+      },
+    });
+    const view = renderRoute('/account', {
+      api: createTestApiClient({ getProgression }),
+      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
+    });
+    await screen.findByRole('heading', { name: 'Level 4' });
+    expect(screen.getByText('40 of 400 XP toward your next level')).toBeVisible();
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuetext', '40 of 400 XP');
+    expect(screen.getByText('Universal Entries available')).toBeVisible();
+    view.unmount();
+    renderRoute('/account', {
+      api: createTestApiClient({ getProgression }),
+      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
+    });
+    await screen.findByRole('heading', { name: 'Level 4' });
+    expect(getProgression).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows all crossed levels and explicit XP without a fulfillment obligation', async () => {
+    mockedReducedMotion.mockReturnValue(true);
+    const xpReward = { amount: '350', policyVersion: 'xp-v1' } as const;
+    const original = requireOpeningV2Catalog(openingV2BoxFixture);
+    const xpCatalog = {
+      ...original,
+      entries: original.entries.map((entry) => ({
+        ...entry,
+        rewardVersion: { ...entry.rewardVersion, rewardType: 'xp' as const, xpReward },
+      })),
+      manifest: {
+        ...original.manifest,
+        entries: original.manifest.entries.map((entry) => ({ ...entry, xpReward })),
+      },
+    };
+    const response = {
+      opening: {
+        ...requireOpeningV2(openingV2ResponseFixture),
+        fulfillmentStatus: 'not_required' as const,
+        reward: { ...requireOpeningV2(openingV2ResponseFixture).reward, xpReward },
+        progression: {
+          lifetimeXp: '640',
+          level: '4',
+          xpInLevel: '40',
+          xpForNextLevel: '400',
+          universalEntriesAvailable: '3',
+          universalEntriesEarned: '3',
+          xpAwarded: '350',
+          levelsGained: '2',
+          universalEntriesGranted: '2',
+        },
+      },
+    };
+    renderAuthenticatedDrop({
+      getCreatorBox: () =>
+        Promise.resolve({ creator: publicCreatorResponseFixture.creator, box: xpCatalog }),
+      getPublishedBoxVersion: () => Promise.resolve(xpCatalog),
+      openBox: () => Promise.resolve(response),
+    });
+    const { confirmation, user } = await openConfirmation();
+    await user.click(within(confirmation).getByRole('button', { name: 'Open Drop' }));
+    await screen.findByRole('heading', { name: '+350 XP', level: 2 });
+    expect(screen.getByText('+2 Universal Entries · 2 levels gained')).toBeVisible();
+    expect(screen.getByText('XP added to your account')).toBeVisible();
+    expect(screen.queryByText('Reward ready for fulfillment')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Universal Entry used/)).not.toBeInTheDocument();
+  });
+
+  it('explains Universal Entry fallback and shows only the server-confirmed consumption', async () => {
+    mockedReducedMotion.mockReturnValue(true);
+    const response = {
+      opening: {
+        ...requireOpeningV2(openingV2ResponseFixture),
+        entitlement: {
+          ...requireOpeningV2(openingV2ResponseFixture).entitlement,
+          remaining: '0',
+          source: 'universal' as const,
+          universalEntriesRemaining: '1',
+        },
+      },
+    };
+    const openBox = vi.fn().mockResolvedValue(response);
+    renderAuthenticatedDrop({
+      getOpeningEntitlementState: () =>
+        Promise.resolve(
+          availableEntitlement({
+            remaining: '0',
+            source: 'universal',
+            universalEntriesAvailable: '2',
+          }),
+        ),
+      openBox,
+    });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Use Universal Entry' }));
+    const heading = await screen.findByRole('heading', {
+      name: 'Use one Universal Entry on this Drop?',
+    });
+    const section = heading.closest('section');
+    if (section === null) throw new Error('Expected confirmation');
+    await user.click(within(section).getByRole('button', { name: 'Use Universal Entry' }));
+    await screen.findByText('Universal Entry used · 1 remaining');
+    expect(openBox).toHaveBeenCalledOnce();
+    expect(JSON.stringify(openBox.mock.calls)).not.toContain('universalEntries');
+  });
+
   it('restores a protected account without wallet or test-credit controls', async () => {
     renderRoute('/account', {
       api: createTestApiClient(),

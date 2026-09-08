@@ -1,3 +1,8 @@
+import {
+  openingProgressionSchema,
+  xpRewardSchema,
+  type ProgressionResponse,
+} from '@creatordrop/contracts';
 import { createHash } from 'node:crypto';
 
 import { validate as isUuid, v7 as uuidv7 } from 'uuid';
@@ -52,6 +57,8 @@ import {
   pauseBoxesForInventoryPool,
   readOpeningDatabaseTimestamp,
   readOpeningV2EntitlementState,
+  readProgression,
+  readOpeningProgression,
   type OpeningCatalog,
   type OpeningCatalogEntry,
 } from './opening.repository.js';
@@ -81,6 +88,7 @@ export interface OpenBoxResult {
 }
 
 export interface OpeningService {
+  getProgression(userId: UserId): Promise<ProgressionResponse>;
   getEntitlementState(command: {
     readonly boxId: BoxId;
     readonly userId: UserId;
@@ -168,12 +176,22 @@ const storedOpeningBody = (value: unknown): BoxOpeningBody => {
         'id',
         'openingCompatibilityVersion',
         'reward',
+        ...('progression' in root.opening ? ['progression'] : []),
       ],
       'opening-v2',
     );
     const entitlement = record(
       opening.entitlement,
-      ['maxOpeningsPerUser', 'remaining', 'successfulOpenings'],
+      [
+        'maxOpeningsPerUser',
+        'remaining',
+        'successfulOpenings',
+        ...(typeof opening.entitlement === 'object' &&
+        opening.entitlement !== null &&
+        'source' in opening.entitlement
+          ? ['source', 'universalEntriesRemaining']
+          : []),
+      ],
       'opening entitlement',
     );
     const fairness = record(
@@ -183,7 +201,19 @@ const storedOpeningBody = (value: unknown): BoxOpeningBody => {
     );
     const reward = record(
       opening.reward,
-      ['id', 'imageUrl', 'name', 'rarity', 'rarityPolicyVersion', 'rewardVersionId'],
+      [
+        'id',
+        'imageUrl',
+        'name',
+        'rarity',
+        'rarityPolicyVersion',
+        'rewardVersionId',
+        ...(typeof opening.reward === 'object' &&
+        opening.reward !== null &&
+        'xpReward' in opening.reward
+          ? ['xpReward']
+          : []),
+      ],
       'opening reward',
     );
     const fulfillmentStatus = opening.fulfillmentStatus;
@@ -193,7 +223,9 @@ const storedOpeningBody = (value: unknown): BoxOpeningBody => {
     const commitment = stringValue(fairness.commitment, 'opening commitment');
     const configurationHash = stringValue(fairness.configurationHash, 'configuration hash');
     if (
-      (fulfillmentStatus !== 'pending_fulfillment' && fulfillmentStatus !== 'awaiting_restock') ||
+      (fulfillmentStatus !== 'pending_fulfillment' &&
+        fulfillmentStatus !== 'awaiting_restock' &&
+        fulfillmentStatus !== 'not_required') ||
       (reward.imageUrl !== null && typeof reward.imageUrl !== 'string') ||
       !rewardRarities.includes(rarity as (typeof rewardRarities)[number]) ||
       rarityPolicyVersion !== 'rarity-v1' ||
@@ -208,6 +240,19 @@ const storedOpeningBody = (value: unknown): BoxOpeningBody => {
         boxId: uuidValue(opening.boxId, 'opening box ID'),
         boxVersionId: uuidValue(opening.boxVersionId, 'opening box version ID'),
         entitlement: {
+          ...(entitlement.source === undefined
+            ? {}
+            : {
+                source: (() => {
+                  if (entitlement.source !== 'creator' && entitlement.source !== 'universal')
+                    throw new Error('Stored entitlement source invalid.');
+                  return entitlement.source;
+                })(),
+                universalEntriesRemaining: decimalValue(
+                  entitlement.universalEntriesRemaining,
+                  'Universal Entries',
+                ),
+              }),
           maxOpeningsPerUser: decimalValue(
             entitlement.maxOpeningsPerUser,
             'maximum openings per user',
@@ -225,7 +270,13 @@ const storedOpeningBody = (value: unknown): BoxOpeningBody => {
         fulfillmentStatus,
         id: uuidValue(opening.id, 'public opening ID'),
         openingCompatibilityVersion: 'opening-v2',
+        ...(opening.progression === undefined
+          ? {}
+          : { progression: openingProgressionSchema.parse(opening.progression) }),
         reward: {
+          ...(reward.xpReward === undefined
+            ? {}
+            : { xpReward: xpRewardSchema.parse(reward.xpReward) }),
           id: uuidValue(reward.id, 'opening reward ID'),
           imageUrl: reward.imageUrl,
           name: stringValue(reward.name, 'opening reward name'),
@@ -478,6 +529,7 @@ const openingManifest = (catalog: OpeningV1Catalog | OpeningV2Catalog) =>
           id: entry.id,
           position: entry.position,
           rarity: entry.rarity,
+          ...(entry.xpReward === undefined ? {} : { xpReward: entry.xpReward }),
           rewardVersionId: entry.rewardVersionId,
           weight: BigInt(entry.weight) as ProbabilityWeight,
         })),
@@ -536,6 +588,7 @@ export const createOpeningService = ({
   calculateOpeningFinancialSplit(1n, platformFeeBps);
 
   return {
+    getProgression: async (userId) => ({ progression: await readProgression(database, userId) }),
     getEntitlementState: async ({ boxId, userId }) => {
       const entitlement = await readOpeningV2EntitlementState(database, userId, boxId);
       if (entitlement === undefined) throw new BoxNotOpenableError();
@@ -645,7 +698,8 @@ export const createOpeningService = ({
               throw new Error('RNG selected an unknown catalog entry.');
             }
 
-            let fulfillmentStatus: FulfillmentStatus = 'pending_fulfillment';
+            let fulfillmentStatus: FulfillmentStatus =
+              selectedEntry.xpReward === undefined ? 'pending_fulfillment' : 'not_required';
             let inventoryPoolId: OpeningCatalogEntry['inventoryPoolId'] = null;
             if (selectedEntry.inventoryMode === 'finite') {
               if (selectedEntry.inventoryPoolId === null) throw new BoxNotOpenableError();
@@ -686,35 +740,6 @@ export const createOpeningService = ({
               throw new BoxNotOpenableError();
             }
 
-            const body: BoxOpeningBody = {
-              opening: {
-                boxId: catalog.boxId,
-                boxVersionId: catalog.boxVersionId,
-                entitlement: {
-                  maxOpeningsPerUser: entitlement.maxOpeningsPerUser,
-                  remaining: entitlement.remainingEntitlements,
-                  successfulOpenings: entitlement.successfulOpenings,
-                },
-                fairness: {
-                  clientSeed: selection.clientSeed,
-                  commitment: selection.serverSeedCommitment,
-                  configurationHash: selection.manifestHash,
-                  nonce: selection.nonce.toString(),
-                  seedSetId: selection.seedSetId,
-                },
-                fulfillmentStatus,
-                id: identifiers.publicId,
-                openingCompatibilityVersion: 'opening-v2',
-                reward: {
-                  id: selectedEntry.rewardId,
-                  imageUrl: selectedEntry.imageUrl,
-                  name: selectedEntry.name,
-                  rarity: selectedEntry.rarity,
-                  rarityPolicyVersion: 'rarity-v1',
-                  rewardVersionId: selectedEntry.rewardVersionId,
-                },
-              },
-            };
             await insertOpeningV2History(transaction, {
               catalog,
               createdAt: timestamp,
@@ -731,6 +756,46 @@ export const createOpeningService = ({
               selection,
               userId: command.userId,
             });
+            const progression = await readOpeningProgression(
+              transaction,
+              command.userId,
+              identifiers.openingId,
+            );
+            const body: BoxOpeningBody = {
+              opening: {
+                boxId: catalog.boxId,
+                boxVersionId: catalog.boxVersionId,
+                progression,
+                entitlement: {
+                  source: entitlement.source === 'universal' ? 'universal' : 'creator',
+                  universalEntriesRemaining: progression.universalEntriesAvailable,
+                  maxOpeningsPerUser: entitlement.maxOpeningsPerUser,
+                  remaining: entitlement.remainingEntitlements,
+                  successfulOpenings: entitlement.successfulOpenings,
+                },
+                fairness: {
+                  clientSeed: selection.clientSeed,
+                  commitment: selection.serverSeedCommitment,
+                  configurationHash: selection.manifestHash,
+                  nonce: selection.nonce.toString(),
+                  seedSetId: selection.seedSetId,
+                },
+                fulfillmentStatus,
+                id: identifiers.publicId,
+                openingCompatibilityVersion: 'opening-v2',
+                reward: {
+                  ...(selectedEntry.xpReward === undefined
+                    ? {}
+                    : { xpReward: selectedEntry.xpReward }),
+                  id: selectedEntry.rewardId,
+                  imageUrl: selectedEntry.imageUrl,
+                  name: selectedEntry.name,
+                  rarity: selectedEntry.rarity,
+                  rarityPolicyVersion: 'rarity-v1',
+                  rewardVersionId: selectedEntry.rewardVersionId,
+                },
+              },
+            };
             await completeBoxOpeningIdempotency(transaction, {
               openingId: identifiers.openingId,
               recordId: claim.record.id,

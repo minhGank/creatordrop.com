@@ -9,7 +9,12 @@ import {
   type QueryExecutor,
   type TransactionExecutor,
 } from '@creatordrop/database';
-import { parseCurrency, parsePositiveMoneyMinor, toMoneyMinor } from '@creatordrop/domain';
+import {
+  parseCurrency,
+  parsePositiveMoneyMinor,
+  toMoneyMinor,
+  progressionForXp,
+} from '@creatordrop/domain';
 import type { Logger } from '@creatordrop/observability';
 
 import {
@@ -401,7 +406,8 @@ describe('atomic box opening', { concurrent: false }, () => {
       readonly mode: 'finite' | 'unlimited';
       readonly policy?: 'backorder' | 'pause_box';
       readonly quantity?: string;
-      readonly rewardType?: 'digital' | 'experience' | 'physical';
+      readonly rewardType?: 'digital' | 'experience' | 'physical' | 'xp';
+      readonly xpAmount?: string;
     },
   ): Promise<{ readonly rewardId: RewardId; readonly versionId: RewardVersionId }> => {
     const ownerId = await creatorOwner(creatorId);
@@ -415,6 +421,7 @@ describe('atomic box opening', { concurrent: false }, () => {
         inventoryStockoutPolicy: input.mode === 'finite' ? (input.policy ?? 'pause_box') : null,
         name: `Reward ${randomUUID()}`,
         rewardType: input.rewardType ?? 'digital',
+        ...(input.xpAmount === undefined ? {} : { xpAmount: input.xpAmount }),
       }),
       requestId: randomUUID(),
     });
@@ -428,7 +435,8 @@ describe('atomic box opening', { concurrent: false }, () => {
       readonly mode: 'finite' | 'unlimited';
       readonly policy?: 'backorder' | 'pause_box';
       readonly quantity?: string;
-      readonly rewardType?: 'digital' | 'experience' | 'physical';
+      readonly rewardType?: 'digital' | 'experience' | 'physical' | 'xp';
+      readonly xpAmount?: string;
     },
   ): Promise<RewardVersionId> => {
     return (await createRewardRecord(creatorId, input)).versionId;
@@ -917,6 +925,479 @@ describe('atomic box opening', { concurrent: false }, () => {
         userId: user.id,
       }),
     ).rejects.toMatchObject({ name: 'IdempotencyKeyReusedError' });
+  });
+
+  const xpBox = async (creatorId: CreatorId, amount: string, limit = '20') =>
+    createOpeningV2Box(
+      creatorId,
+      await createReward(creatorId, { mode: 'unlimited', rewardType: 'xp', xpAmount: amount }),
+      limit,
+    );
+
+  const holdProgression = async (userId: UserId) => {
+    const started = createDeferred<number>();
+    const release = createDeferred<undefined>();
+    const done = adminDatabase.transaction(async (transaction) => {
+      await transaction.query('select app_private.lock_progression($1)', [userId]);
+      started.resolve(await readBackendPid(transaction));
+      await release.promise;
+    });
+    return { blockerPid: await started.promise, done, release: () => release.resolve(undefined) };
+  };
+
+  it('R3 database levels agree with integer domain math through signed-64 XP limits', async () => {
+    for (const xp of [
+      0n,
+      99n,
+      100n,
+      299n,
+      300n,
+      599n,
+      600n,
+      1000n,
+      1500n,
+      9_223_372_036_854_775_807n,
+    ]) {
+      const result = await adminDatabase.query<{ level: string }>(
+        'select app_private.level_for_xp($1)::text as level',
+        [xp.toString()],
+      );
+      expect(result.rows[0]?.level).toBe(progressionForXp(xp).level.toString());
+    }
+  });
+
+  it('R3 rejects raw opening inserts that arrive in reverse global lock order', async () => {
+    const creatorId = await createCreator();
+    const user = await createUser('1');
+    const box = await xpBox(creatorId, '100');
+    await grantOpeningEntitlement(user.id, creatorId, box.boxId, 1n);
+    const opened = await open(user, box.boxId);
+    const barrier = await holdProgression(user.id);
+    try {
+      await expect(
+        database.transaction(async (transaction) => {
+          await transaction.query("set local statement_timeout='2000ms'");
+          await transaction.query(
+            'select 1 from app.fairness_profiles where user_id=$1 for update',
+            [user.id],
+          );
+          await transaction.query(
+            'insert into app.box_opens select * from app.box_opens where public_id=$1',
+            [opened.body.opening.id],
+          );
+        }),
+      ).rejects.toMatchObject({ code: '40001', constraint: 'progression_lock_order' });
+    } finally {
+      barrier.release();
+      await barrier.done;
+    }
+    expect((await openings.getProgression(user.id)).progression).toMatchObject({
+      lifetimeXp: '100',
+      universalEntriesEarned: '1',
+    });
+  });
+
+  it('R3 starts at zero independently of legacy points and protects all progression writes', async () => {
+    const user = await createUser('9999');
+    const creatorId = await createCreator();
+    await open(
+      user,
+      (await createBox(creatorId, await createReward(creatorId, { mode: 'unlimited' }))).boxId,
+    );
+    expect(await openings.getProgression(user.id)).toEqual({
+      progression: {
+        lifetimeXp: '0',
+        level: '1',
+        xpInLevel: '0',
+        xpForNextLevel: '100',
+        universalEntriesAvailable: '0',
+        universalEntriesEarned: '0',
+      },
+    });
+    for (const table of [
+      'progression_accounts',
+      'xp_awards',
+      'universal_entry_grants',
+      'universal_entry_consumptions',
+    ]) {
+      // Fixed infrastructure allowlist, never application input.
+      await expect(database.query(`select * from app_private.${table}`)).rejects.toMatchObject({
+        code: '42501',
+      });
+    }
+    await expect(
+      database.query('select app_private.lock_progression($1)', [user.id]),
+    ).rejects.toMatchObject({ code: '42501' });
+    await expect(
+      database.query(
+        'update app_private.progression_accounts set lifetime_xp=100 where user_id=$1',
+        [user.id],
+      ),
+    ).rejects.toMatchObject({ code: '42501' });
+    await adminDatabase.query("update app.users set status='suspended' where id=$1", [user.id]);
+    expect(
+      (
+        await database.query<{ state: unknown }>('select app.read_progression($1) as state', [
+          user.id,
+        ])
+      ).rows[0]?.state,
+    ).toBeNull();
+  });
+
+  it('R3 commits +250 XP and its level entry once, without points or fake fulfillment', async () => {
+    const creatorId = await createCreator();
+    const user = await createUser('1');
+    const box = await xpBox(creatorId, '250');
+    await grantOpeningEntitlement(user.id, creatorId, box.boxId, 1n);
+    const key = `r3_${randomUUID()}`;
+    const result = await open(user, box.boxId, key);
+    expect(result.body.opening).toMatchObject({
+      fulfillmentStatus: 'not_required',
+      reward: { xpReward: { amount: '250', policyVersion: 'xp-v1' } },
+      progression: {
+        lifetimeXp: '250',
+        level: '2',
+        xpInLevel: '150',
+        xpForNextLevel: '200',
+        xpAwarded: '250',
+        levelsGained: '1',
+        universalEntriesGranted: '1',
+        universalEntriesAvailable: '1',
+      },
+      entitlement: { source: 'creator', remaining: '0', universalEntriesRemaining: '1' },
+    });
+    expect((await open(user, box.boxId, key)).body).toEqual(result.body);
+    const proof = await fairness.getOpeningProof(result.body.opening.id);
+    expect(proof.manifest.entries[0]).toMatchObject({
+      xpReward: { amount: '250', policyVersion: 'xp-v1' },
+    });
+    const persisted = await adminDatabase.query(
+      `select
+      (select count(*)::text from app_private.xp_awards where user_id=$1) as awards,
+      (select count(*)::text from app_private.universal_entry_grants where user_id=$1) as grants,
+      (select count(*)::text from app.fulfillment_obligations f join app.box_opens o on o.id=f.opening_id where o.user_id=$1) as obligations,
+      (select count(*)::text from app.box_opens where user_id=$1 and points_awarded is not null) as points,
+      (select count(*)::text from app.leaderboard_projection_events p join app.event_outbox e on e.id=p.outbox_event_id join app.box_opens o on o.id=e.aggregate_id where o.user_id=$1) as rankings`,
+      [user.id],
+    );
+    expect(persisted.rows).toEqual([
+      { awards: '1', grants: '1', obligations: '0', points: '0', rankings: '0' },
+    ]);
+    await expect(
+      adminDatabase.query(
+        `insert into app_private.universal_entry_grants(user_id,source_level,source_opening_id)
+      select user_id,source_level,source_opening_id from app_private.universal_entry_grants where user_id=$1`,
+        [user.id],
+      ),
+    ).rejects.toMatchObject({ code: '23505' });
+  });
+
+  it('R3 crosses every threshold for 290 + 350 XP, preserving original replay snapshots', async () => {
+    const creatorId = await createCreator();
+    const user = await createUser('1');
+    const first = await xpBox(creatorId, '290');
+    const second = await xpBox(creatorId, '350');
+    await grantOpeningEntitlement(user.id, creatorId, first.boxId, 1n);
+    await grantOpeningEntitlement(user.id, creatorId, second.boxId, 1n);
+    const key = `r3_${randomUUID()}`;
+    const original = await open(user, first.boxId, key);
+    expect((await open(user, second.boxId)).body.opening).toMatchObject({
+      progression: {
+        lifetimeXp: '640',
+        level: '4',
+        levelsGained: '2',
+        universalEntriesGranted: '2',
+        universalEntriesAvailable: '3',
+      },
+    });
+    expect((await open(user, first.boxId, key)).body).toEqual(original.body);
+    expect(
+      (
+        await adminDatabase.query(
+          'select source_level::text as level from app_private.universal_entry_grants where user_id=$1 order by source_level',
+          [user.id],
+        )
+      ).rows,
+    ).toEqual([{ level: '2' }, { level: '3' }, { level: '4' }]);
+  });
+
+  it.each([
+    { initial: '0', amount: '100', total: '200' },
+    { initial: '90', amount: '20', total: '130' },
+  ])(
+    'R3 serializes global concurrent XP awards: $initial + 2 × $amount',
+    async ({ initial, amount, total }) => {
+      const creatorId = await createCreator();
+      const otherCreator = await createCreator();
+      const user = await createUser('1');
+      if (initial !== '0') {
+        const initialBox = await xpBox(creatorId, initial);
+        await grantOpeningEntitlement(user.id, creatorId, initialBox.boxId, 1n);
+        await open(user, initialBox.boxId);
+      }
+      const firstBox = await xpBox(creatorId, amount);
+      const secondBox = await xpBox(otherCreator, amount);
+      await grantOpeningEntitlement(user.id, creatorId, firstBox.boxId, 1n);
+      await grantOpeningEntitlement(user.id, otherCreator, secondBox.boxId, 1n);
+      const firstService = createOpeningService({
+        database: firstConcurrencyDatabase,
+        fairnessService: fairness,
+        logger,
+      });
+      const secondService = createOpeningService({
+        database: secondConcurrencyDatabase,
+        fairnessService: fairness,
+        logger,
+      });
+      const firstPid = await readBackendPid(firstConcurrencyDatabase);
+      const secondPid = await readBackendPid(secondConcurrencyDatabase);
+      const barrier = await holdProgression(user.id);
+      const first = trackSettlement(openWith(firstService, user, firstBox.boxId));
+      const second = trackSettlement(openWith(secondService, user, secondBox.boxId));
+      try {
+        expect(await observeBlocking(database, firstPid, barrier.blockerPid, first)).toBe(
+          'blocked',
+        );
+        expect(await observeBlocking(database, secondPid, barrier.blockerPid, second)).toBe(
+          'blocked',
+        );
+      } finally {
+        barrier.release();
+        await barrier.done;
+      }
+      expect(await Promise.all([first, second])).toEqual([
+        { status: 'fulfilled' },
+        { status: 'fulfilled' },
+      ]);
+      expect(await openings.getProgression(user.id)).toMatchObject({
+        progression: {
+          lifetimeXp: total,
+          level: '2',
+          universalEntriesEarned: '1',
+          universalEntriesAvailable: '1',
+        },
+      });
+    },
+  );
+
+  it('R3 prefers creator entries, then consumes a Universal Entry on another creator, with caps intact', async () => {
+    const creatorId = await createCreator();
+    const otherCreator = await createCreator();
+    const user = await createUser('1');
+    const earned = await xpBox(creatorId, '250');
+    await grantOpeningEntitlement(user.id, creatorId, earned.boxId, 1n);
+    await open(user, earned.boxId);
+    const box = await createOpeningV2Box(
+      otherCreator,
+      await createReward(otherCreator, { mode: 'unlimited' }),
+      '2',
+    );
+    await grantOpeningEntitlement(user.id, otherCreator, box.boxId, 1n);
+    expect((await open(user, box.boxId)).body.opening).toMatchObject({
+      entitlement: { source: 'creator', universalEntriesRemaining: '1' },
+    });
+    expect(await openings.getEntitlementState({ userId: user.id, boxId: box.boxId })).toMatchObject(
+      {
+        entitlement: {
+          remaining: '0',
+          source: 'universal',
+          available: true,
+          universalEntriesAvailable: '1',
+        },
+      },
+    );
+    const key = `r3_${randomUUID()}`;
+    const result = await open(user, box.boxId, key);
+    expect(result.body.opening).toMatchObject({
+      entitlement: { source: 'universal', universalEntriesRemaining: '0' },
+      fulfillmentStatus: 'pending_fulfillment',
+    });
+    expect((await open(user, box.boxId, key)).body).toEqual(result.body);
+    await grantOpeningEntitlement(user.id, creatorId, earned.boxId, 1n);
+    await open(user, earned.boxId);
+    expect((await openings.getProgression(user.id)).progression.universalEntriesAvailable).toBe(
+      '1',
+    );
+    await expect(open(user, box.boxId)).rejects.toMatchObject({ name: 'OpeningLimitReachedError' });
+    expect((await openings.getProgression(user.id)).progression.universalEntriesAvailable).toBe(
+      '1',
+    );
+    const stranger = await createUser('1');
+    await expect(open(stranger, box.boxId)).rejects.toBeInstanceOf(OpeningEntitlementRequiredError);
+  });
+
+  it('R3 cannot double spend one Universal Entry on concurrent different Drops', async () => {
+    const creatorId = await createCreator();
+    const user = await createUser('1');
+    const earned = await xpBox(creatorId, '100');
+    await grantOpeningEntitlement(user.id, creatorId, earned.boxId, 1n);
+    await open(user, earned.boxId);
+    const firstBox = await createOpeningV2Box(
+      creatorId,
+      await createReward(creatorId, { mode: 'unlimited' }),
+    );
+    const otherCreator = await createCreator();
+    const secondBox = await createOpeningV2Box(
+      otherCreator,
+      await createReward(otherCreator, { mode: 'unlimited' }),
+    );
+    const firstService = createOpeningService({
+      database: firstConcurrencyDatabase,
+      fairnessService: fairness,
+      logger,
+    });
+    const secondService = createOpeningService({
+      database: secondConcurrencyDatabase,
+      fairnessService: fairness,
+      logger,
+    });
+    const firstPid = await readBackendPid(firstConcurrencyDatabase);
+    const secondPid = await readBackendPid(secondConcurrencyDatabase);
+    const barrier = await holdProgression(user.id);
+    const first = trackSettlement(openWith(firstService, user, firstBox.boxId));
+    const second = trackSettlement(openWith(secondService, user, secondBox.boxId));
+    try {
+      expect(await observeBlocking(database, firstPid, barrier.blockerPid, first)).toBe('blocked');
+      expect(await observeBlocking(database, secondPid, barrier.blockerPid, second)).toBe(
+        'blocked',
+      );
+    } finally {
+      barrier.release();
+      await barrier.done;
+    }
+    const results = await Promise.all([first, second]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.find((r) => r.status === 'rejected')).toMatchObject({
+      reason: { name: 'OpeningEntitlementRequiredError' },
+    });
+    expect(
+      (
+        await adminDatabase.query(
+          'select count(*)::text as count from app_private.universal_entry_consumptions where user_id=$1',
+          [user.id],
+        )
+      ).rows,
+    ).toEqual([{ count: '1' }]);
+    expect(
+      (
+        await database.query(
+          'select next_nonce::text as nonce from app.rng_seed_sets where id=$1',
+          [user.seedSetId],
+        )
+      ).rows,
+    ).toEqual([{ nonce: '2' }]);
+  });
+
+  it('R3 rolls back XP, level grants, entry use and nonce on failure after XP insertion', async () => {
+    const creatorId = await createCreator();
+    const user = await createUser('1');
+    const box = await xpBox(creatorId, '250');
+    await grantOpeningEntitlement(user.id, creatorId, box.boxId, 1n);
+    // Private/public outbox IDs collide after the opening-trigger has awarded XP.
+    const duplicateId = randomUUID();
+    const failing = createOpeningService({
+      database,
+      fairnessService: fairness,
+      logger,
+      createId: () => duplicateId,
+    });
+    await expect(openWith(failing, user, box.boxId)).rejects.toMatchObject({ code: '23505' });
+    expect((await openings.getProgression(user.id)).progression).toMatchObject({
+      lifetimeXp: '0',
+      universalEntriesEarned: '0',
+      universalEntriesAvailable: '0',
+    });
+    expect(
+      (await openings.getEntitlementState({ userId: user.id, boxId: box.boxId })).entitlement,
+    ).toMatchObject({ remaining: '1', successfulOpenings: '0' });
+    expect(
+      (
+        await database.query(
+          'select next_nonce::text as nonce from app.rng_seed_sets where id=$1',
+          [user.seedSetId],
+        )
+      ).rows,
+    ).toEqual([{ nonce: '0' }]);
+  });
+
+  it('R3 preserves Universal Entries when a Drop or its creator is unavailable', async () => {
+    const creatorId = await createCreator();
+    const user = await createUser('1');
+    const earned = await xpBox(creatorId, '100');
+    await grantOpeningEntitlement(user.id, creatorId, earned.boxId, 1n);
+    await open(user, earned.boxId);
+    const otherCreator = await createCreator();
+    const reward = await createReward(otherCreator, { mode: 'finite', quantity: '1' });
+    const target = await createOpeningV2Box(otherCreator, reward);
+    const expectation = await openingExpectation(target.boxId, user);
+    // Keep the fan's confirmed snapshot so failures exercise opening authorization,
+    // rather than the public catalog hiding a now-unavailable Drop first.
+    const attemptOpening = () =>
+      openings.openBox({
+        boxId: target.boxId,
+        clientSeed: user.clientSeed,
+        ...expectation,
+        idempotencyKey: `r3_unavailable_${randomUUID()}`,
+        requestId: randomUUID(),
+        userId: user.id,
+      });
+    for (const status of ['paused', 'archived'] as const) {
+      await adminDatabase.query('update app.boxes set status=$2 where id=$1', [
+        target.boxId,
+        status,
+      ]);
+      await expect(attemptOpening()).rejects.toBeInstanceOf(BoxNotOpenableError);
+    }
+    await adminDatabase.query("update app.boxes set status='active' where id=$1", [target.boxId]);
+    await adminDatabase.query("update app.creators set status='suspended' where id=$1", [
+      otherCreator,
+    ]);
+    await expect(attemptOpening()).rejects.toBeInstanceOf(BoxNotOpenableError);
+    await expect(
+      openings.getEntitlementState({ userId: user.id, boxId: target.boxId }),
+    ).rejects.toBeInstanceOf(BoxNotOpenableError);
+    await adminDatabase.query("update app.creators set status='active' where id=$1", [
+      otherCreator,
+    ]);
+    const exhaustedBy = await createUser('1');
+    await grantOpeningEntitlement(exhaustedBy.id, otherCreator, target.boxId, 1n);
+    await open(exhaustedBy, target.boxId);
+    await expect(attemptOpening()).rejects.toBeInstanceOf(BoxNotOpenableError);
+    expect((await openings.getProgression(user.id)).progression.universalEntriesAvailable).toBe(
+      '1',
+    );
+    expect(
+      (
+        await database.query(
+          'select next_nonce::text as nonce from app.rng_seed_sets where id=$1',
+          [user.seedSetId],
+        )
+      ).rows,
+    ).toEqual([{ nonce: '1' }]);
+  });
+
+  it('R3 rejects out-of-policy XP, paid XP publication and immutable XP edits in PostgreSQL', async () => {
+    const creatorId = await createCreator();
+    const record = await createRewardRecord(creatorId, {
+      mode: 'unlimited',
+      rewardType: 'xp',
+      xpAmount: '50',
+    });
+    await expect(
+      database.query('update app.reward_versions set xp_amount=1000000 where id=$1', [
+        record.versionId,
+      ]),
+    ).rejects.toMatchObject({ code: '23514' });
+    await expect(createBox(creatorId, record.versionId)).rejects.toBeDefined();
+    const box = await createOpeningV2Box(creatorId, record.versionId);
+    await expect(
+      database.query('update app.reward_versions set xp_amount=100 where id=$1', [
+        record.versionId,
+      ]),
+    ).rejects.toBeDefined();
+    expect((await catalog.getPublicBox(box.boxId)).manifest.entries[0]).toMatchObject({
+      xpReward: { amount: '50', policyVersion: 'xp-v1' },
+    });
   });
 
   it('opens opening-v2 atomically with one entitlement and no financial or leaderboard effect', async () => {

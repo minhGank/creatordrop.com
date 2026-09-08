@@ -114,6 +114,7 @@ export interface Box {
 }
 
 export interface RewardVersion {
+  readonly xpReward?: { readonly amount: string; readonly policyVersion: 'xp-v1' };
   readonly createdAt: string;
   readonly declaredValueCurrency: string | null;
   readonly declaredValueMinor: string | null;
@@ -176,6 +177,7 @@ export interface OpeningV2PublishedManifest {
   readonly entries: readonly (PublishedManifestEntry & {
     readonly rarity: RewardRarity;
     readonly rarityPolicyVersion: 'rarity-v1';
+    readonly xpReward?: { readonly amount: string; readonly policyVersion: 'xp-v1' };
   })[];
   readonly maxOpeningsPerUser: string;
   readonly openingCompatibilityVersion: 'opening-v2';

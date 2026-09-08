@@ -772,6 +772,7 @@ export const createFairnessService = ({
                     position: entry.position,
                     rarity: entry.rarity,
                     rarityPolicyVersion: entry.rarityPolicyVersion,
+                    ...(entry.xpReward === undefined ? {} : { xpReward: entry.xpReward }),
                     rewardVersionId: entry.rewardVersionId,
                     weight: entry.weight,
                   })),

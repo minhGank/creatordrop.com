@@ -1,6 +1,11 @@
 import { validate as isUuid } from 'uuid';
 
-import { inventoryModes, inventoryStockoutPolicies, rewardTypes } from '@creatordrop/contracts';
+import {
+  xpRewardPolicy,
+  inventoryModes,
+  inventoryStockoutPolicies,
+  rewardTypes,
+} from '@creatordrop/contracts';
 
 import { ApiError } from '../../http/errors.js';
 import type { CreatorId } from '../creators/creator.js';
@@ -40,6 +45,7 @@ export interface OpeningV2BoxDraftInput {
 export type BoxDraftInput = LegacyBoxDraftInput | OpeningV2BoxDraftInput;
 
 export interface RewardDraftInput {
+  readonly xpAmount?: bigint;
   readonly declaredValueCurrency: string | null;
   readonly declaredValueMinor: MoneyMinor | null;
   readonly description: string;
@@ -218,6 +224,7 @@ export const parseRewardDraftInput = (body: unknown): RewardDraftInput => {
     'inventoryStockoutPolicy',
     'name',
     'rewardType',
+    'xpAmount',
   ]);
   const inventoryMode = record.inventoryMode;
   const rewardType = record.rewardType;
@@ -230,9 +237,28 @@ export const parseRewardDraftInput = (body: unknown): RewardDraftInput => {
     });
   }
   if (typeof rewardType !== 'string' || !rewardTypes.includes(rewardType as RewardType)) {
-    throw validationError('rewardType must be digital, physical, or experience.', {
+    throw validationError('rewardType must be digital, physical, experience, or xp.', {
       field: 'rewardType',
     });
+  }
+
+  const xpAmount =
+    rewardType === 'xp'
+      ? parseBigint(record.xpAmount, 'xpAmount', positiveDecimalPattern)
+      : undefined;
+  if (
+    xpAmount !== undefined &&
+    (xpAmount > xpRewardPolicy.maximum ||
+      inventoryMode !== 'unlimited' ||
+      record.declaredValueMinor != null ||
+      record.declaredValueCurrency != null)
+  ) {
+    throw validationError(
+      'XP rewards require 1–500 XP, unlimited inventory, and no monetary value.',
+    );
+  }
+  if (rewardType !== 'xp' && record.xpAmount !== undefined) {
+    throw validationError('Only XP rewards may specify xpAmount.');
   }
 
   const inventoryQuantity =
@@ -297,6 +323,7 @@ export const parseRewardDraftInput = (body: unknown): RewardDraftInput => {
         : null,
     name: limitedString(record, 'name', 1, 120),
     rewardType: rewardType as RewardType,
+    ...(xpAmount === undefined ? {} : { xpAmount }),
   };
 };
 

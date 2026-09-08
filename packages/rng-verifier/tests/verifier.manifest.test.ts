@@ -65,6 +65,42 @@ const openingV2Canonical = JSON.stringify(openingV2Manifest);
 const openingV2Hash = createHash('sha256').update(openingV2Canonical, 'utf8').digest('hex');
 
 describe('independent verifier manifest conformance', () => {
+  it('independently commits XP amounts without changing the selected outcome', () => {
+    const manifest = {
+      ...openingV2Manifest,
+      entries: openingV2Manifest.entries.map((entry) => ({
+        ...entry,
+        xpReward: { amount: '250', policyVersion: 'xp-v1' },
+      })),
+    };
+    const configurationHash = createHash('sha256').update(JSON.stringify(manifest)).digest('hex');
+    const result = verifyRewardSelectionProof({ ...proof, manifest, configurationHash });
+    expect(result.valid).toBe(true);
+    expect(result.computed.boxVersionRewardId).toBe(proof.recorded.boxVersionRewardId);
+    const changed = {
+      ...manifest,
+      entries: manifest.entries.map((entry) => ({
+        ...entry,
+        xpReward: { ...entry.xpReward, amount: '251' },
+      })),
+    };
+    expect(
+      verifyRewardSelectionProof({ ...proof, manifest: changed, configurationHash }).mismatches,
+    ).toContain('MANIFEST_HASH');
+    expect(() =>
+      verifyRewardSelectionProof({
+        ...proof,
+        manifest: {
+          ...manifest,
+          entries: manifest.entries.map((entry) => ({
+            ...entry,
+            xpReward: { amount: '250', policyVersion: 'unapproved' },
+          })),
+        },
+        configurationHash,
+      }),
+    ).toThrow(VerifierError);
+  });
   it('independently verifies the explicit opening-v2 manifest shape', () => {
     const result = verifyRewardSelectionProof({
       ...proof,

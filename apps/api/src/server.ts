@@ -2,11 +2,7 @@ import { createServer } from 'node:http';
 
 import { createConsoleLogger } from '@creatordrop/observability';
 import { createDatabasePool } from '@creatordrop/database';
-import {
-  createLeaderboardProjectionStore,
-  createRedisConnection,
-  createRedisJsonCache,
-} from '@creatordrop/redis-projections';
+import { createRedisConnection, createRedisJsonCache } from '@creatordrop/redis-projections';
 
 import { createApp } from './app.js';
 import {
@@ -35,8 +31,6 @@ import { createOpeningService } from './modules/openings/opening.service.js';
 import { createEntryService } from './modules/entries/entry.service.js';
 import { createEntryActorSigner } from './modules/entries/entry.actor-binding.js';
 import { createSupabaseEntryStorage } from './modules/entries/entry.storage.js';
-import { createLeaderboardRepository } from './modules/leaderboards/leaderboard.repository.js';
-import { createLeaderboardService } from './modules/leaderboards/leaderboard.service.js';
 import { createRealtimeServer } from './platform/realtime/realtime.server.js';
 
 const environment = getApiEnvironment();
@@ -85,11 +79,6 @@ const catalogService = createCatalogService({
   logger,
 });
 const publicCatalogService = createPublicCatalogService({ database });
-const leaderboardService = createLeaderboardService({
-  logger,
-  repository: createLeaderboardRepository(database),
-  ...(redis === null ? {} : { store: createLeaderboardProjectionStore(redis) }),
-});
 const fairnessService = createFairnessService({
   database,
   keyProvider: createEnvironmentSeedEncryptionKeyProvider({
@@ -139,7 +128,6 @@ const app = createApp({
   creatorService,
   fairnessService,
   fulfillmentService,
-  leaderboardService,
   logger,
   openingService,
   entryService,

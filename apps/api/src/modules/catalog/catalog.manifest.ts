@@ -39,6 +39,7 @@ export interface OpeningV2ManifestInput {
   readonly boxVersionId: BoxVersionId;
   readonly entries: readonly (ManifestEntryInput & {
     readonly rarity: RewardRarity;
+    readonly xpReward?: { readonly amount: string; readonly policyVersion: 'xp-v1' };
   })[];
   readonly maxOpeningsPerUser: bigint;
 }
@@ -100,6 +101,7 @@ export const createOpeningV2PublishedManifest = (
       position: entry.position,
       rarity: entry.rarity,
       rarityPolicyVersion: 'rarity-v1',
+      ...(entry.xpReward === undefined ? {} : { xpReward: entry.xpReward }),
       rewardVersionId: entry.rewardVersionId,
       weight: entry.weight.toString(),
     })),
