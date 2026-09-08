@@ -39,6 +39,7 @@ export const createEntryRouter = (options: {
   router.get('/entry-platforms', gate, handler('registry'));
   router.get('/boxes/:boxId/entry-methods', gate, handler('published'));
   const auth = [gate, options.authenticate] as const;
+  router.get('/boxes/:boxId/me/entry-state', ...auth, reads, handler('state'));
   const creator = '/creators/:creatorId/boxes/:boxId/entry-methods';
   router.get(creator, ...auth, reads, handler('list'));
   router.post(creator, ...auth, writes, handler('create'));

@@ -127,6 +127,7 @@ export const createEntryControllers = (service: EntryService): Record<string, Re
     own: json(async (r) => ({
       claim: await service.getOwnClaim(actor(r), entryId(r.params.claimId)),
     })),
+    state: json((r) => service.getOwnEntryState(actor(r), entryId(r.params.boxId))),
     pending: json(async (r) => ({
       claims: await service.listPendingClaims(actor(r), entryId(r.params.creatorId)),
     })),

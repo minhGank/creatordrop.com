@@ -11,6 +11,7 @@ import {
   entryId,
   parseEntryMethod,
   parseEntryClaim,
+  parseEntryState,
 } from '../src/modules/entries/entry.schema.js';
 import { createCreatorService } from '../src/modules/creators/creator.service.js';
 import { createCatalogService } from '../src/modules/catalog/catalog.service.js';
@@ -278,6 +279,358 @@ describe('R2A authoritative entry claims and private evidence', { concurrent: fa
   afterAll(async () => {
     await database.close();
     await admin.close();
+  });
+
+  const ownState = async (actor = fan, targetBox = boxId) => {
+    const response = await request(api)
+      .get(`/v1/boxes/${targetBox}/me/entry-state`)
+      .set('Authorization', `Bearer ${actor.token}`);
+    expect(response.status).toBe(200);
+    expect(response.headers['cache-control']).toBe('private, no-store');
+    return parseEntryState(response.body as unknown);
+  };
+  const methodState = async (policy: EntryPolicySnapshot, actor = fan) => {
+    const state = (await ownState(actor)).methods.find(
+      (m) => m.policy.methodId === policy.methodId,
+    );
+    if (state === undefined) throw new Error('Missing own method state.');
+    return state;
+  };
+
+  it('discovers own pending, approved and rejected claims with authoritative slot counts', async () => {
+    const policy = await publish({ ...definition, openingsGranted: '5' });
+    expect(await methodState(policy)).toMatchObject({
+      policy,
+      claimLimit: '1',
+      reservedSlots: '0',
+      consumedSlots: '0',
+      remainingSlots: '1',
+      canSubmit: true,
+      claimCount: '0',
+      claims: [],
+    });
+    const rejected = await submit(policy);
+    expect(await methodState(policy)).toMatchObject({
+      reservedSlots: '1',
+      consumedSlots: '0',
+      remainingSlots: '0',
+      canSubmit: false,
+      claimCount: '1',
+      claims: [{ id: rejected.id, status: 'pending', openingsGranted: '0' }],
+    });
+    await approve(rejected.id, owner, 'rejected');
+    expect(await methodState(policy)).toMatchObject({
+      reservedSlots: '0',
+      consumedSlots: '0',
+      remainingSlots: '1',
+      canSubmit: true,
+      claims: [{ id: rejected.id, status: 'rejected', openingsGranted: '0' }],
+    });
+    const approved = await submit(policy);
+    await approve(approved.id);
+    const state = await methodState(policy);
+    expect(state).toMatchObject({
+      reservedSlots: '0',
+      consumedSlots: '1',
+      remainingSlots: '0',
+      canSubmit: false,
+      claimCount: '2',
+      claims: [
+        { id: approved.id, policyId: policy.id, status: 'approved', openingsGranted: '5' },
+        { id: rejected.id, status: 'rejected' },
+      ],
+    });
+    expect(Object.keys(state.claims[0] ?? {}).sort()).toEqual([
+      'createdAt',
+      'id',
+      'openingsGranted',
+      'policyId',
+      'reviewedAt',
+      'status',
+    ]);
+    // Discovery never requires a locally saved claim ID; details remain in the existing own read.
+    expect(await entries.getOwnClaim(fan.id, approved.id)).toMatchObject({
+      id: state.claims[0]?.id,
+    });
+  });
+
+  it('uses the current limit but all stable-method claims and frozen grant quantities across publications', async () => {
+    const policy = await publish({ ...definition, perUserClaimLimit: '3', openingsGranted: '5' });
+    const approved = await submit(policy);
+    await approve(approved.id);
+    const pending = await submit(policy);
+    expect(await methodState(policy)).toMatchObject({
+      claimLimit: '3',
+      reservedSlots: '1',
+      consumedSlots: '1',
+      remainingSlots: '1',
+      canSubmit: true,
+    });
+    const current = (await entries.listMethods({ actorId: owner.id, creatorId, boxId })).find(
+      (m) => m.id === policy.methodId,
+    );
+    if (current === undefined) throw new Error('Missing method.');
+    const draft = await entries.updateMethod({
+      actorId: owner.id,
+      creatorId,
+      boxId,
+      methodId: current.id,
+      expectedRevision: current.revision,
+      definition: { ...definition, perUserClaimLimit: '1', openingsGranted: '9' },
+    });
+    const published = await entries.publishMethod({
+      actorId: owner.id,
+      creatorId,
+      boxId,
+      methodId: current.id,
+      expectedRevision: draft.revision,
+      boxVersionId,
+    });
+    expect(await methodState(policy)).toMatchObject({
+      policy: published.published,
+      claimLimit: '1',
+      reservedSlots: '1',
+      consumedSlots: '1',
+      remainingSlots: '0',
+      canSubmit: false,
+      claimCount: '2',
+      claims: [
+        { id: pending.id, policyId: policy.id, status: 'pending' },
+        { id: approved.id, policyId: policy.id, openingsGranted: '5' },
+      ],
+    });
+    if (published.published === null) throw new Error('Missing publication.');
+    await expect(submit(published.published)).rejects.toMatchObject({
+      code: 'ENTRY_CLAIM_LIMIT_REACHED',
+    });
+    await approve(pending.id, owner, 'rejected');
+    expect(await methodState(policy)).toMatchObject({
+      reservedSlots: '0',
+      consumedSlots: '1',
+      remainingSlots: '0',
+    });
+    const increased = await entries.updateMethod({
+      actorId: owner.id,
+      creatorId,
+      boxId,
+      methodId: current.id,
+      expectedRevision: published.revision,
+      definition: { ...definition, perUserClaimLimit: '4' },
+    });
+    await entries.publishMethod({
+      actorId: owner.id,
+      creatorId,
+      boxId,
+      methodId: current.id,
+      expectedRevision: increased.revision,
+      boxVersionId,
+    });
+    expect(await methodState(policy)).toMatchObject({
+      claimLimit: '4',
+      remainingSlots: '3',
+      canSubmit: true,
+    });
+  });
+
+  it('omits drafts and disabled methods without discarding their claims', async () => {
+    const draft = await entries.createMethod({ actorId: owner.id, creatorId, boxId, definition });
+    expect((await ownState()).methods.some((m) => m.policy.methodId === draft.id)).toBe(false);
+    const policy = await publish();
+    const claim = await submit(policy);
+    const method = (await entries.listMethods({ actorId: owner.id, creatorId, boxId })).find(
+      (m) => m.id === policy.methodId,
+    );
+    if (method === undefined) throw new Error('Missing method.');
+    await entries.setMethodEnabled({
+      actorId: owner.id,
+      creatorId,
+      boxId,
+      methodId: method.id,
+      expectedRevision: method.revision,
+      enabled: false,
+    });
+    expect((await ownState()).methods.some((m) => m.policy.methodId === method.id)).toBe(false);
+    expect((await entries.getOwnClaim(fan.id, claim.id)).status).toBe('pending');
+  });
+
+  it('bounds recent summaries without truncating counts or historical consumed slots', async () => {
+    const policy = await publish({ ...definition, perUserClaimLimit: '105' });
+    const oldest = await submit(policy);
+    await approve(oldest.id);
+    for (let index = 0; index < 100; index += 1) await submit(policy);
+    const state = await methodState(policy);
+    expect(state).toMatchObject({
+      claimCount: '101',
+      reservedSlots: '100',
+      consumedSlots: '1',
+      remainingSlots: '4',
+      canSubmit: true,
+    });
+    expect(state.claims).toHaveLength(100);
+    expect(state.claims.some((c) => c.id === oldest.id)).toBe(false);
+    expect(state.claims.every((c) => c.status === 'pending')).toBe(true);
+  });
+
+  it('isolates users including another creator member and rejects identity/scope injection', async () => {
+    const policy = await publish();
+    const claim = await submit(policy);
+    expect(await methodState(policy, other)).toMatchObject({
+      claimCount: '0',
+      claims: [],
+      remainingSlots: '1',
+    });
+    await submit(policy, other);
+    expect((await methodState(policy)).claims.map((c) => c.id)).toEqual([claim.id]);
+    for (const suffix of [
+      `?userId=${other.id}`,
+      `?creatorId=${otherCreatorId}`,
+      '?boxId=invalid',
+    ]) {
+      const response = await request(api)
+        .get(`/v1/boxes/${boxId}/me/entry-state${suffix}`)
+        .set('Authorization', `Bearer ${fan.token}`);
+      expect(response.status).toBe(400);
+    }
+    const invalid = await request(api)
+      .get('/v1/boxes/not-a-uuid/me/entry-state')
+      .set('Authorization', `Bearer ${fan.token}`);
+    expect(invalid.status).toBe(400);
+    await expect(entries.getOwnEntryState(fan.id, randomUUID())).rejects.toMatchObject({
+      code: 'ENTRY_NOT_FOUND',
+    });
+  });
+
+  it('does not expose another creator draft or mix claims between published Drops', async () => {
+    const catalog = createCatalogService({ database, logger });
+    const scope = { actorUserId: other.id, creatorId: otherCreatorId, requestId: randomUUID() };
+    const box = await catalog.createBox({
+      ...scope,
+      ...parseBoxDraftInput({
+        name: 'Synthetic other Drop',
+        description: '',
+        openingCompatibilityVersion: 'opening-v2',
+        maxOpeningsPerUser: '2',
+      }),
+    });
+    const denied = await request(api)
+      .get(`/v1/boxes/${box.id}/me/entry-state`)
+      .set('Authorization', `Bearer ${owner.token}`);
+    expect(denied.status).toBe(404);
+    const reward = await catalog.createReward({
+      ...scope,
+      ...parseRewardDraftInput({
+        name: 'Synthetic other reward',
+        description: '',
+        inventoryMode: 'unlimited',
+        inventoryQuantity: null,
+        inventoryStockoutPolicy: null,
+        rewardType: 'digital',
+      }),
+    });
+    if (reward.draft === null) throw new Error('Missing draft.');
+    await catalog.replaceDraftConfiguration({
+      ...scope,
+      boxId: box.id,
+      expectedRevision: 1,
+      openingCompatibilityVersion: 'opening-v2',
+      entries: [{ rewardVersionId: reward.draft.id, weight: 1n as ProbabilityWeight }],
+    });
+    const version = await catalog.publishBox({ ...scope, boxId: box.id, expectedRevision: 2 });
+    expect(await ownState(fan, box.id)).toEqual({ boxId: box.id, methods: [] });
+    const methodScope = { actorId: other.id, creatorId: otherCreatorId, boxId: box.id };
+    const method = await entries.createMethod({ ...methodScope, definition });
+    const published = await entries.publishMethod({
+      ...methodScope,
+      methodId: method.id,
+      expectedRevision: method.revision,
+      boxVersionId: version.version.id,
+    });
+    if (published.published === null) throw new Error('Missing publication.');
+    const claim = await entries.submitClaim({
+      actorId: fan.id,
+      boxId: box.id,
+      policyId: published.published.id,
+      evidence: { note: 'Synthetic other creator proof' },
+      idempotencyKey: `claim_${randomUUID()}`,
+    });
+    expect((await ownState()).methods.some((m) => m.policy.methodId === method.id)).toBe(false);
+    expect((await ownState(fan, box.id)).methods).toMatchObject([
+      { policy: published.published, claims: [{ id: claim.id }], canSubmit: false },
+    ]);
+    expect((await ownState(owner, box.id)).methods).toMatchObject([
+      { claims: [], canSubmit: true },
+    ]);
+    await admin.query("update app.creators set status='suspended' where id=$1", [otherCreatorId]);
+    try {
+      await expect(entries.getOwnEntryState(fan.id, box.id)).rejects.toMatchObject({
+        code: 'ENTRY_NOT_FOUND',
+      });
+    } finally {
+      await admin.query("update app.creators set status='active' where id=$1", [otherCreatorId]);
+    }
+    // Republishing the Drop hides entry policies still bound to the older Drop version.
+    const updated = await catalog.updateBox({
+      ...scope,
+      boxId: box.id,
+      expectedRevision: 3,
+      ...parseBoxDraftInput({
+        name: 'Synthetic other Drop revised',
+        description: '',
+        openingCompatibilityVersion: 'opening-v2',
+        maxOpeningsPerUser: '3',
+      }),
+    });
+    await catalog.publishBox({ ...scope, boxId: box.id, expectedRevision: updated.revision });
+    expect(await ownState(fan, box.id)).toEqual({ boxId: box.id, methods: [] });
+    await catalog.archiveBox({ ...scope, boxId: box.id, expectedRevision: updated.revision + 1 });
+    await expect(entries.getOwnEntryState(fan.id, box.id)).rejects.toMatchObject({
+      code: 'ENTRY_NOT_FOUND',
+    });
+  });
+
+  it('requires a verified active actor at HTTP and database boundaries', async () => {
+    const path = `/v1/boxes/${boxId}/me/entry-state`;
+    expect((await request(api).get(path)).status).toBe(401);
+    expect(
+      (await request(api).get(path).set('Authorization', 'Bearer synthetic-invalid')).status,
+    ).toBe(401);
+    const suspended = await newActor();
+    await admin.query(
+      "update app.users set status='suspended', updated_at=statement_timestamp() where id=$1",
+      [suspended.id],
+    );
+    const response = await request(api).get(path).set('Authorization', `Bearer ${suspended.token}`);
+    expect(response.status).toBe(403);
+    expect(response.body).toMatchObject({ error: { code: 'ACCOUNT_NOT_ACTIVE' } });
+    await expect(entries.getOwnEntryState(suspended.id, boxId)).rejects.toMatchObject({
+      code: 'ENTRY_FORBIDDEN',
+    });
+    const binding = signer.bind(fan.id, 'state.own', { boxId });
+    await expect(
+      database.query('select app.entry_fan_state($1,$2,$3,$4,$5,$6)', [
+        other.id,
+        binding.operation,
+        binding.payload,
+        binding.keyVersion,
+        binding.expiresMs,
+        binding.signature,
+      ]),
+    ).rejects.toMatchObject({ code: 'P2002' });
+    for (const signed of [
+      signer.bind(fan.id, 'claim.own', { boxId }),
+      signer.bind(fan.id, 'state.own', { boxId, userId: other.id }),
+    ]) {
+      await expect(
+        database.query('select app.entry_fan_state($1,$2,$3,$4,$5,$6)', [
+          signed.actorId,
+          signed.operation,
+          signed.payload,
+          signed.keyVersion,
+          signed.expiresMs,
+          signed.signature,
+        ]),
+      ).rejects.toMatchObject({ code: 'P2005' });
+    }
   });
 
   it('publishes a separate immutable policy without changing the R1 RNG hash', async () => {
@@ -790,6 +1143,11 @@ describe('R2A authoritative entry claims and private evidence', { concurrent: fa
       ]);
       try {
         await waitForBlocked(pids);
+        expect(await methodState(policy)).toMatchObject({
+          remainingSlots: '1',
+          canSubmit: true,
+          claims: [],
+        });
       } finally {
         barrier.release();
       }
@@ -798,6 +1156,13 @@ describe('R2A authoritative entry claims and private evidence', { concurrent: fa
       const failures = outcomes.filter((o) => o.status === 'rejected');
       expect(failures).toHaveLength(1);
       expect(failures[0]?.reason).toMatchObject({ code: 'ENTRY_CLAIM_LIMIT_REACHED' });
+      expect(await methodState(policy)).toMatchObject({
+        reservedSlots: '1',
+        remainingSlots: '0',
+        canSubmit: false,
+        claimCount: '1',
+        claims: [{ status: 'pending' }],
+      });
       expect(
         (
           await admin.query(

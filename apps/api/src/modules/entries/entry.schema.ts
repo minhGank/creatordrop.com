@@ -10,6 +10,8 @@ import {
   type EntryPolicySnapshot,
   type EntryMethodContract,
   type EntryClaimContract,
+  type EntryClaimSummary,
+  type EntryStateResponse,
 } from '@creatordrop/contracts';
 import { EntryError } from './entry.errors.js';
 
@@ -245,4 +247,80 @@ export const parseEntryClaim = (input: unknown): EntryClaimContract => {
     createdAt: timestamp(c.createdAt),
     reviewedAt: c.reviewedAt === null ? null : timestamp(c.reviewedAt),
   };
+};
+
+const entryCount = (input: unknown): string => (input === '0' ? '0' : entryPositiveCount(input));
+
+const parseClaimSummary = (input: unknown): EntryClaimSummary => {
+  const c = entryRecord(input, [
+    'id',
+    'policyId',
+    'status',
+    'createdAt',
+    'reviewedAt',
+    'openingsGranted',
+  ]);
+  if (c.status !== 'pending' && c.status !== 'approved' && c.status !== 'rejected')
+    return invalidEntryInput();
+  const openingsGranted = entryCount(c.openingsGranted);
+  if (
+    (c.status === 'approved') !== (openingsGranted !== '0') ||
+    (c.status === 'pending') !== (c.reviewedAt === null)
+  )
+    return invalidEntryInput();
+  return {
+    id: entryId(c.id),
+    policyId: entryId(c.policyId),
+    status: c.status,
+    createdAt: timestamp(c.createdAt),
+    reviewedAt: c.reviewedAt === null ? null : timestamp(c.reviewedAt),
+    openingsGranted,
+  };
+};
+
+export const parseEntryState = (input: unknown): EntryStateResponse => {
+  const state = entryRecord(input, ['boxId', 'methods']);
+  const boxId = entryId(state.boxId);
+  if (!Array.isArray(state.methods)) return invalidEntryInput();
+  const methods = state.methods.map((value: unknown) => {
+    const m = entryRecord(value, [
+      'policy',
+      'claimLimit',
+      'reservedSlots',
+      'consumedSlots',
+      'remainingSlots',
+      'canSubmit',
+      'claimCount',
+      'claims',
+    ]);
+    const policy = parseEntryPolicySnapshot(m.policy);
+    const claimLimit = entryPositiveCount(m.claimLimit);
+    const reservedSlots = entryCount(m.reservedSlots);
+    const consumedSlots = entryCount(m.consumedSlots);
+    const remainingSlots = entryCount(m.remainingSlots);
+    const claimCount = entryCount(m.claimCount);
+    const used = BigInt(reservedSlots) + BigInt(consumedSlots);
+    const remaining = BigInt(claimLimit) > used ? BigInt(claimLimit) - used : 0n;
+    if (
+      policy.boxId !== boxId ||
+      policy.definition.perUserClaimLimit !== claimLimit ||
+      remaining.toString() !== remainingSlots ||
+      m.canSubmit !== remaining > 0n ||
+      used > BigInt(claimCount) ||
+      !Array.isArray(m.claims) ||
+      BigInt(m.claims.length) !== (BigInt(claimCount) > 100n ? 100n : BigInt(claimCount))
+    )
+      return invalidEntryInput();
+    return {
+      policy,
+      claimLimit,
+      reservedSlots,
+      consumedSlots,
+      remainingSlots,
+      canSubmit: remaining > 0n,
+      claimCount,
+      claims: m.claims.map(parseClaimSummary),
+    };
+  });
+  return { boxId, methods };
 };

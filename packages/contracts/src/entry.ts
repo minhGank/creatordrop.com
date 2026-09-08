@@ -70,3 +70,30 @@ export interface EntryClaimContract {
   readonly createdAt: string;
   readonly reviewedAt: string | null;
 }
+
+/** Own-claim discovery without submitted evidence or private review/grant metadata. */
+export interface EntryClaimSummary {
+  readonly id: string;
+  readonly policyId: string;
+  readonly status: EntryClaimContract['status'];
+  readonly createdAt: string;
+  readonly reviewedAt: string | null;
+  readonly openingsGranted: string;
+}
+
+export interface EntryMethodState {
+  readonly policy: EntryPolicySnapshot;
+  readonly claimLimit: string;
+  readonly reservedSlots: string;
+  readonly consumedSlots: string;
+  readonly remainingSlots: string;
+  readonly canSubmit: boolean;
+  readonly claimCount: string;
+  /** Latest 100 claims, newest first; counts always cover the complete stable-method history. */
+  readonly claims: readonly EntryClaimSummary[];
+}
+
+export interface EntryStateResponse {
+  readonly boxId: string;
+  readonly methods: readonly EntryMethodState[];
+}

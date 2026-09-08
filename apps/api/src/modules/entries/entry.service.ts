@@ -11,6 +11,7 @@ import {
   entryText,
   invalidEntryInput,
   parseEntryClaim,
+  parseEntryState,
   parseEntryEvidence,
   parseEntryMethod,
   parseEntryPolicy,
@@ -68,11 +69,14 @@ export const createEntryService = (options: {
     payload: Readonly<Record<string, unknown>>,
     parse: (value: unknown) => T,
   ): Promise<T> => {
-    const family = operation.startsWith('method.')
-      ? 'method'
-      : operation.startsWith('claim.')
-        ? 'claim'
-        : 'evidence';
+    const family =
+      operation === 'state.own'
+        ? 'state'
+        : operation.startsWith('method.')
+          ? 'method'
+          : operation.startsWith('claim.')
+            ? 'claim'
+            : 'evidence';
     const binding = options.signer.bind(entryId(actor), operation, payload);
     return options.database.transaction(async (transaction) =>
       parse(await executeEntryCommand(transaction, family, binding)),
@@ -157,6 +161,8 @@ export const createEntryService = (options: {
     },
     getOwnClaim: (actorId: string, claimId: string) =>
       command(actorId, 'claim.own', { claimId: entryId(claimId) }, parseEntryClaim),
+    getOwnEntryState: (actorId: string, boxId: string) =>
+      command(actorId, 'state.own', { boxId: entryId(boxId) }, parseEntryState),
     listPendingClaims: (actorId: string, creatorId: string) =>
       command(actorId, 'claim.pending', { creatorId: entryId(creatorId) }, (value) =>
         list(value, parseEntryClaim),

@@ -6,6 +6,7 @@ const functions = {
   method: 'select app.entry_method_command($1,$2,$3,$4,$5,$6) as result',
   claim: 'select app.entry_claim_command($1,$2,$3,$4,$5,$6) as result',
   evidence: 'select app.entry_evidence_command($1,$2,$3,$4,$5,$6) as result',
+  state: 'select app.entry_fan_state($1,$2,$3,$4,$5,$6) as result',
 } as const;
 const databaseErrors: Readonly<Record<string, keyof typeof entryErrorStatuses>> = {
   P2001: 'ENTRY_NOT_FOUND',

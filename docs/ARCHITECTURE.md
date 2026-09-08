@@ -67,6 +67,11 @@ Non-rejected order references are unique within a creator, normalized with Postg
 `upper(btrim(...))`, across users and methods. This is obvious-reference duplicate detection, not
 screenshot matching, payment validation, or fraud detection.
 
+The authenticated fan entry-state read discovers current methods and the actor's recent claim
+summaries without evidence. One PostgreSQL statement snapshot calculates full-history pending
+and approved counts by stable method and remaining slots against the current policy limit.
+This informational read takes no claim locks; submission retains the authoritative locked checks.
+
 Review requires a currently active local actor and creator membership with owner/manager role. A
 claimant cannot review their own claim, even when they are also an owner or manager.
 The private claim read includes its exact frozen policy. One transaction records the terminal

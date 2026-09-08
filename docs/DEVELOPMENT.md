@@ -124,6 +124,9 @@ approved grant through unchanged R1 opening-v2. Run `npm run ci` for the full su
 database data before integration testing. No hosted resource or real evidence is needed.
 
 See [API.md](./API.md#r2a-entry-methods-and-manual-claims) for request shapes and authorization.
+The authenticated `GET /v1/boxes/:boxId/me/entry-state` read supports discovery across devices.
+The same focused entry suite covers full-history slot counts, policy republication, user/creator
+isolation, active-account checks, bounded redacted summaries, and settled concurrent submissions.
 The fan/configuration/review UI is intentionally deferred to R2B; no debug UI is required.
 
 ## Deterministic RNG and verifier

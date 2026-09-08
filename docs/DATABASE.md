@@ -233,6 +233,13 @@ claimant/reviewer separation invariant:
 | `app_private.entry_submission_guards` | Per-user claim idempotency serialization                                                                                |
 | `app_private.entry_claim_guards`      | Per-user/stable-method slot and review serialization                                                                    |
 
+Forward migration `20260908140916_r2a_fan_entry_state.sql` adds the signed `state.own` read through
+`app.entry_fan_state` and its private implementation. Both use a stable statement snapshot;
+only the application wrapper is executable by `creatordrop_app`, with PUBLIC/anon/authenticated
+execution explicitly revoked. It grants no table access and changes no claim/grant mutations.
+Counts cover all own stable-method claims; the evidence-free summaries are limited to the latest
+100 per current method. See [the API contract](./API.md#authenticated-fan-entry-state).
+
 Composite foreign keys bind method/policy/claim lineage to the same creator and stable box.
 Publication functions enforce the current compatible box version. Stable method identity cannot
 change and each update increments revision. Policies, reviews, and audit records reject updates

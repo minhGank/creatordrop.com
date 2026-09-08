@@ -107,6 +107,7 @@ and `M` means `C/boxes/:boxId/entry-methods`.
 | PATCH  | `M/:methodId/availability`               | Owner/manager; enable/disable new submissions with revision precondition                             |
 | POST   | `B/entry-claims`                         | Active user; 201 `{ claim }` pending or matching idempotent replay                                   |
 | GET    | `/me/entry-claims/:claimId`              | Claim owner; `{ claim }` with exact policy and own evidence                                          |
+| GET    | `B/me/entry-state`                       | Active user; own claim summaries and authoritative current-method slot availability                  |
 | GET    | `C/entry-claims`                         | Owner/manager; `{ claims }`, oldest 100 pending ordered by created time/ID                           |
 | GET    | `C/entry-claims/:claimId`                | Owner/manager in same creator; `{ claim }` with exact policy/evidence                                |
 | POST   | `C/entry-claims/:claimId/review`         | Owner/manager; `{ claim }` terminal decision                                                         |
@@ -196,6 +197,51 @@ required role), `ENTRY_NOT_FOUND` (404, unknown/private cross-scope resource), `
 `ENTRY_STORAGE_UNAVAILABLE` (503). Existing authentication, 413 body-size, 415 content-type,
 428 precondition and 429 rate-limit errors also apply. No entry event is emitted to Socket.io.
 R2B will supply the polished creator/fan/reviewer UI; platform API automation is not implemented.
+
+### Authenticated fan entry state
+
+`GET /v1/boxes/:boxId/me/entry-state` returns `{ boxId, methods }`. The actor comes exclusively
+from the verified JWT and active local account. No query parameters or arbitrary user/creator IDs
+are accepted. It uses the existing entry read limits (200/IP/minute and 120/actor/minute),
+`Cache-Control: private, no-store`, UUID validation, and standard authentication errors.
+Unknown, unpublished, archived, inactive-creator, and non-v2 Drops return concealed
+`404 ENTRY_NOT_FOUND`. Any active fan may read their own state for a publicly available Drop;
+creator membership never grants access to another fan's state.
+
+Each method contains:
+
+| Field            | Meaning                                                                                     |
+| ---------------- | ------------------------------------------------------------------------------------------- |
+| `policy`         | Current immutable policy snapshot, including stable `methodId`, policy `id`, and definition |
+| `claimLimit`     | Current published per-user claim limit                                                      |
+| `reservedSlots`  | This user's pending claims across all publications of the stable method                     |
+| `consumedSlots`  | This user's approved claims across all publications of the stable method                    |
+| `remainingSlots` | `max(0, claimLimit - reservedSlots - consumedSlots)`                                        |
+| `canSubmit`      | Whether at least one claim slot remains for this currently available method                 |
+| `claimCount`     | Total own claims, including rejected claims, across all method publications                 |
+| `claims`         | Latest 100 own summaries, ordered by submitted time descending, then claim ID descending    |
+
+All counts and quantities are canonical decimal strings. Summaries contain only `id`, `policyId`,
+`status`, `createdAt`, nullable `reviewedAt`, and `openingsGranted`. The latter is `"0"` until
+approval, then the quantity from the claim's original immutable policy, even if newer rules
+grant a different quantity. `claims[0]` is the latest claim when present; aggregate slot counts
+remain exhaustive even when `claimCount` exceeds 100. Claim IDs support the existing own-detail
+read. No evidence, screenshot identifiers, reviewer identity/note, or grant identifiers are returned.
+
+Only enabled methods published against the current Drop version appear, in public-method order.
+An available Drop with no such methods returns an empty list. Disabled or stale-policy methods
+are omitted; existing own-detail reads still work for their known claims. Republishing a method
+does not reset slots: pending and approved history still counts; rejection releases its slot.
+A lowered limit can yield zero remaining slots without revoking older claims or grants.
+
+The read uses one PostgreSQL statement snapshot. `canSubmit` describes slot availability at that
+snapshot, not a capability or a guarantee of acceptance: evidence/reference validation, policy
+availability, active-account checks, and slot locking still run during submission. A request
+started after competing transactions commit sees their settled state. Refresh after mutations;
+do not use browser storage as authority.
+
+Compatibility review: this is an additive v1 read contract. Existing claim DTOs, commands,
+`entry-policy-v1`, opening/RNG formats, idempotency, and private Storage behavior are unchanged.
 
 ## Creators
 

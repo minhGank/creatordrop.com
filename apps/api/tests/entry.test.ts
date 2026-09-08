@@ -3,6 +3,7 @@ import { entryPlatformActions, type EntryPolicyDefinition } from '@creatordrop/c
 import {
   entryInteger,
   parseEntryPolicy,
+  parseEntryState,
   validateEntryEvidence,
 } from '../src/modules/entries/entry.schema.js';
 import {
@@ -109,5 +110,80 @@ describe('R2A entry policy and typed evidence', () => {
     expect(() =>
       validateEvidenceImage('image/png', new Uint8Array(entryEvidenceMaxBytes + 1)),
     ).toThrow();
+  });
+});
+
+describe('own entry-state database response validation', () => {
+  const id = '00000000-0000-4000-8000-000000000001';
+  const policy = {
+    id,
+    methodId: id,
+    creatorId: id,
+    boxId: id,
+    boxVersionId: id,
+    versionNumber: 1,
+    publishedAt: '2026-09-08T00:00:00.000Z',
+    definition: { ...manualEntryDefinition, perUserClaimLimit: '9223372036854775807' },
+  };
+  const method = {
+    policy,
+    claimLimit: '9223372036854775807',
+    reservedSlots: '0',
+    consumedSlots: '0',
+    remainingSlots: '9223372036854775807',
+    canSubmit: true,
+    claimCount: '0',
+    claims: [],
+  };
+  it('preserves signed-64 decimal precision without floating point', () => {
+    expect(parseEntryState({ boxId: id, methods: [method] })).toEqual({
+      boxId: id,
+      methods: [method],
+    });
+  });
+  it.each([
+    { canSubmit: false },
+    { remainingSlots: '0' },
+    { claimLimit: '1' },
+    { reservedSlots: '-1' },
+    { consumedSlots: 0 },
+    { claimCount: '01' },
+    { claims: [{}] },
+    { evidence: { screenshot: id } },
+    { policy: { ...policy, boxId: '00000000-0000-4000-8000-000000000002' } },
+  ])('fails closed on malformed or inconsistent state %j', (change) => {
+    expect(() => parseEntryState({ boxId: id, methods: [{ ...method, ...change }] })).toThrow();
+  });
+  it('rejects grant/review metadata and terminal-state inconsistencies in summaries', () => {
+    const claim = {
+      id,
+      policyId: id,
+      status: 'pending',
+      createdAt: policy.publishedAt,
+      reviewedAt: null,
+      openingsGranted: '0',
+    };
+    for (const change of [
+      { evidence: { screenshot: id } },
+      { reviewerId: id },
+      { openingsGranted: '1' },
+      { status: 'approved' },
+      { reviewedAt: policy.publishedAt },
+    ]) {
+      expect(() =>
+        parseEntryState({
+          boxId: id,
+          methods: [
+            {
+              ...method,
+              claimCount: '1',
+              reservedSlots: '1',
+              remainingSlots: '9223372036854775806',
+              claims: [{ ...claim, ...change }],
+            },
+          ],
+        }),
+      ).toThrow();
+    }
   });
 });
