@@ -196,7 +196,23 @@ required role), `ENTRY_NOT_FOUND` (404, unknown/private cross-scope resource), `
 `ENTRY_CLAIM_LIMIT_REACHED`, `ENTRY_REVISION_CONFLICT`, `ENTRY_UNAVAILABLE` (409), and
 `ENTRY_STORAGE_UNAVAILABLE` (503). Existing authentication, 413 body-size, 415 content-type,
 428 precondition and 429 rate-limit errors also apply. No entry event is emitted to Socket.io.
-R2B will supply the polished creator/fan/reviewer UI; platform API automation is not implemented.
+R2B supplies the creator/fan/reviewer UI; platform API automation is not implemented.
+
+### Creator claim history (R2B read extension)
+
+`GET /v1/creators/:creatorId/entry-claims?status=pending|approved|rejected&cursor=<claim UUID>`
+returns `{ claims, nextCursor }`. `status` is required when using query parameters; `cursor` is
+optional. Each page contains at most 100 existing claim DTOs, ordered oldest first by creation
+time and ID. `nextCursor` is null at the end. A cursor must identify a claim in the authorized
+creator, even when its status has since changed. Refresh from the first page to discover changes;
+pages are individual database snapshots, not a frozen inbox.
+
+Compatibility: omitting all query parameters preserves the R2A `{ claims }` oldest-100-pending
+response. The extension uses the same verified active actor, active creator and owner/manager
+membership checks, private no-store response, DTO/evidence authorization and existing read
+rate-limit decision. Unsupported/repeated query fields and malformed cursors fail validation;
+cross-creator cursors fail closed. No arbitrary actor ID, reviewer identity/note or grant-source
+identity is added. Publication, submission, review and grant mutation contracts are unchanged.
 
 ### Authenticated fan entry state
 

@@ -70,13 +70,15 @@ export const createEntryService = (options: {
     parse: (value: unknown) => T,
   ): Promise<T> => {
     const family =
-      operation === 'state.own'
-        ? 'state'
-        : operation.startsWith('method.')
-          ? 'method'
-          : operation.startsWith('claim.')
-            ? 'claim'
-            : 'evidence';
+      operation === 'review.list'
+        ? 'reviewList'
+        : operation === 'state.own'
+          ? 'state'
+          : operation.startsWith('method.')
+            ? 'method'
+            : operation.startsWith('claim.')
+              ? 'claim'
+              : 'evidence';
     const binding = options.signer.bind(entryId(actor), operation, payload);
     return options.database.transaction(async (transaction) =>
       parse(await executeEntryCommand(transaction, family, binding)),
@@ -163,6 +165,27 @@ export const createEntryService = (options: {
       command(actorId, 'claim.own', { claimId: entryId(claimId) }, parseEntryClaim),
     getOwnEntryState: (actorId: string, boxId: string) =>
       command(actorId, 'state.own', { boxId: entryId(boxId) }, parseEntryState),
+    listReviewClaims: (
+      actorId: string,
+      creatorId: string,
+      status: unknown,
+      cursor: unknown = null,
+    ) => {
+      if (status !== 'pending' && status !== 'approved' && status !== 'rejected')
+        return invalidEntryInput();
+      return command(
+        actorId,
+        'review.list',
+        { creatorId: entryId(creatorId), status, cursor: cursor === null ? null : entryId(cursor) },
+        (value) => {
+          const page = entryRecord(value, ['claims', 'nextCursor']);
+          return {
+            claims: list(page.claims, parseEntryClaim),
+            nextCursor: page.nextCursor === null ? null : entryId(page.nextCursor),
+          };
+        },
+      );
+    },
     listPendingClaims: (actorId: string, creatorId: string) =>
       command(actorId, 'claim.pending', { creatorId: entryId(creatorId) }, (value) =>
         list(value, parseEntryClaim),

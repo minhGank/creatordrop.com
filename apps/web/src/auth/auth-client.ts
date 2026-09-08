@@ -60,10 +60,30 @@ export const createSupabaseBrowserAuthClient = ({
     getAccessToken: async () => (await getSession())?.accessToken ?? null,
     getSession,
     onSessionChange: (listener) => {
-      const subscription = client.auth.onAuthStateChange((_event, session) => {
-        listener(publicSession(session));
+      let active = true;
+      let generation = 0;
+      const subscription = client.auth.onAuthStateChange(() => {
+        const currentGeneration = ++generation;
+        // Auth broadcasts also reach tabs with different sessionStorage sessions.
+        // Resolve this tab's session, just as authenticated API requests do. Do not
+        // await the read inside the SDK notification/refresh callback.
+        queueMicrotask(() => {
+          if (!active || currentGeneration !== generation) return;
+          void getSession().then(
+            (session) => {
+              if (active && currentGeneration === generation) listener(session);
+            },
+            () => {
+              if (active && currentGeneration === generation) listener(null);
+            },
+          );
+        });
       });
-      return () => subscription.data.subscription.unsubscribe();
+      return () => {
+        active = false;
+        generation += 1;
+        subscription.data.subscription.unsubscribe();
+      };
     },
     signIn: async (email, password) => {
       const result = await client.auth.signInWithPassword({ email, password });

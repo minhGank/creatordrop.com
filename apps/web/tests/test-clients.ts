@@ -18,6 +18,38 @@ import {
 export const createTestApiClient = (
   overrides: Partial<CreatorDropApiClient> = {},
 ): CreatorDropApiClient => ({
+  listMyWorkspaces: overrides.listMyWorkspaces ?? (() => Promise.resolve({ memberships: [] })),
+  listWorkspaceBoxes: overrides.listWorkspaceBoxes ?? (() => Promise.resolve({ boxes: [] })),
+  listEntryMethods: overrides.listEntryMethods ?? (() => Promise.resolve({ methods: [] })),
+  getEntryState: overrides.getEntryState ?? ((boxId) => Promise.resolve({ boxId, methods: [] })),
+  listDraftEntryMethods:
+    overrides.listDraftEntryMethods ?? (() => Promise.resolve({ methods: [] })),
+  saveEntryMethod:
+    overrides.saveEntryMethod ?? (() => Promise.reject(new Error('Unexpected method save'))),
+  publishEntryMethod:
+    overrides.publishEntryMethod ??
+    (() => Promise.reject(new Error('Unexpected method publication'))),
+  setEntryMethodEnabled:
+    overrides.setEntryMethodEnabled ??
+    (() => Promise.reject(new Error('Unexpected availability update'))),
+  submitEntryClaim:
+    overrides.submitEntryClaim ?? (() => Promise.reject(new Error('Unexpected claim'))),
+  getOwnEntryClaim:
+    overrides.getOwnEntryClaim ?? (() => Promise.reject(new Error('Unexpected own claim read'))),
+  listReviewClaims:
+    overrides.listReviewClaims ?? (() => Promise.resolve({ claims: [], nextCursor: null })),
+  getReviewClaim:
+    overrides.getReviewClaim ?? (() => Promise.reject(new Error('Unexpected review read'))),
+  reviewEntryClaim:
+    overrides.reviewEntryClaim ?? (() => Promise.reject(new Error('Unexpected review'))),
+  createEntryEvidence:
+    overrides.createEntryEvidence ??
+    (() => Promise.reject(new Error('Unexpected evidence registration'))),
+  uploadEntryEvidence:
+    overrides.uploadEntryEvidence ??
+    (() => Promise.reject(new Error('Unexpected evidence upload'))),
+  getReviewEvidence:
+    overrides.getReviewEvidence ?? (() => Promise.reject(new Error('Unexpected evidence read'))),
   exchangeSession: overrides.exchangeSession ?? (() => Promise.resolve(authSessionResponseFixture)),
   getCurrentFairness:
     overrides.getCurrentFairness ?? (() => Promise.resolve(currentFairnessFixture)),

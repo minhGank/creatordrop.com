@@ -287,12 +287,14 @@ export const OpeningExperience = ({
   customSlug,
   onCatalogChange,
   session,
+  entryRevision = 0,
 }: {
   readonly api: CreatorDropApiClient;
   readonly box: OpeningV2Catalog;
   readonly customSlug: string;
   readonly onCatalogChange: (catalog: PublishedBoxVersionResponse) => void;
   readonly session: SessionState;
+  readonly entryRevision?: number;
 }) => {
   const reducedMotion = usePrefersReducedMotion();
   const [stage, setStage] = useState<Stage>('idle');
@@ -414,7 +416,7 @@ export const OpeningExperience = ({
     return () => {
       current = false;
     };
-  }, [api, box, session.status]);
+  }, [api, box, session.status, entryRevision]);
 
   const resolveCommittedCatalog = useCallback(
     async (committedOpening: Opening, forceFetch = false): Promise<void> => {
@@ -762,7 +764,7 @@ export const OpeningExperience = ({
       );
     }
     return (
-      <section className="opening-callout">
+      <section className="opening-callout" id="open-drop">
         <p>
           <strong>{entitlementAvailability}</strong>
         </p>

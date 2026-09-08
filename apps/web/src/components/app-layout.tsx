@@ -29,6 +29,7 @@ export const AppLayout = ({ children }: { readonly children: ReactNode }) => {
           {session.state.status === 'authenticated' ? (
             <>
               <NavLink to="/account">Account</NavLink>
+              <NavLink to="/studio">Creator studio</NavLink>
               <button className="nav-button" type="button" onClick={signOut}>
                 Sign out
               </button>

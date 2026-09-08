@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { entryClaim, entryMethod, entryPolicy, entryState } from './entry-fixtures.js';
 
 import {
   CreatorDropApiError,
@@ -23,6 +24,116 @@ const jsonResponse = (body: unknown, status = 200): Response =>
   });
 
 describe('CreatorDrop API client', () => {
+  it('uses validated fan state and creator status cursors without arbitrary user identity', async () => {
+    const state = { boxId: entryPolicy.boxId, methods: [entryState('pending')] };
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(state))
+      .mockResolvedValueOnce(jsonResponse({ claims: [entryClaim], nextCursor: null }));
+    const client = createApiClient({
+      baseUrl: 'https://api.example.test',
+      fetcher,
+      getAccessToken: () => Promise.resolve('synthetic-session'),
+    });
+    expect(await client.getEntryState(entryPolicy.boxId)).toEqual(state);
+    await client.listReviewClaims(entryPolicy.creatorId, 'approved', entryClaim.id);
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      `https://api.example.test/v1/boxes/${entryPolicy.boxId}/me/entry-state`,
+    );
+    expect(fetcher.mock.calls[1]?.[0]).toBe(
+      `https://api.example.test/v1/creators/${entryPolicy.creatorId}/entry-claims?status=approved&cursor=${entryClaim.id}`,
+    );
+    expect(fetcher.mock.calls[1]?.[1]).toMatchObject({
+      cache: 'no-store',
+      redirect: 'error',
+      headers: { Authorization: 'Bearer synthetic-session' },
+    });
+  });
+  it('preserves revision/idempotency headers and uploads raw private screenshot bytes', async () => {
+    const file = new File(['png'], 'synthetic.png', { type: 'image/png' });
+    const metadata = {
+      evidence: {
+        id: entryClaim.evidence.screenshot,
+        mediaType: 'image/png',
+        byteLength: 3,
+        uploaded: true,
+      },
+    };
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ method: entryMethod }))
+      .mockResolvedValueOnce(jsonResponse({ claim: entryClaim }))
+      .mockResolvedValueOnce(jsonResponse(metadata))
+      .mockResolvedValueOnce(new Response(file, { headers: { 'Content-Type': 'image/png' } }));
+    const client = createApiClient({
+      baseUrl: 'https://api.example.test',
+      fetcher,
+      getAccessToken: () => Promise.resolve('synthetic-session'),
+    });
+    await client.saveEntryMethod(
+      entryPolicy.creatorId,
+      entryPolicy.boxId,
+      entryPolicy.definition,
+      entryMethod,
+    );
+    await client.submitEntryClaim(
+      entryPolicy.boxId,
+      entryPolicy.id,
+      entryClaim.evidence,
+      'synthetic-stable-key',
+    );
+    await client.uploadEntryEvidence(entryClaim.evidence.screenshot ?? '', file);
+    const image = await client.getReviewEvidence(
+      entryPolicy.creatorId,
+      entryClaim.evidence.screenshot ?? '',
+    );
+    expect(image.type).toBe('image/png');
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({
+      method: 'PUT',
+      headers: { 'If-Match': '"2"' },
+    });
+    expect(fetcher.mock.calls[1]?.[1]).toMatchObject({
+      headers: { 'Idempotency-Key': 'synthetic-stable-key' },
+    });
+    expect(fetcher.mock.calls[2]?.[1]).toMatchObject({
+      method: 'POST',
+      body: file,
+      headers: { 'Content-Type': 'image/png', Authorization: 'Bearer synthetic-session' },
+    });
+    expect(fetcher.mock.calls[3]?.[1]?.headers).toMatchObject({
+      Authorization: 'Bearer synthetic-session',
+    });
+  });
+  it('rejects unsupported entry actions, extra private response fields and unsafe evidence MIME types', async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          methods: [
+            {
+              ...entryPolicy,
+              definition: { ...entryPolicy.definition, action: 'paid_subscription' },
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ claim: { ...entryClaim, reviewerId: 'synthetic-private' } }),
+      )
+      .mockResolvedValueOnce(
+        new Response('<svg/>', { headers: { 'Content-Type': 'image/svg+xml' } }),
+      );
+    const client = createApiClient({ baseUrl: 'https://api.example.test', fetcher });
+    await expect(client.listEntryMethods(entryPolicy.boxId)).rejects.toBeInstanceOf(
+      CreatorDropProtocolError,
+    );
+    await expect(client.getOwnEntryClaim(entryClaim.id)).rejects.toBeInstanceOf(
+      CreatorDropProtocolError,
+    );
+    await expect(
+      client.getReviewEvidence(entryPolicy.creatorId, entryClaim.evidence.screenshot ?? ''),
+    ).rejects.toBeInstanceOf(CreatorDropProtocolError);
+  });
   it('uses one typed public boundary and adds bearer tokens only when available', async () => {
     const fetcher = vi.fn<typeof fetch>(() =>
       Promise.resolve(jsonResponse(publicCreatorsResponseFixture)),

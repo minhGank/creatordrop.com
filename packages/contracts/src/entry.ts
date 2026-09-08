@@ -97,3 +97,8 @@ export interface EntryStateResponse {
   readonly boxId: string;
   readonly methods: readonly EntryMethodState[];
 }
+
+export interface EntryClaimPage {
+  readonly claims: readonly EntryClaimContract[];
+  readonly nextCursor: string | null;
+}

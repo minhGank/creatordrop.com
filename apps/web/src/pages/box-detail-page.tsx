@@ -12,6 +12,7 @@ import { isOpeningV2Catalog } from '../components/opening-catalog.js';
 import { OpeningExperience } from '../components/opening-experience.js';
 import { ErrorState, LoadingState } from '../components/page-states.js';
 import { formatProbability } from '../formatting/probability.js';
+import { FanEntryMethods } from '../entries/fan-entry-methods.js';
 
 export const BoxDetailPage = () => {
   const parameters = useParams<{ readonly boxId: string; readonly customSlug: string }>();
@@ -48,6 +49,8 @@ const BoxDetailContent = ({
   readonly session: SessionState;
 }) => {
   const [box, setBox] = useState(initial.box);
+  const [entryRevision, setEntryRevision] = useState(0);
+  const onApproved = useCallback(() => setEntryRevision((v) => v + 1), []);
   const creator = initial.creator;
   const openingV2 = isOpeningV2Catalog(box);
   return (
@@ -125,12 +128,22 @@ const BoxDetailContent = ({
       </section>
 
       {openingV2 ? (
+        <FanEntryMethods
+          key={session.status === 'authenticated' ? session.user.id : 'anonymous'}
+          boxId={box.manifest.boxId}
+          authenticated={session.status === 'authenticated'}
+          onApproved={onApproved}
+        />
+      ) : null}
+
+      {openingV2 ? (
         <OpeningExperience
           api={api}
           box={box}
           customSlug={creator.customSlug}
           onCatalogChange={setBox}
           session={session}
+          entryRevision={entryRevision}
         />
       ) : (
         <section className="opening-callout">

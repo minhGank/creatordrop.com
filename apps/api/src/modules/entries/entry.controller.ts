@@ -43,9 +43,13 @@ const token = (r: Request): string => {
 };
 export const createEntryControllers = (service: EntryService): Record<string, RequestHandler> => {
   const json =
-    (action: (r: Request) => Promise<unknown>, status = 200): RequestHandler =>
+    (
+      action: (r: Request) => Promise<unknown>,
+      status = 200,
+      queryKeys: readonly string[] = [],
+    ): RequestHandler =>
     (r, s, n) => {
-      if (Object.keys(r.query).length !== 0) {
+      if (Object.keys(r.query).some((key) => !queryKeys.includes(key))) {
         n(new ApiError(400, 'ENTRY_INVALID_INPUT', 'Unsupported query.'));
         return;
       }
@@ -128,9 +132,20 @@ export const createEntryControllers = (service: EntryService): Record<string, Re
       claim: await service.getOwnClaim(actor(r), entryId(r.params.claimId)),
     })),
     state: json((r) => service.getOwnEntryState(actor(r), entryId(r.params.boxId))),
-    pending: json(async (r) => ({
-      claims: await service.listPendingClaims(actor(r), entryId(r.params.creatorId)),
-    })),
+    pending: json(
+      async (r) => {
+        if (Object.keys(r.query).length === 0)
+          return { claims: await service.listPendingClaims(actor(r), entryId(r.params.creatorId)) };
+        return service.listReviewClaims(
+          actor(r),
+          entryId(r.params.creatorId),
+          r.query.status,
+          r.query.cursor ?? null,
+        );
+      },
+      200,
+      ['status', 'cursor'],
+    ),
     reviewRead: json(async (r) => ({
       claim: await service.getReviewClaim(
         actor(r),

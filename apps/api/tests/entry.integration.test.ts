@@ -289,6 +289,7 @@ describe('R2A authoritative entry claims and private evidence', { concurrent: fa
     expect(response.headers['cache-control']).toBe('private, no-store');
     return parseEntryState(response.body as unknown);
   };
+
   const methodState = async (policy: EntryPolicySnapshot, actor = fan) => {
     const state = (await ownState(actor)).methods.find(
       (m) => m.policy.methodId === policy.methodId,
@@ -1390,5 +1391,102 @@ describe('R2A authoritative entry claims and private evidence', { concurrent: fa
         ]),
       ).rejects.toMatchObject({ code: 'P2002' });
     }
+  });
+  it('R2B filters and paginates creator history without changing the legacy pending read', async () => {
+    const policy = await publish({ ...definition, perUserClaimLimit: '110' });
+    const created = [];
+    for (let i = 0; i < 103; i++) created.push(await submit(policy));
+    const approved = created[0];
+    const rejected = created[1];
+    if (!approved || !rejected) throw new Error('Missing claims');
+    await approve(approved.id);
+    await approve(rejected.id, manager, 'rejected');
+    const path = `/v1/creators/${creatorId}/entry-claims`;
+    const read = (query: string, actor = owner) =>
+      request(api).get(`${path}${query}`).set('Authorization', `Bearer ${actor.token}`);
+    const legacy = await read('');
+    expect(legacy.status).toBe(200);
+    expect(Object.keys(entryRecord(legacy.body, ['claims']))).toEqual(['claims']);
+    const first = await read('?status=pending', manager);
+    expect(first.status).toBe(200);
+    expect(first.headers['cache-control']).toBe('private, no-store');
+    const page = entryRecord(first.body, ['claims', 'nextCursor']);
+    if (!Array.isArray(page.claims)) throw new Error('Missing claims');
+    const claims = page.claims.map(parseEntryClaim);
+    expect(claims).toHaveLength(100);
+    expect(claims.every((c) => c.status === 'pending' && c.creatorId === creatorId)).toBe(true);
+    const cursor = entryId(page.nextCursor);
+    expect(cursor).toBe(claims.at(-1)?.id);
+    const all = [...claims];
+    let next: unknown = cursor;
+    for (let pages = 0; next !== null && pages < 10; pages++) {
+      const response = await read(`?status=pending&cursor=${entryId(next)}`);
+      expect(response.status).toBe(200);
+      const tail = entryRecord(response.body, ['claims', 'nextCursor']);
+      if (!Array.isArray(tail.claims)) throw new Error('Missing claims');
+      all.push(...tail.claims.map(parseEntryClaim));
+      next = tail.nextCursor;
+    }
+    expect(new Set(all.map((c) => c.id)).size).toBe(all.length);
+    expect(all.filter((c) => c.methodId === policy.methodId)).toHaveLength(101);
+    expect(next).toBeNull();
+    for (const claim of [approved, rejected]) {
+      const status = claim.id === approved.id ? 'approved' : 'rejected';
+      const response = await read(`?status=${status}`);
+      expect(response.status).toBe(200);
+      const body = entryRecord(response.body, ['claims', 'nextCursor']);
+      if (!Array.isArray(body.claims)) throw new Error('Missing history');
+      const history = body.claims.map(parseEntryClaim);
+      expect(history.some((c) => c.id === claim.id)).toBe(true);
+      expect(history.every((c) => c.status === status && c.creatorId === creatorId)).toBe(true);
+      expect(JSON.stringify(body)).not.toMatch(/reviewer|sourceIdentity|objectPath|review_note/iu);
+    }
+    const otherPage = await request(api)
+      .get(`/v1/creators/${otherCreatorId}/entry-claims?status=pending`)
+      .set('Authorization', `Bearer ${other.token}`);
+    expect(otherPage.status).toBe(200);
+    const otherBody = entryRecord(otherPage.body, ['claims', 'nextCursor']);
+    if (!Array.isArray(otherBody.claims)) throw new Error('Missing claims');
+    expect(otherBody.claims.map(parseEntryClaim).every((c) => c.creatorId === otherCreatorId)).toBe(
+      true,
+    );
+    const crossCursor = await request(api)
+      .get(`/v1/creators/${otherCreatorId}/entry-claims?status=pending&cursor=${cursor}`)
+      .set('Authorization', `Bearer ${other.token}`);
+    expect(crossCursor.status).toBe(404);
+    for (const actor of [other, fan, editor])
+      expect((await read('?status=approved', actor)).status).toBe(actor === editor ? 403 : 404);
+    expect((await request(api).get(`${path}?status=pending`)).status).toBe(401);
+    for (const query of [
+      '?status=invalid',
+      '?status=pending&status=approved',
+      '?cursor=invalid',
+      '?status=pending&userId=ignored',
+      '?status=pending&cursor=invalid',
+    ])
+      expect((await read(query)).status).toBe(400);
+    await admin.query(
+      "update app.users set status='suspended', updated_at=statement_timestamp() where id=$1",
+      [manager.id],
+    );
+    try {
+      expect((await read('?status=pending', manager)).status).toBe(403);
+    } finally {
+      await admin.query(
+        "update app.users set status='active', updated_at=statement_timestamp() where id=$1",
+        [manager.id],
+      );
+    }
+    const bound = signer.bind(owner.id, 'review.list', { creatorId, status: 'pending' });
+    await expect(
+      database.query('select app.entry_review_list($1,$2,$3,$4,$5,$6)', [
+        other.id,
+        bound.operation,
+        bound.payload,
+        bound.keyVersion,
+        bound.expiresMs,
+        bound.signature,
+      ]),
+    ).rejects.toMatchObject({ code: 'P2002' });
   });
 });

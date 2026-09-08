@@ -180,12 +180,20 @@ and atomic exactly-once R1 entitlement grants. No RNG manifest/hash or opening b
 Real PostgreSQL/Storage tests cover the full Instagram HTTP flow, concurrent submissions/reviews,
 rollback, private evidence access, effective role privileges, and unchanged R1 opening consumption.
 
-### R2B — Entry configuration, fan claims & review UI (planned)
+### R2B — Entry configuration, fan claims & review UI ✅
 
-Polished platform/action chooser, creator configuration, fan proof submission/status flow, and
-responsive/accessible reviewer inbox remain deferred. Usernames/screenshots are submitted proof,
-not automatic verification. Provider-specific Twitch, YouTube, Instagram, TikTok, Facebook or
-Shopify integration and platform-team review authority require separate approved designs.
+Completed after full CI and real Chrome validation: shared-registry platform/action cards,
+policy-driven proof configuration, replacement drafts and publication summaries, authoritative fan
+claim state, private screenshot upload/preview, and owner/manager Pending/Approved/Rejected inbox.
+The small creator history read extension preserves the original pending-list contract and all
+R2A mutation/security semantics. Same-session revalidation preserves an open proof form when a fan
+returns from the external platform; failed authentication/account changes clear transient UI.
+
+Frontend/API and PostgreSQL tests cover roles, self-review, retries, terminal conflicts, historical
+rules and concurrency. Chrome verified publication → private proof → approval → restored fan
+availability → unchanged R1 opening, plus rejection, self-review guidance, keyboard focus and
+390/768/1440 layouts. Usernames/screenshots remain proof for manual review. Provider integrations,
+platform-team review authority and broad creator management require separate approved designs.
 
 ### R3 — XP, levels & Universal Entries (planned)
 

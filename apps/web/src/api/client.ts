@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { createEntryApi, type EntryApiClient, type RequestOptions } from './entry-client.js';
 
 import type {
   ApiErrorResponse,
@@ -12,6 +13,8 @@ import type {
   PublicCreatorBoxesResponse,
   PublicCreatorResponse,
   PublicCreatorsResponse,
+  CreatorWorkspaceMembershipsResponse,
+  BoxesResponse,
 } from '@creatordrop/contracts';
 
 const nullableHttpsUrlSchema = z.union([z.url({ protocol: /^https:$/u }), z.null()]);
@@ -419,7 +422,9 @@ export class CreatorDropProtocolError extends Error {
   }
 }
 
-export interface CreatorDropApiClient {
+export interface CreatorDropApiClient extends EntryApiClient {
+  listMyWorkspaces(signal?: AbortSignal): Promise<CreatorWorkspaceMembershipsResponse>;
+  listWorkspaceBoxes(creatorId: string, signal?: AbortSignal): Promise<BoxesResponse>;
   exchangeSession(accessToken: string): Promise<AuthSessionResponse>;
   getCurrentFairness(signal?: AbortSignal): Promise<CurrentFairnessResponse>;
   initializeFairness(): Promise<CurrentFairnessResponse>;
@@ -495,22 +500,22 @@ export const createApiClient = ({
   const request = async <T>(
     path: string,
     schema: z.ZodType<T>,
-    options: {
-      readonly accessToken?: string;
-      readonly body?: Readonly<Record<string, unknown>>;
-      readonly idempotencyKey?: string;
-      readonly ifMatch?: number;
-      readonly method?: 'GET' | 'POST' | 'PUT';
-      readonly signal?: AbortSignal;
-    } = {},
+    options: RequestOptions = {},
   ): Promise<T> => {
     try {
       const accessToken = options.accessToken ?? (await getAccessToken?.()) ?? null;
       const response = await fetcher(new URL(path, baseUrl).toString(), {
-        ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+        ...(options.body === undefined
+          ? {}
+          : { body: options.body instanceof Blob ? options.body : JSON.stringify(options.body) }),
         headers: {
           Accept: 'application/json',
-          ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }),
+          ...(options.body === undefined
+            ? {}
+            : {
+                'Content-Type':
+                  options.body instanceof Blob ? options.body.type : 'application/json',
+              }),
           ...(accessToken === null ? {} : { Authorization: `Bearer ${accessToken}` }),
           ...(options.idempotencyKey === undefined
             ? {}
@@ -520,9 +525,14 @@ export const createApiClient = ({
             : { 'If-Match': `"${options.ifMatch.toString()}"` }),
         },
         method: options.method ?? 'GET',
+        cache: 'no-store',
+        redirect: 'error',
         ...(options.signal === undefined ? {} : { signal: options.signal }),
       });
-      const payload = parseJson(await response.text());
+      const payload: unknown =
+        response.ok && options.responseType === 'image'
+          ? await response.blob()
+          : parseJson(await response.text());
       if (!response.ok) {
         const parsed = errorEnvelopeSchema.safeParse(payload);
         if (!parsed.success) throw new CreatorDropProtocolError();
@@ -545,6 +555,60 @@ export const createApiClient = ({
   };
 
   return {
+    ...createEntryApi(request),
+    listMyWorkspaces: (signal) =>
+      request(
+        '/v1/me/creator-memberships',
+        z
+          .object({
+            memberships: z.array(
+              z
+                .object({
+                  creator: z
+                    .object({
+                      id: uuidSchema,
+                      createdAt: z.iso.datetime({ offset: true }),
+                      updatedAt: z.iso.datetime({ offset: true }),
+                      customSlug: z.string(),
+                      displayName: z.string(),
+                      handle: z.string(),
+                      revision: z.number().int().positive(),
+                      status: z.enum(['active', 'suspended', 'closed']),
+                    })
+                    .strict(),
+                  joinedAt: z.iso.datetime({ offset: true }),
+                  role: z.enum(['owner', 'manager', 'editor', 'viewer']),
+                })
+                .strict(),
+            ),
+          })
+          .strict(),
+        signal ? { signal } : {},
+      ),
+    listWorkspaceBoxes: (creatorId, signal) =>
+      request(
+        `/v1/creators/${encodeURIComponent(creatorId)}/boxes`,
+        z
+          .object({
+            boxes: z.array(
+              z
+                .object({
+                  id: uuidSchema,
+                  creatorId: uuidSchema,
+                  createdAt: z.iso.datetime({ offset: true }),
+                  updatedAt: z.iso.datetime({ offset: true }),
+                  revision: z.number().int().positive(),
+                  role: z.enum(['owner', 'manager', 'editor', 'viewer']),
+                  status: z.enum(['draft', 'active', 'paused', 'archived']),
+                  currentPublishedVersionId: uuidSchema.nullable(),
+                  draft: boxVersionSchema.nullable(),
+                })
+                .strict(),
+            ),
+          })
+          .strict(),
+        signal ? { signal } : {},
+      ),
     exchangeSession: (accessToken) =>
       request('/v1/auth/session/exchange', authSessionSchema, {
         accessToken,

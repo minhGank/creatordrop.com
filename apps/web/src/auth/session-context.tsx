@@ -19,22 +19,28 @@ export const SessionProvider = ({
 }) => {
   const [state, setState] = useState<SessionState>({ status: 'loading' });
   const generation = useRef(0);
+  const verifiedToken = useRef<string | null>(null);
 
   const resolveSession = useCallback(
     async (session: BrowserAuthSession | null): Promise<void> => {
       const currentGeneration = ++generation.current;
       if (session === null) {
+        verifiedToken.current = null;
         setState({ status: 'anonymous' });
         return;
       }
-      setState({ status: 'loading' });
+      // Supabase also announces an unchanged session when an external tab returns focus.
+      // Recheck the actor without unmounting in-progress proof for that verified token.
+      if (verifiedToken.current !== session.accessToken) setState({ status: 'loading' });
       try {
         const response = await apiClient.exchangeSession(session.accessToken);
         if (currentGeneration === generation.current) {
+          verifiedToken.current = session.accessToken;
           setState({ status: 'authenticated', user: response.user });
         }
       } catch (error) {
         if (currentGeneration !== generation.current) return;
+        verifiedToken.current = null;
         if (error instanceof CreatorDropApiError && error.status === 401) {
           await authClient.signOut().catch(() => undefined);
           setState({ status: 'anonymous' });
@@ -85,6 +91,7 @@ export const SessionProvider = ({
       },
       signOut: async () => {
         generation.current += 1;
+        verifiedToken.current = null;
         await authClient.signOut();
         setState({ status: 'anonymous' });
       },

@@ -278,6 +278,13 @@ without that context. Registered uploads expire after one hour while incomplete;
 evidence is immutable. No DELETE/UPDATE, listing or signing policy is granted. Applying these
 migrations requires Supabase Storage schema support, not a bare PostgreSQL-only deployment.
 
+R2B migration `20260908145157_r2b_creator_claim_history.sql` adds only the signed
+`app.entry_review_list` wrapper and its private implementation. It reuses active creator
+owner/manager authorization and the existing claim DTO for status-filtered, creator-scoped
+cursor pages. Only the restricted application role receives wrapper execution. It adds no
+tables, claim/review mutations, grants, storage policies or lock-order changes. The older pending
+list remains available for API compatibility.
+
 ## Wallet and double-entry ledger
 
 ### `wallets`

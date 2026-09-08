@@ -23,6 +23,9 @@ const CreatorListPage = lazy(async () => ({
   default: (await import('./pages/creator-list-page.js')).CreatorListPage,
 }));
 const HomePage = lazy(async () => ({ default: (await import('./pages/home-page.js')).HomePage }));
+const CreatorStudioPage = lazy(async () => ({
+  default: (await import('./pages/creator-studio-page.js')).CreatorStudioPage,
+}));
 const NotFoundPage = lazy(async () => ({
   default: (await import('./pages/not-found-page.js')).NotFoundPage,
 }));
@@ -37,6 +40,10 @@ export const AppRoutes = () => {
             <Route path="/" element={<HomePage />} />
             <Route path="/auth" element={<AuthPage />} />
             <Route path="/account" element={<AccountPage />} />
+            <Route path="/studio" element={<CreatorStudioPage />} />
+            <Route path="/studio/:creatorId" element={<CreatorStudioPage />} />
+            <Route path="/studio/:creatorId/claims" element={<CreatorStudioPage />} />
+            <Route path="/studio/:creatorId/boxes/:boxId/entries" element={<CreatorStudioPage />} />
             <Route path="/creators" element={<CreatorListPage />} />
             <Route path="/creators/:customSlug" element={<CreatorDetailPage />} />
             <Route path="/creators/:customSlug/boxes/:boxId" element={<BoxDetailPage />} />

@@ -127,7 +127,52 @@ See [API.md](./API.md#r2a-entry-methods-and-manual-claims) for request shapes an
 The authenticated `GET /v1/boxes/:boxId/me/entry-state` read supports discovery across devices.
 The same focused entry suite covers full-history slot counts, policy republication, user/creator
 isolation, active-account checks, bounded redacted summaries, and settled concurrent submissions.
-The fan/configuration/review UI is intentionally deferred to R2B; no debug UI is required.
+
+## R2B creator and fan UI
+
+Sign in and use **Creator studio** (`/studio`) to select a creator workspace and an active,
+published opening-v2 Drop. `/studio/:creatorId/boxes/:boxId/entries` is the focused entry-method
+editor: choose a platform/action, configure instructions, target, Drops/claim limits and proof,
+save a draft, then review reward odds and the opening limit before publishing. Editors may save
+drafts; owners/managers may publish or disable methods. Published-rule changes are replacement
+drafts; existing claims retain their original rules. Creating Drops/rewards remains outside this
+surface and uses the existing catalog APIs/local fixtures.
+
+On the public Drop page, **Unlock this Drop** uses the published policy and authenticated fan-state
+read. PNG/JPEG proof up to 5 MiB uses the R2A metadata registration and authenticated raw upload.
+Previews use local blob URLs, revoked when replaced/unmounted. Pending claims refresh on window
+focus/every 30 seconds while no form is open, or with **Refresh claim status**. An approval refreshes
+the existing opening entitlement read; **Open Drop** uses the unchanged R1 flow. No claim/evidence
+state is restored from browser storage. An unconfirmed claim retry retains its idempotency key
+and proof while the form is open; after navigation, authoritative state discovers committed claims.
+Returning from an external tab revalidates the same verified session without unmounting the form.
+A changed token/account or failed session check clears that transient UI; backend checks still
+authorize every private read and mutation.
+Supabase auth notifications are resolved against the current tab's session storage before updating
+the UI. Broadcasts from another tab cannot substitute that tab's identity while API requests
+continue using the local token. These local session reads are deferred outside the SDK callback
+to avoid its auth lock, and obsolete notifications are ignored.
+
+Owner/manager **Entry Claims** (`/studio/:creatorId/claims`) provides Pending/Approved/Rejected
+filters and cursor pages. Evidence is fetched through the existing authenticated private-evidence
+endpoint and displayed as a temporary blob. The existing own-claim read identifies self-claims;
+an unsuccessful identity check fails closed. Another authorized reviewer must review self-claims.
+Buttons disable during review and terminal conflicts refresh the database result. Review notes
+remain private; no reviewer note is returned to fans by R2A.
+
+Focused checks:
+
+```bash
+npx vitest run apps/web/tests/entries.test.tsx apps/web/tests/api-client.test.ts apps/web/tests/app.test.tsx
+npm run test:integration -- apps/api/tests/entry.integration.test.ts
+```
+
+For browser verification, use synthetic local Auth users (owner, manager, fan), an API-published
+opening-v2 Drop and Chrome: configure Instagram → Like post, publish, open the external link,
+select a PNG, submit, review the private image, approve and reopen the fan page in a fresh browser
+session. Also reject corrected proof, check self-review guidance, keyboard focus and widths
+390/768/1440. No provider action is verified by following the link. Full `npm run ci` includes the
+R2A approval → entitlement → opening regression and resets all local synthetic fixtures.
 
 ## Deterministic RNG and verifier
 

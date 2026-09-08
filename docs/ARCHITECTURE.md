@@ -72,6 +72,13 @@ summaries without evidence. One PostgreSQL statement snapshot calculates full-hi
 and approved counts by stable method and remaining slots against the current policy limit.
 This informational read takes no claim locks; submission retains the authoritative locked checks.
 
+R2B renders this authority through a focused creator studio, policy-driven fan proof forms and
+owner/manager review inbox. Platform/action choices use the shared contract registry. Private
+screenshots use the existing authenticated upload/download APIs with temporary browser blob
+previews. The read-only creator history extension adds status filters and cursor pages; mutation
+authorization, self-review protection and approval/grant atomicity are unchanged. The UI refreshes
+entitlement availability after confirmed approval without changing the opening or fairness flow.
+
 Review requires a currently active local actor and creator membership with owner/manager role. A
 claimant cannot review their own claim, even when they are also an owner or manager.
 The private claim read includes its exact frozen policy. One transaction records the terminal
