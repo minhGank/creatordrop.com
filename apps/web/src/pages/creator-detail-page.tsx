@@ -88,7 +88,7 @@ const CreatorCatalog = ({ customSlug }: { readonly customSlug: string }) => {
                     {box.availability === 'openable'
                       ? 'Published'
                       : box.availability === 'opening-v2'
-                        ? 'Free-entry · coming next'
+                        ? 'Free-entry'
                         : 'Legacy · view only'}
                   </span>
                   <strong>{box.name}</strong>

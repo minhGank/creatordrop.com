@@ -45,6 +45,7 @@ const phase15Migrations = [
   '20260905065856_phase15_rarity_and_fairness_proof.sql',
   '20260906194037_phase15_fairness_confirmation_binding.sql',
   '20260907185800_r1a_opening_v2_entitlements.sql',
+  '20260907225003_r1b_opening_v2_consumption.sql',
 ] as const;
 
 const migrationSql = (fileName: string): Promise<string> =>
@@ -443,11 +444,13 @@ describe('Phase 8 to current forward migration', { concurrent: false }, () => {
       const historyAfter = await database.query<{
         readonly currentState: string;
         readonly fulfillmentType: string;
+        readonly openingModel: string;
         readonly openingXmin: string;
         readonly originStatus: string;
         readonly winXmin: string;
       }>(
         `select opening.xmin::text as "openingXmin", win.xmin::text as "winXmin",
+                opening.opening_compatibility_version as "openingModel",
                 obligation.status as "originStatus",
                 obligation.fulfillment_type as "fulfillmentType",
                 obligation.current_state as "currentState"
@@ -462,6 +465,7 @@ describe('Phase 8 to current forward migration', { concurrent: false }, () => {
           ...historyBefore.rows[0],
           currentState: 'ready_for_delivery',
           fulfillmentType: 'digital',
+          openingModel: 'opening-v1',
           originStatus: 'pending_fulfillment',
         },
       ]);

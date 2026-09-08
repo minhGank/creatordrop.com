@@ -9,6 +9,7 @@ import {
   authSessionResponseFixture,
   boxOpeningFixture,
   currentFairnessFixture,
+  openingV2ResponseFixture,
   pendingOpeningProofFixture,
   publicCreatorResponseFixture,
   publicCreatorsResponseFixture,
@@ -190,6 +191,50 @@ describe('CreatorDrop API client', () => {
       headers: { 'If-Match': '"1"' },
       method: 'PUT',
     });
+  });
+
+  it('reads opening-v2 entitlement state and parses a non-financial opening response', async () => {
+    const entitlement = {
+      available: true,
+      boxId: openingV2ResponseFixture.opening.boxId,
+      consumed: '0',
+      granted: '2',
+      limitReached: false,
+      maxOpeningsPerUser: '3',
+      remaining: '2',
+      successfulOpenings: '0',
+    } as const;
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ entitlement }))
+      .mockResolvedValueOnce(jsonResponse(openingV2ResponseFixture, 201));
+    const client = createApiClient({ baseUrl: 'https://api.example.test', fetcher });
+
+    await expect(
+      client.getOpeningEntitlementState(openingV2ResponseFixture.opening.boxId),
+    ).resolves.toEqual({ entitlement });
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      `https://api.example.test/v1/boxes/${openingV2ResponseFixture.opening.boxId}/opening-entitlement`,
+    );
+
+    await expect(
+      client.openBox(
+        openingV2ResponseFixture.opening.boxId,
+        openingV2ResponseFixture.opening.fairness.clientSeed,
+        'opening_v2-stable-key',
+        openingV2ResponseFixture.opening.boxVersionId,
+        openingV2ResponseFixture.opening.fairness.configurationHash,
+        openingV2ResponseFixture.opening.fairness.seedSetId,
+        openingV2ResponseFixture.opening.fairness.commitment,
+      ),
+    ).resolves.toEqual(openingV2ResponseFixture);
+    expect(fetcher.mock.calls[1]?.[1]).toMatchObject({
+      headers: { 'Idempotency-Key': 'opening_v2-stable-key' },
+      method: 'POST',
+    });
+    expect(openingV2ResponseFixture.opening).not.toHaveProperty('cost');
+    expect(openingV2ResponseFixture.opening).not.toHaveProperty('wallet');
+    expect(openingV2ResponseFixture.opening).not.toHaveProperty('pointsAwarded');
   });
 
   it('parses stable API errors, handles 401 cleanup, and rejects malformed success data', async () => {

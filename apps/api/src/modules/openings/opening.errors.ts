@@ -32,3 +32,17 @@ export class OpeningRetryableError extends Error {
     this.name = 'OpeningRetryableError';
   }
 }
+
+export class OpeningEntitlementRequiredError extends Error {
+  constructor() {
+    super('An available opening entitlement is required for this box.');
+    this.name = 'OpeningEntitlementRequiredError';
+  }
+}
+
+export class OpeningLimitReachedError extends Error {
+  constructor() {
+    super('The per-user opening limit for this box has been reached.');
+    this.name = 'OpeningLimitReachedError';
+  }
+}

@@ -3,11 +3,15 @@ import { createHash } from 'node:crypto';
 import { validate as isUuid, v7 as uuidv7 } from 'uuid';
 
 import type { Database, TransactionExecutor } from '@creatordrop/database';
+import type { OpeningV2EntitlementStateResponse } from '@creatordrop/contracts';
 import { parseCurrency, parsePositiveMoneyMinor, toMoneyMinor } from '@creatordrop/domain';
 import type { Currency, MoneyMinor } from '@creatordrop/domain';
 import type { Logger } from '@creatordrop/observability';
 
-import { createPublishedManifest } from '../catalog/catalog.manifest.js';
+import {
+  createOpeningV2PublishedManifest,
+  createPublishedManifest,
+} from '../catalog/catalog.manifest.js';
 import {
   rarityPolicyVersions,
   rewardRarities,
@@ -32,17 +36,22 @@ import {
   InventoryUnavailableError,
   OpeningConfirmationStaleError,
   OpeningCurrencyUnavailableError,
+  OpeningEntitlementRequiredError,
+  OpeningLimitReachedError,
   OpeningRetryableError,
 } from './opening.errors.js';
 import {
   consumeOpeningInventoryPool,
+  consumeOpeningV2Entitlement,
   findOpeningCatalog,
   insertOpeningHistory,
+  insertOpeningV2History,
   lockLeaderboardSeasonForOpening,
   lockCurrentBoxForOpening,
   lockOpeningInventoryPool,
   pauseBoxesForInventoryPool,
   readOpeningDatabaseTimestamp,
+  readOpeningV2EntitlementState,
   type OpeningCatalog,
   type OpeningCatalogEntry,
 } from './opening.repository.js';
@@ -72,6 +81,10 @@ export interface OpenBoxResult {
 }
 
 export interface OpeningService {
+  getEntitlementState(command: {
+    readonly boxId: BoxId;
+    readonly userId: UserId;
+  }): Promise<OpeningV2EntitlementStateResponse>;
   openBox(command: OpenBoxCommand): Promise<OpenBoxResult>;
 }
 
@@ -136,6 +149,91 @@ const decimalValue = (value: unknown, label: string): string => {
 
 const storedOpeningBody = (value: unknown): BoxOpeningBody => {
   const root = record(value, ['opening'], 'opening response');
+  if (
+    typeof root.opening === 'object' &&
+    root.opening !== null &&
+    !Array.isArray(root.opening) &&
+    (root.opening as Record<string, unknown>).openingCompatibilityVersion === 'opening-v2'
+  ) {
+    const opening = record(
+      root.opening,
+      [
+        'boxId',
+        'boxVersionId',
+        'entitlement',
+        'fairness',
+        'fulfillmentStatus',
+        'id',
+        'openingCompatibilityVersion',
+        'reward',
+      ],
+      'opening-v2',
+    );
+    const entitlement = record(
+      opening.entitlement,
+      ['maxOpeningsPerUser', 'remaining', 'successfulOpenings'],
+      'opening entitlement',
+    );
+    const fairness = record(
+      opening.fairness,
+      ['clientSeed', 'commitment', 'configurationHash', 'nonce', 'seedSetId'],
+      'opening fairness proof',
+    );
+    const reward = record(
+      opening.reward,
+      ['id', 'imageUrl', 'name', 'rarity', 'rarityPolicyVersion', 'rewardVersionId'],
+      'opening reward',
+    );
+    const fulfillmentStatus = opening.fulfillmentStatus;
+    const rarity = reward.rarity;
+    const rarityPolicyVersion = reward.rarityPolicyVersion;
+    const clientSeed = stringValue(fairness.clientSeed, 'opening client seed');
+    const commitment = stringValue(fairness.commitment, 'opening commitment');
+    const configurationHash = stringValue(fairness.configurationHash, 'configuration hash');
+    if (
+      (fulfillmentStatus !== 'pending_fulfillment' && fulfillmentStatus !== 'awaiting_restock') ||
+      (reward.imageUrl !== null && typeof reward.imageUrl !== 'string') ||
+      !rewardRarities.includes(rarity as (typeof rewardRarities)[number]) ||
+      rarityPolicyVersion !== 'rarity-v1' ||
+      !/^[0-9a-f]{64}$/u.test(clientSeed) ||
+      !/^[0-9a-f]{64}$/u.test(commitment) ||
+      !/^[0-9a-f]{64}$/u.test(configurationHash)
+    ) {
+      throw new Error('Stored opening-v2 response contains invalid values.');
+    }
+    return {
+      opening: {
+        boxId: uuidValue(opening.boxId, 'opening box ID'),
+        boxVersionId: uuidValue(opening.boxVersionId, 'opening box version ID'),
+        entitlement: {
+          maxOpeningsPerUser: decimalValue(
+            entitlement.maxOpeningsPerUser,
+            'maximum openings per user',
+          ),
+          remaining: decimalValue(entitlement.remaining, 'remaining entitlements'),
+          successfulOpenings: decimalValue(entitlement.successfulOpenings, 'successful openings'),
+        },
+        fairness: {
+          clientSeed,
+          commitment,
+          configurationHash,
+          nonce: decimalValue(fairness.nonce, 'opening nonce'),
+          seedSetId: uuidValue(fairness.seedSetId, 'opening seed-set ID'),
+        },
+        fulfillmentStatus,
+        id: uuidValue(opening.id, 'public opening ID'),
+        openingCompatibilityVersion: 'opening-v2',
+        reward: {
+          id: uuidValue(reward.id, 'opening reward ID'),
+          imageUrl: reward.imageUrl,
+          name: stringValue(reward.name, 'opening reward name'),
+          rarity: rarity as (typeof rewardRarities)[number],
+          rarityPolicyVersion: 'rarity-v1',
+          rewardVersionId: uuidValue(reward.rewardVersionId, 'opening reward version ID'),
+        },
+      },
+    };
+  }
   const opening = record(
     root.opening,
     [
@@ -314,31 +412,87 @@ const generatedUuid = (createId: () => string, label: string): string => {
   return value;
 };
 
-const requireOpeningCatalog = (catalog: OpeningCatalog | undefined): OpeningCatalog => {
-  if (
-    catalog?.boxStatus !== 'active' ||
-    catalog.openingCompatibilityVersion !== 'opening-v1' ||
-    catalog.entries.length === 0 ||
-    catalog.entries.filter(({ isBaseReward }) => isBaseReward).length !== 1
-  ) {
-    throw new BoxNotOpenableError();
-  }
-  return catalog;
+type OpeningV1Catalog = Omit<
+  OpeningCatalog,
+  'currency' | 'maxOpeningsPerUser' | 'openingCompatibilityVersion' | 'priceMinor'
+> & {
+  readonly currency: Currency;
+  readonly maxOpeningsPerUser: null;
+  readonly openingCompatibilityVersion: 'opening-v1';
+  readonly priceMinor: MoneyMinor;
 };
 
-const openingManifest = (catalog: OpeningCatalog) =>
-  createPublishedManifest({
-    boxId: catalog.boxId,
-    boxVersionId: catalog.boxVersionId,
-    currency: catalog.currency,
-    entries: catalog.entries.map((entry) => ({
-      id: entry.id,
-      position: entry.position,
-      rewardVersionId: entry.rewardVersionId,
-      weight: BigInt(entry.weight) as ProbabilityWeight,
-    })),
-    priceMinor: BigInt(catalog.priceMinor.toString()) as CatalogMoneyMinor,
-  });
+type OpeningV2Catalog = Omit<
+  OpeningCatalog,
+  'currency' | 'entries' | 'maxOpeningsPerUser' | 'openingCompatibilityVersion' | 'priceMinor'
+> & {
+  readonly currency: null;
+  readonly entries: readonly (OpeningCatalogEntry & {
+    readonly isBaseReward: false;
+    readonly rarity: (typeof rewardRarities)[number];
+    readonly rarityPolicyVersion: 'rarity-v1';
+  })[];
+  readonly maxOpeningsPerUser: string;
+  readonly openingCompatibilityVersion: 'opening-v2';
+  readonly priceMinor: null;
+};
+
+const requireOpeningCatalog = (
+  catalog: OpeningCatalog | undefined,
+): OpeningV1Catalog | OpeningV2Catalog => {
+  if (catalog?.boxStatus !== 'active' || catalog.entries.length === 0) {
+    throw new BoxNotOpenableError();
+  }
+  if (
+    catalog.openingCompatibilityVersion === 'opening-v1' &&
+    catalog.currency !== null &&
+    catalog.priceMinor !== null &&
+    catalog.maxOpeningsPerUser === null &&
+    catalog.entries.filter(({ isBaseReward }) => isBaseReward).length === 1
+  ) {
+    return catalog as OpeningV1Catalog;
+  }
+  if (
+    catalog.openingCompatibilityVersion === 'opening-v2' &&
+    catalog.currency === null &&
+    catalog.priceMinor === null &&
+    catalog.maxOpeningsPerUser !== null &&
+    catalog.entries.every(
+      ({ isBaseReward, rarity, rarityPolicyVersion }) =>
+        !isBaseReward && rarity !== null && rarityPolicyVersion === 'rarity-v1',
+    )
+  ) {
+    return catalog as OpeningV2Catalog;
+  }
+  throw new BoxNotOpenableError();
+};
+
+const openingManifest = (catalog: OpeningV1Catalog | OpeningV2Catalog) =>
+  catalog.openingCompatibilityVersion === 'opening-v2'
+    ? createOpeningV2PublishedManifest({
+        boxId: catalog.boxId,
+        boxVersionId: catalog.boxVersionId,
+        entries: catalog.entries.map((entry) => ({
+          id: entry.id,
+          position: entry.position,
+          rarity: entry.rarity,
+          rewardVersionId: entry.rewardVersionId,
+          weight: BigInt(entry.weight) as ProbabilityWeight,
+        })),
+        maxOpeningsPerUser: BigInt(catalog.maxOpeningsPerUser),
+      })
+    : createPublishedManifest({
+        boxId: catalog.boxId,
+        boxVersionId: catalog.boxVersionId,
+        currency: catalog.currency,
+        entries: catalog.entries.map((entry) => ({
+          id: entry.id,
+          position: entry.position,
+          rewardVersionId: entry.rewardVersionId,
+          weight: BigInt(entry.weight) as ProbabilityWeight,
+        })),
+        priceMinor: BigInt(catalog.priceMinor.toString()) as CatalogMoneyMinor,
+      });
 
 const retryableTransaction = async <Result>(
   database: Database,
@@ -379,10 +533,16 @@ export const createOpeningService = ({
   calculateOpeningFinancialSplit(1n, platformFeeBps);
 
   return {
+    getEntitlementState: async ({ boxId, userId }) => {
+      const entitlement = await readOpeningV2EntitlementState(database, userId, boxId);
+      if (entitlement === undefined) throw new BoxNotOpenableError();
+      return { entitlement };
+    },
     openBox: async (command) => {
       const fingerprint = buildOpeningFingerprint(command);
       const identifiers = {
         creatorEarningId: generatedUuid(createId, 'Creator earning ID'),
+        entitlementConsumptionId: generatedUuid(createId, 'Entitlement consumption ID'),
         fulfillmentId: generatedUuid(createId, 'Fulfillment obligation ID'),
         idempotencyRecordId: generatedUuid(
           createId,
@@ -443,6 +603,133 @@ export const createOpeningService = ({
             catalog.configurationHash !== command.expectedConfigurationHash
           ) {
             throw new OpeningConfirmationStaleError();
+          }
+          if (catalog.openingCompatibilityVersion === 'opening-v2') {
+            const entitlement = await consumeOpeningV2Entitlement(transaction, {
+              boxId: catalog.boxId,
+              boxVersionId: catalog.boxVersionId,
+              configurationHash: catalog.configurationHash,
+              consumptionId: identifiers.entitlementConsumptionId,
+              creatorId: catalog.creatorId,
+              openingId: identifiers.openingId,
+              userId: command.userId,
+            });
+            if (entitlement.outcome === 'max_reached') throw new OpeningLimitReachedError();
+            if (entitlement.outcome === 'entitlement_required') {
+              throw new OpeningEntitlementRequiredError();
+            }
+
+            const timestamp = await readOpeningDatabaseTimestamp(transaction);
+            markSelectionStarted();
+            const selection = await fairnessService.selectForOpening(transaction, {
+              clientSeed: command.clientSeed,
+              expectedSeedSetId: command.expectedSeedSetId,
+              expectedServerSeedCommitment: command.expectedServerSeedCommitment,
+              expectedManifestHash: catalog.configurationHash,
+              manifest: openingManifest(catalog),
+              userId: command.userId,
+            });
+            const selectedEntry = catalog.entries.find(
+              (entry) =>
+                entry.id === selection.boxVersionRewardId &&
+                entry.rewardVersionId === selection.rewardVersionId,
+            );
+            if (selectedEntry === undefined) {
+              throw new Error('RNG selected an unknown catalog entry.');
+            }
+
+            let fulfillmentStatus: FulfillmentStatus = 'pending_fulfillment';
+            let inventoryPoolId: OpeningCatalogEntry['inventoryPoolId'] = null;
+            if (selectedEntry.inventoryMode === 'finite') {
+              if (selectedEntry.inventoryPoolId === null) throw new BoxNotOpenableError();
+              const pool = await lockOpeningInventoryPool(
+                transaction,
+                selectedEntry.inventoryPoolId,
+              );
+              if (
+                pool?.creatorId !== catalog.creatorId ||
+                pool.id !== selectedEntry.inventoryPoolId ||
+                pool.stockoutPolicy !== selectedEntry.stockoutPolicy
+              ) {
+                throw new BoxNotOpenableError();
+              }
+              inventoryPoolId = pool.id;
+              if (
+                !(await lockCurrentBoxForOpening(transaction, catalog.boxId, catalog.boxVersionId))
+              ) {
+                throw new BoxNotOpenableError();
+              }
+              if (pool.availableQuantity === 0n) {
+                if (pool.stockoutPolicy === 'pause_box') throw new InventoryUnavailableError();
+                fulfillmentStatus = 'awaiting_restock';
+              } else {
+                const consumed = await consumeOpeningInventoryPool(
+                  transaction,
+                  pool.id,
+                  identifiers.openingId,
+                );
+                if (consumed === undefined) throw new InventoryUnavailableError();
+                if (consumed.availableQuantity === 0n && pool.stockoutPolicy === 'pause_box') {
+                  await pauseBoxesForInventoryPool(transaction, pool.id);
+                }
+              }
+            } else if (
+              !(await lockCurrentBoxForOpening(transaction, catalog.boxId, catalog.boxVersionId))
+            ) {
+              throw new BoxNotOpenableError();
+            }
+
+            const body: BoxOpeningBody = {
+              opening: {
+                boxId: catalog.boxId,
+                boxVersionId: catalog.boxVersionId,
+                entitlement: {
+                  maxOpeningsPerUser: entitlement.maxOpeningsPerUser,
+                  remaining: entitlement.remainingEntitlements,
+                  successfulOpenings: entitlement.successfulOpenings,
+                },
+                fairness: {
+                  clientSeed: selection.clientSeed,
+                  commitment: selection.serverSeedCommitment,
+                  configurationHash: selection.manifestHash,
+                  nonce: selection.nonce.toString(),
+                  seedSetId: selection.seedSetId,
+                },
+                fulfillmentStatus,
+                id: identifiers.publicId,
+                openingCompatibilityVersion: 'opening-v2',
+                reward: {
+                  id: selectedEntry.rewardId,
+                  imageUrl: selectedEntry.imageUrl,
+                  name: selectedEntry.name,
+                  rarity: selectedEntry.rarity,
+                  rarityPolicyVersion: 'rarity-v1',
+                  rewardVersionId: selectedEntry.rewardVersionId,
+                },
+              },
+            };
+            await insertOpeningV2History(transaction, {
+              catalog,
+              createdAt: timestamp,
+              fulfillmentId: identifiers.fulfillmentId,
+              fulfillmentStatus,
+              idempotencyRecordId: claim.record.id,
+              inventoryPoolId,
+              openingId: identifiers.openingId,
+              outboxPrivateId: identifiers.outboxPrivateId,
+              outboxPublicId: identifiers.outboxPublicId,
+              publicId: identifiers.publicId,
+              rewardWinId: identifiers.rewardWinId,
+              selectedEntry,
+              selection,
+              userId: command.userId,
+            });
+            await completeBoxOpeningIdempotency(transaction, {
+              openingId: identifiers.openingId,
+              recordId: claim.record.id,
+              responseBody: body,
+            });
+            return { body, replayed: false };
           }
           if (!enabledCurrencies.includes(catalog.currency)) {
             throw new OpeningCurrencyUnavailableError();

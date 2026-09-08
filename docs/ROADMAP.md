@@ -147,15 +147,19 @@ Completed: explicit non-financial `opening-v2` catalog versions, a separate dete
 positive immutable `maxOpeningsPerUser`, zero legacy base rewards, version-aware domain/verifier
 parsing, and immutable PostgreSQL entitlement grant/consumption preparation scoped to stable box
 identities. Local operator grants are source-idempotent and application-role inaccessible.
-Historical `opening-v1` bytes, hashes, proofs, and paid opening behavior remain unchanged. R1A does
-not consume entitlements or make v2 boxes openable.
+Historical `opening-v1` bytes, hashes, proofs, and paid opening behavior remain unchanged. R1A
+prepared but did not itself consume entitlements.
 
 ### R1B — Atomic free opening
 
-Planned: make the `opening-v2` transaction require and atomically consume an opening entitlement,
-enforce the published per-user successful-opening maximum, and omit wallet debit, sale/allocation
-ledger postings, platform fee, and creator earnings from that path. Preserve one caller-owned
-transaction, nonce/RNG, inventory, opening/win/fulfillment, idempotency, and outbox invariants.
+Completed: the opening endpoint dispatches explicitly by compatibility model. `opening-v2`
+serializes each user/stable-box scope, enforces the published successful-opening maximum, selects
+the oldest eligible grant with canonical-ID tie-breaking, and consumes exactly one immutable
+entitlement in the same caller-owned PostgreSQL transaction as nonce/RNG, inventory,
+opening/win/fulfillment, idempotency completion, and outbox. It performs no wallet lookup/debit,
+sale/allocation ledger posting, fee/share calculation, creator earning, or legacy points award.
+The response and UI are correspondingly non-financial. `opening-v1` keeps its paid Phase 9 path
+unchanged.
 
 ### R1C — Runtime/product switch
 

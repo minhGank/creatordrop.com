@@ -204,6 +204,87 @@ export const boxOpeningFixture: BoxOpeningResponse = {
   },
 };
 
+export const openingV2BoxFixture: PublishedBoxVersionResponse = {
+  configurationHash: '9'.repeat(64),
+  entries: [
+    {
+      id: '00000000-0000-4000-8000-000000000501',
+      isBaseReward: false,
+      position: 0,
+      rarity: 'common',
+      rarityPolicyVersion: 'rarity-v1',
+      rewardVersion: rewardVersion(
+        '00000000-0000-4000-8000-000000000502',
+        'Free Drop reward',
+        'An entitlement-backed reward.',
+      ),
+      weight: '1',
+    },
+  ],
+  manifest: {
+    algorithmVersion: 'hmac-sha256-rejection-v1',
+    boxId: '00000000-0000-4000-8000-000000000503',
+    boxVersionId: '00000000-0000-4000-8000-000000000504',
+    entries: [
+      {
+        boxVersionRewardId: '00000000-0000-4000-8000-000000000501',
+        position: 0,
+        rarity: 'common',
+        rarityPolicyVersion: 'rarity-v1',
+        rewardVersionId: '00000000-0000-4000-8000-000000000502',
+        weight: '1',
+      },
+    ],
+    maxOpeningsPerUser: '3',
+    openingCompatibilityVersion: 'opening-v2',
+    totalWeight: '1',
+  },
+  version: {
+    configurationHash: '9'.repeat(64),
+    createdAt: '2026-09-07T00:00:00.000Z',
+    currency: null,
+    description: 'A free-entry opening-v2 fixture.',
+    id: '00000000-0000-4000-8000-000000000504',
+    imageUrl: null,
+    maxOpeningsPerUser: '3',
+    name: 'Free Drop',
+    openingCompatibilityVersion: 'opening-v2',
+    priceMinor: null,
+    publishedAt: '2026-09-07T00:00:00.000Z',
+    rngAlgorithmVersion: 'hmac-sha256-rejection-v1',
+    state: 'published',
+    totalWeight: '1',
+    updatedAt: '2026-09-07T00:00:00.000Z',
+    versionNumber: 1,
+  },
+};
+
+export const openingV2ResponseFixture: BoxOpeningResponse = {
+  opening: {
+    boxId: openingV2BoxFixture.manifest.boxId,
+    boxVersionId: openingV2BoxFixture.manifest.boxVersionId,
+    entitlement: { maxOpeningsPerUser: '3', remaining: '1', successfulOpenings: '1' },
+    fairness: {
+      clientSeed: currentClientSeedFixture,
+      commitment: currentFairnessFixture.fairness.activeSeedSet.commitment,
+      configurationHash: openingV2BoxFixture.configurationHash,
+      nonce: '0',
+      seedSetId: currentFairnessFixture.fairness.activeSeedSet.id,
+    },
+    fulfillmentStatus: 'pending_fulfillment',
+    id: '00000000-0000-4000-8000-000000000505',
+    openingCompatibilityVersion: 'opening-v2',
+    reward: {
+      id: '00000000-0000-4000-8000-000000000506',
+      imageUrl: null,
+      name: 'Free Drop reward',
+      rarity: 'common',
+      rarityPolicyVersion: 'rarity-v1',
+      rewardVersionId: '00000000-0000-4000-8000-000000000502',
+    },
+  },
+};
+
 export const pendingOpeningProofFixture: OpeningFairnessProofResponse = {
   proof: {
     algorithmVersion: 'hmac-sha256-rejection-v1',

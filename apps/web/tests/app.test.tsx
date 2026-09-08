@@ -21,6 +21,8 @@ import {
   authSessionResponseFixture,
   boxOpeningFixture,
   currentFairnessFixture,
+  openingV2BoxFixture,
+  openingV2ResponseFixture,
   pendingOpeningProofFixture,
   publicCreatorBoxesResponseFixture,
   publicCreatorResponseFixture,
@@ -287,6 +289,109 @@ describe('Phase 14 web shell', () => {
     );
     expect((clientSeedInput as HTMLInputElement).value).toMatch(/^[0-9a-f]{64}$/u);
     expect(clientSeedInput).not.toHaveValue(previousClientSeed);
+  });
+
+  it('opens an opening-v2 Drop without wallet, price, funding, or points language', async () => {
+    const getOpeningEntitlementState = vi.fn(() =>
+      Promise.resolve({
+        entitlement: {
+          available: true,
+          boxId: openingV2BoxFixture.manifest.boxId,
+          consumed: '0',
+          granted: '2',
+          limitReached: false,
+          maxOpeningsPerUser: '3',
+          remaining: '2',
+          successfulOpenings: '0',
+        },
+      }),
+    );
+    const openBox = vi.fn(() => Promise.resolve(openingV2ResponseFixture));
+    const user = userEvent.setup();
+    renderRoute(`/creators/creator-one/boxes/${openingV2BoxFixture.manifest.boxId}`, {
+      api: createTestApiClient({
+        getCreatorBox: () =>
+          Promise.resolve({
+            box: openingV2BoxFixture,
+            creator: publicCreatorResponseFixture.creator,
+          }),
+        getOpeningEntitlementState,
+        getPublishedBoxVersion: () => Promise.resolve(openingV2BoxFixture),
+        openBox,
+      }),
+      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
+    });
+
+    expect(await screen.findByText('2 Drops available')).toBeInTheDocument();
+    expect(screen.queryByText(/wallet balance|fund|\$9\.99|points/iu)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Open Drop' }));
+    const confirmation = await screen.findByRole('heading', { name: 'Open Free Drop?' });
+    const section = confirmation.closest('section');
+    if (section === null) throw new Error('Expected the opening-v2 confirmation section.');
+    expect(within(section).getByText(/uses one available Drop entitlement/iu)).toBeVisible();
+    expect(within(section).queryByText(/deducted from your wallet|\$/iu)).not.toBeInTheDocument();
+    await user.click(within(section).getByRole('button', { name: 'Open Drop' }));
+    await user.click(await screen.findByRole('button', { name: 'Skip to reveal' }));
+    const resultCopy = await screen.findByText(/using one Drop entitlement/iu);
+    const result = resultCopy.closest('section');
+    if (result === null) throw new Error('Expected the opening-v2 result section.');
+    expect(within(result).getByText(/using one Drop entitlement/iu)).toBeInTheDocument();
+    expect(within(result).getByText('1 Drop remaining')).toBeInTheDocument();
+    expect(within(result).queryByText(/points|wallet|\$/iu)).not.toBeInTheDocument();
+    expect(openBox).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    {
+      available: false,
+      label: 'No Drops available',
+      limitReached: false,
+      maxOpeningsPerUser: '3',
+      remaining: '0',
+      successfulOpenings: '0',
+    },
+    {
+      available: true,
+      label: '1 Drop available',
+      limitReached: false,
+      maxOpeningsPerUser: '3',
+      remaining: '1',
+      successfulOpenings: '0',
+    },
+    {
+      available: false,
+      label: "This Drop's personal limit of 3 has been reached.",
+      limitReached: true,
+      maxOpeningsPerUser: '3',
+      remaining: '4',
+      successfulOpenings: '3',
+    },
+  ])('renders opening-v2 availability as $label', async (state) => {
+    renderRoute(`/creators/creator-one/boxes/${openingV2BoxFixture.manifest.boxId}`, {
+      api: createTestApiClient({
+        getCreatorBox: () =>
+          Promise.resolve({
+            box: openingV2BoxFixture,
+            creator: publicCreatorResponseFixture.creator,
+          }),
+        getOpeningEntitlementState: () =>
+          Promise.resolve({
+            entitlement: {
+              ...state,
+              boxId: openingV2BoxFixture.manifest.boxId,
+              consumed: '0',
+              granted: state.remaining,
+            },
+          }),
+      }),
+      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
+    });
+
+    expect(await screen.findByText(state.label)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open Drop' })).toHaveProperty(
+      'disabled',
+      !state.available,
+    );
   });
 
   it('cancels confirmation without submitting an opening', async () => {

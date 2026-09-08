@@ -49,6 +49,7 @@ import type { ClientSeed, RngSeedSetId } from '../src/modules/fairness/fairness.
 import { FairnessConfirmationStaleError } from '../src/modules/fairness/fairness.errors.js';
 import {
   OpeningConfirmationStaleError,
+  OpeningEntitlementRequiredError,
   OpeningRetryableError,
 } from '../src/modules/openings/opening.errors.js';
 import {
@@ -476,6 +477,123 @@ describe('atomic box opening', { concurrent: false }, () => {
     };
   };
 
+  const createOpeningV2Box = async (
+    creatorId: CreatorId,
+    rewardVersionId: RewardVersionId,
+    maxOpeningsPerUser = '10',
+  ): Promise<TestCatalog> => {
+    const ownerId = await creatorOwner(creatorId);
+    const box = await catalog.createBox({
+      actorUserId: ownerId,
+      creatorId,
+      ...parseBoxDraftInput({
+        description: '',
+        maxOpeningsPerUser,
+        name: `Free Drop ${randomUUID()}`,
+        openingCompatibilityVersion: 'opening-v2',
+      }),
+      requestId: randomUUID(),
+    });
+    await catalog.replaceDraftConfiguration({
+      actorUserId: ownerId,
+      boxId: box.id,
+      creatorId,
+      entries: [{ rewardVersionId, weight: 1n as ProbabilityWeight }],
+      expectedRevision: 1,
+      openingCompatibilityVersion: 'opening-v2',
+      requestId: randomUUID(),
+    });
+    const published = await catalog.publishBox({
+      actorUserId: ownerId,
+      boxId: box.id,
+      creatorId,
+      expectedRevision: 2,
+      requestId: randomUUID(),
+    });
+    return {
+      boxId: box.id,
+      boxVersionId: published.version.id,
+      configurationHash: published.configurationHash,
+      rewardVersionId,
+    };
+  };
+
+  const republishOpeningV2Box = async (
+    creatorId: CreatorId,
+    box: TestCatalog,
+    maxOpeningsPerUser = '10',
+  ): Promise<TestCatalog> => {
+    const ownerId = await creatorOwner(creatorId);
+    const current = await catalog.getBox({ actorUserId: ownerId, creatorId }, box.boxId);
+    await catalog.updateBox({
+      actorUserId: ownerId,
+      boxId: box.boxId,
+      creatorId,
+      ...parseBoxDraftInput({
+        description: 'Republished opening-v2 integration fixture.',
+        maxOpeningsPerUser,
+        name: `Republished Free Drop ${randomUUID()}`,
+        openingCompatibilityVersion: 'opening-v2',
+      }),
+      expectedRevision: current.revision,
+      requestId: randomUUID(),
+    });
+    const updated = await catalog.getBox({ actorUserId: ownerId, creatorId }, box.boxId);
+    const published = await catalog.publishBox({
+      actorUserId: ownerId,
+      boxId: box.boxId,
+      creatorId,
+      expectedRevision: updated.revision,
+      requestId: randomUUID(),
+    });
+    return {
+      boxId: box.boxId,
+      boxVersionId: published.version.id,
+      configurationHash: published.configurationHash,
+      rewardVersionId: box.rewardVersionId,
+    };
+  };
+
+  const grantOpeningEntitlement = async (
+    userId: UserId,
+    creatorId: CreatorId,
+    boxId: BoxId,
+    quantity: bigint,
+    sourceIdentity = `r1b-${randomUUID()}`,
+  ): Promise<string> => {
+    const grantId = randomUUID();
+    await adminDatabase.query(
+      `select * from app_private.grant_opening_entitlement(
+         $1, $2, $3, $4, $5, 'r1b_integration', $6, null, 'R1B opening test'
+       )`,
+      [grantId, userId, creatorId, boxId, quantity.toString(), sourceIdentity],
+    );
+    return grantId;
+  };
+
+  const holdOpeningV2Guard = async (userId: UserId, creatorId: CreatorId, boxId: BoxId) => {
+    const started = createDeferred<number>();
+    const release = createDeferred<undefined>();
+    const done = adminDatabase
+      .transaction(async (transaction) => {
+        const pid = await readBackendPid(transaction);
+        await transaction.query(`select app_private.lock_opening_v2_user_box_guard($1, $2, $3)`, [
+          userId,
+          creatorId,
+          boxId,
+        ]);
+        started.resolve(pid);
+        await release.promise;
+        throw new Error('Release the R1B test barrier by rollback.');
+      })
+      .catch(() => undefined);
+    return {
+      blockerPid: await started.promise,
+      done,
+      release: () => release.resolve(undefined),
+    };
+  };
+
   const createWeightedBox = async (
     creatorId: CreatorId,
     entries: readonly {
@@ -542,6 +660,21 @@ describe('atomic box opening', { concurrent: false }, () => {
       userId: user.id,
     });
 
+  const openWith = async (
+    service: OpeningService,
+    user: TestUser,
+    boxId: BoxId,
+    idempotencyKey = `open_${randomUUID()}`,
+  ) =>
+    service.openBox({
+      boxId,
+      clientSeed: user.clientSeed,
+      ...(await openingExpectation(boxId, user)),
+      idempotencyKey,
+      requestId: randomUUID(),
+      userId: user.id,
+    });
+
   interface ClaimedEventRow {
     readonly attemptCount: number;
     readonly claimToken: string;
@@ -591,6 +724,9 @@ describe('atomic box opening', { concurrent: false }, () => {
     const replay = await open(user, box.boxId, key);
     expect(first.replayed).toBe(false);
     expect(replay).toEqual({ ...first, replayed: true });
+    if ('openingCompatibilityVersion' in first.body.opening) {
+      throw new Error('Expected a paid opening-v1 response.');
+    }
     expect(first.body.opening.pointsAwarded).toBe(20);
     expect(first.body.opening.wallet.balanceMinor).toBe('0');
     const proof = await fairness.getOpeningProof(first.body.opening.id);
@@ -604,7 +740,7 @@ describe('atomic box opening', { concurrent: false }, () => {
     });
     expect(proof).not.toHaveProperty('serverSeedHex');
 
-    const persisted = await database.query<{
+    const persisted = await adminDatabase.query<{
       readonly creatorShare: string;
       readonly entrySum: string;
       readonly fee: string;
@@ -690,6 +826,27 @@ describe('atomic box opening', { concurrent: false }, () => {
     );
     const internalOpeningId = internalOpening.rows[0]?.id;
     if (internalOpeningId === undefined) throw new Error('Opening was not persisted.');
+    await expect(
+      database.transaction(async (transaction) => {
+        await transaction.query(
+          `create temporary table r1b_box_open_model_probe
+             (like app.box_opens including defaults including constraints)
+             on commit drop`,
+        );
+        await transaction.query(
+          `insert into r1b_box_open_model_probe
+           select * from app.box_opens where id = $1`,
+          [internalOpeningId],
+        );
+        await transaction.query(
+          `update r1b_box_open_model_probe
+              set points_policy_version = null,
+                  base_points = null,
+                  bonus_points = null,
+                  points_awarded = null`,
+        );
+      }),
+    ).rejects.toMatchObject({ constraint: 'box_opens_model_shape' });
     for (const statement of [
       `update app.box_opens set status = status where id = $1`,
       `update app.reward_wins set status = status where opening_id = $1`,
@@ -709,6 +866,609 @@ describe('atomic box opening', { concurrent: false }, () => {
         userId: user.id,
       }),
     ).rejects.toMatchObject({ name: 'IdempotencyKeyReusedError' });
+  });
+
+  it('opens opening-v2 atomically with one entitlement and no financial or leaderboard effect', async () => {
+    const creatorId = await createCreator();
+    const rewardVersionId = await createReward(creatorId, { mode: 'unlimited' });
+    const box = await createOpeningV2Box(creatorId, rewardVersionId, '3');
+    const user = await createUser('1');
+    await grantOpeningEntitlement(user.id, creatorId, box.boxId, 2n);
+
+    const beforeWallet = await database.query<{
+      readonly balance: string;
+      readonly revision: string;
+    }>(
+      `select available_balance_minor::text as balance, revision::text
+         from app.wallets where user_id = $1 and currency = 'USD'`,
+      [user.id],
+    );
+    const result = await open(user, box.boxId);
+    expect(result.replayed).toBe(false);
+    if (!('openingCompatibilityVersion' in result.body.opening)) {
+      throw new Error('Expected an opening-v2 response.');
+    }
+    expect(result.body.opening).toMatchObject({
+      boxId: box.boxId,
+      boxVersionId: box.boxVersionId,
+      entitlement: { maxOpeningsPerUser: '3', remaining: '1', successfulOpenings: '1' },
+      openingCompatibilityVersion: 'opening-v2',
+      reward: { rewardVersionId },
+    });
+    expect(result.body.opening).not.toHaveProperty('cost');
+    expect(result.body.opening).not.toHaveProperty('pointsAwarded');
+    expect(result.body.opening).not.toHaveProperty('wallet');
+
+    const proof = await fairness.getOpeningProof(result.body.opening.id);
+    expect(proof.manifest).toMatchObject({
+      boxVersionId: box.boxVersionId,
+      maxOpeningsPerUser: '3',
+      openingCompatibilityVersion: 'opening-v2',
+    });
+    const persisted = await adminDatabase.query<{
+      readonly consumptionCount: string;
+      readonly earningCount: string;
+      readonly financialColumnsNull: boolean;
+      readonly ledgerCount: string;
+      readonly model: string;
+      readonly outboxCount: string;
+      readonly pointsColumnsNull: boolean;
+      readonly projectionCount: string;
+    }>(
+      `select opening.opening_compatibility_version as model,
+              num_nonnulls(opening.gross_price_minor, opening.currency,
+                opening.platform_fee_bps, opening.platform_fee_minor,
+                opening.creator_share_minor, opening.earnings_available_at,
+                opening.sale_ledger_transaction_id,
+                opening.allocation_ledger_transaction_id) = 0 as "financialColumnsNull",
+              num_nonnulls(opening.points_policy_version, opening.base_points,
+                opening.bonus_points, opening.points_awarded) = 0 as "pointsColumnsNull",
+              (select count(*)::text from app.opening_entitlement_consumptions c
+                where c.opening_id = opening.id) as "consumptionCount",
+              (select count(*)::text from app.creator_earnings e
+                where e.opening_id = opening.id) as "earningCount",
+              (select count(*)::text from app.ledger_transactions l
+                where l.business_reference_id = opening.id) as "ledgerCount",
+              (select count(*)::text from app.event_outbox e
+                where e.aggregate_id = opening.id) as "outboxCount",
+              (select count(*)::text from app.leaderboard_projection_events p
+                join app.event_outbox e on e.id = p.outbox_event_id
+                where e.aggregate_id = opening.id) as "projectionCount"
+         from app.box_opens as opening where opening.public_id = $1`,
+      [result.body.opening.id],
+    );
+    expect(persisted.rows).toEqual([
+      {
+        consumptionCount: '1',
+        earningCount: '0',
+        financialColumnsNull: true,
+        ledgerCount: '0',
+        model: 'opening-v2',
+        outboxCount: '2',
+        pointsColumnsNull: true,
+        projectionCount: '0',
+      },
+    ]);
+    expect(
+      await database.query(
+        `select available_balance_minor::text as balance, revision::text
+           from app.wallets where user_id = $1 and currency = 'USD'`,
+        [user.id],
+      ),
+    ).toMatchObject({ rows: beforeWallet.rows });
+  });
+
+  it('fails opening-v2 without an entitlement before nonce, history, inventory, or idempotency', async () => {
+    const creatorId = await createCreator();
+    const rewardVersionId = await createReward(creatorId, { mode: 'finite', quantity: '2' });
+    const box = await createOpeningV2Box(creatorId, rewardVersionId);
+    const user = await createUser('1');
+
+    await expect(open(user, box.boxId)).rejects.toBeInstanceOf(OpeningEntitlementRequiredError);
+    const state = await adminDatabase.query<{
+      readonly claims: string;
+      readonly consumptions: string;
+      readonly inventory: string;
+      readonly nonce: string;
+      readonly openings: string;
+    }>(
+      `select
+        (select count(*)::text from app.idempotency_records
+          where actor_user_id = $1 and operation = 'box.open') as claims,
+        (select count(*)::text from app.opening_entitlement_consumptions
+          where user_id = $1 and box_id = $2) as consumptions,
+        (select count(*)::text from app.box_opens where user_id = $1 and box_id = $2) as openings,
+        (select next_nonce::text from app.rng_seed_sets where id = $3) as nonce,
+        (select available_quantity::text from app.inventory_pools
+          where id = (select inventory_pool_id from app.reward_versions where id = $4)) as inventory`,
+      [user.id, box.boxId, user.seedSetId, rewardVersionId],
+    );
+    expect(state.rows).toEqual([
+      { claims: '0', consumptions: '0', inventory: '2', nonce: '0', openings: '0' },
+    ]);
+  });
+
+  it('does not consume entitlements belonging to another user or stable box', async () => {
+    const creatorId = await createCreator();
+    const rewardVersionId = await createReward(creatorId, { mode: 'unlimited' });
+    const box = await createOpeningV2Box(creatorId, rewardVersionId);
+    const otherBox = await createOpeningV2Box(creatorId, rewardVersionId);
+    const user = await createUser('1');
+    const otherUser = await createUser('1');
+    await grantOpeningEntitlement(user.id, creatorId, otherBox.boxId, 1n);
+    await grantOpeningEntitlement(otherUser.id, creatorId, box.boxId, 1n);
+
+    await expect(open(user, box.boxId)).rejects.toBeInstanceOf(OpeningEntitlementRequiredError);
+    const state = await adminDatabase.query<{
+      readonly consumptions: string;
+      readonly nonce: string;
+      readonly openings: string;
+    }>(
+      `select
+         (select count(*)::text from app.opening_entitlement_consumptions
+           where user_id = $1 and box_id = $2) as consumptions,
+         (select next_nonce::text from app.rng_seed_sets where id = $3) as nonce,
+         (select count(*)::text from app.box_opens
+           where user_id = $1 and box_id = $2) as openings`,
+      [user.id, box.boxId, user.seedSetId],
+    );
+    expect(state.rows).toEqual([{ consumptions: '0', nonce: '0', openings: '0' }]);
+  });
+
+  it('retains stable-box entitlements across publication and rejects the stale version first', async () => {
+    const creatorId = await createCreator();
+    const rewardVersionId = await createReward(creatorId, { mode: 'unlimited' });
+    const original = await createOpeningV2Box(creatorId, rewardVersionId, '2');
+    const user = await createUser('1');
+    await grantOpeningEntitlement(user.id, creatorId, original.boxId, 1n);
+    const staleExpectation = await openingExpectation(original.boxId, user);
+    const replacement = await republishOpeningV2Box(creatorId, original, '2');
+    expect(replacement.boxVersionId).not.toBe(original.boxVersionId);
+
+    await expect(
+      openings.openBox({
+        boxId: original.boxId,
+        clientSeed: user.clientSeed,
+        ...staleExpectation,
+        idempotencyKey: `open_${randomUUID()}`,
+        requestId: randomUUID(),
+        userId: user.id,
+      }),
+    ).rejects.toBeInstanceOf(OpeningConfirmationStaleError);
+    expect(
+      (
+        await adminDatabase.query<{
+          readonly claims: string;
+          readonly consumptions: string;
+          readonly nonce: string;
+        }>(
+          `select
+             (select count(*)::text from app.idempotency_records
+               where actor_user_id = $1 and operation = 'box.open') as claims,
+             (select count(*)::text from app.opening_entitlement_consumptions
+               where user_id = $1 and box_id = $2) as consumptions,
+             (select next_nonce::text from app.rng_seed_sets where id = $3) as nonce`,
+          [user.id, original.boxId, user.seedSetId],
+        )
+      ).rows,
+    ).toEqual([{ claims: '0', consumptions: '0', nonce: '0' }]);
+
+    const opened = await open(user, original.boxId);
+    expect(opened.body.opening).toMatchObject({ boxVersionId: replacement.boxVersionId });
+    expect(
+      (
+        await adminDatabase.query<{ readonly consumptions: string }>(
+          `select count(*)::text as consumptions
+             from app.opening_entitlement_consumptions
+            where user_id = $1 and box_id = $2`,
+          [user.id, original.boxId],
+        )
+      ).rows,
+    ).toEqual([{ consumptions: '1' }]);
+  });
+
+  it('rolls back opening-v2 entitlement state when the confirmed fairness seed is stale', async () => {
+    const creatorId = await createCreator();
+    const rewardVersionId = await createReward(creatorId, { mode: 'unlimited' });
+    const box = await createOpeningV2Box(creatorId, rewardVersionId);
+    const user = await createUser('1');
+    await grantOpeningEntitlement(user.id, creatorId, box.boxId, 1n);
+    const staleExpectation = await openingExpectation(box.boxId, user);
+    nextServerSeed = randomBytes(32);
+    const rotated = await fairness.rotate({
+      idempotencyKey: `rotate_${randomUUID()}`,
+      requestId: randomUUID(),
+      userId: user.id,
+    });
+
+    await expect(
+      openings.openBox({
+        boxId: box.boxId,
+        clientSeed: user.clientSeed,
+        ...staleExpectation,
+        idempotencyKey: `open_${randomUUID()}`,
+        requestId: randomUUID(),
+        userId: user.id,
+      }),
+    ).rejects.toBeInstanceOf(FairnessConfirmationStaleError);
+    const state = await adminDatabase.query<{
+      readonly claims: string;
+      readonly consumptions: string;
+      readonly nonce: string;
+      readonly openings: string;
+    }>(
+      `select
+         (select count(*)::text from app.idempotency_records
+           where actor_user_id = $1 and operation = 'box.open') as claims,
+         (select count(*)::text from app.opening_entitlement_consumptions
+           where user_id = $1 and box_id = $2) as consumptions,
+         (select next_nonce::text from app.rng_seed_sets where id = $3) as nonce,
+         (select count(*)::text from app.box_opens
+           where user_id = $1 and box_id = $2) as openings`,
+      [user.id, box.boxId, rotated.newSeedSet.id],
+    );
+    expect(state.rows).toEqual([{ claims: '0', consumptions: '0', nonce: '0', openings: '0' }]);
+  });
+
+  it('enforces the stable-box max before consuming a second entitlement or nonce', async () => {
+    const creatorId = await createCreator();
+    const rewardVersionId = await createReward(creatorId, { mode: 'unlimited' });
+    const box = await createOpeningV2Box(creatorId, rewardVersionId, '1');
+    const user = await createUser('1');
+    await grantOpeningEntitlement(user.id, creatorId, box.boxId, 2n);
+
+    const firstService = createOpeningService({
+      database: firstConcurrencyDatabase,
+      fairnessService: fairness,
+      logger,
+    });
+    const secondService = createOpeningService({
+      database: secondConcurrencyDatabase,
+      fairnessService: fairness,
+      logger,
+    });
+    const firstPid = await readBackendPid(firstConcurrencyDatabase);
+    const secondPid = await readBackendPid(secondConcurrencyDatabase);
+    const barrier = await holdOpeningV2Guard(user.id, creatorId, box.boxId);
+    const first = trackSettlement(openWith(firstService, user, box.boxId));
+    const second = trackSettlement(openWith(secondService, user, box.boxId));
+    expect(await observeBlocking(database, firstPid, barrier.blockerPid, first)).toBe('blocked');
+    expect(await observeBlocking(database, secondPid, barrier.blockerPid, second)).toBe('blocked');
+    barrier.release();
+    await barrier.done;
+    const results = await Promise.all([first, second]);
+    expect(results.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
+    expect(results.find(({ status }) => status === 'rejected')).toMatchObject({
+      reason: { name: 'OpeningLimitReachedError' },
+    });
+    expect(
+      (await openings.getEntitlementState({ boxId: box.boxId, userId: user.id })).entitlement,
+    ).toMatchObject({
+      available: false,
+      consumed: '1',
+      granted: '2',
+      limitReached: true,
+      remaining: '1',
+      successfulOpenings: '1',
+    });
+    expect(
+      (
+        await database.query<{ readonly nonce: string }>(
+          `select next_nonce::text as nonce from app.rng_seed_sets where id = $1`,
+          [user.seedSetId],
+        )
+      ).rows,
+    ).toEqual([{ nonce: '1' }]);
+  });
+
+  it('serializes two opening-v2 commands on one entitlement and preserves deterministic grant order', async () => {
+    const creatorId = await createCreator();
+    const rewardVersionId = await createReward(creatorId, { mode: 'unlimited' });
+    const box = await createOpeningV2Box(creatorId, rewardVersionId, '3');
+    const user = await createUser('1');
+    const firstGrantId = await grantOpeningEntitlement(user.id, creatorId, box.boxId, 1n);
+
+    const firstService = createOpeningService({
+      database: firstConcurrencyDatabase,
+      fairnessService: fairness,
+      logger,
+    });
+    const secondService = createOpeningService({
+      database: secondConcurrencyDatabase,
+      fairnessService: fairness,
+      logger,
+    });
+    const firstPid = await readBackendPid(firstConcurrencyDatabase);
+    const secondPid = await readBackendPid(secondConcurrencyDatabase);
+    const blockerStarted = createDeferred<number>();
+    const releaseBlocker = createDeferred<undefined>();
+    const blocker = adminDatabase
+      .transaction(async (transaction) => {
+        const pid = await readBackendPid(transaction);
+        await transaction.query(`select app_private.lock_opening_v2_user_box_guard($1, $2, $3)`, [
+          user.id,
+          creatorId,
+          box.boxId,
+        ]);
+        blockerStarted.resolve(pid);
+        await releaseBlocker.promise;
+        throw new Error('Release the R1B test barrier by rollback.');
+      })
+      .catch(() => undefined);
+    const blockerPid = await blockerStarted.promise;
+    const firstSettlement = trackSettlement(openWith(firstService, user, box.boxId));
+    const secondSettlement = trackSettlement(openWith(secondService, user, box.boxId));
+    expect(await observeBlocking(database, firstPid, blockerPid, firstSettlement)).toBe('blocked');
+    expect(await observeBlocking(database, secondPid, blockerPid, secondSettlement)).toBe(
+      'blocked',
+    );
+    releaseBlocker.resolve(undefined);
+    await blocker;
+    const outcomes = await Promise.all([firstSettlement, secondSettlement]);
+    expect(outcomes.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.filter(({ status }) => status === 'rejected')).toHaveLength(1);
+    expect(outcomes.find(({ status }) => status === 'rejected')).toMatchObject({
+      reason: { name: 'OpeningEntitlementRequiredError' },
+    });
+    expect(
+      (
+        await adminDatabase.query<{ readonly grantId: string }>(
+          `select grant_id::text as "grantId" from app.opening_entitlement_consumptions
+            where user_id = $1 and box_id = $2`,
+          [user.id, box.boxId],
+        )
+      ).rows,
+    ).toEqual([{ grantId: firstGrantId }]);
+
+    const secondGrantId = await grantOpeningEntitlement(user.id, creatorId, box.boxId, 1n);
+    const thirdGrantId = await grantOpeningEntitlement(user.id, creatorId, box.boxId, 1n);
+    const secondBarrier = await holdOpeningV2Guard(user.id, creatorId, box.boxId);
+    const nextFirst = trackSettlement(openWith(firstService, user, box.boxId));
+    const nextSecond = trackSettlement(openWith(secondService, user, box.boxId));
+    expect(await observeBlocking(database, firstPid, secondBarrier.blockerPid, nextFirst)).toBe(
+      'blocked',
+    );
+    expect(await observeBlocking(database, secondPid, secondBarrier.blockerPid, nextSecond)).toBe(
+      'blocked',
+    );
+    secondBarrier.release();
+    await secondBarrier.done;
+    const remainingOutcomes = await Promise.all([nextFirst, nextSecond]);
+    expect(remainingOutcomes.every(({ status }) => status === 'fulfilled')).toBe(true);
+    const consumedGrantIds = (
+      await adminDatabase.query<{ readonly grantId: string }>(
+        `select grant_id::text as "grantId" from app.opening_entitlement_consumptions
+          where user_id = $1 and box_id = $2 order by created_at, id`,
+        [user.id, box.boxId],
+      )
+    ).rows.map(({ grantId }) => grantId);
+    expect(consumedGrantIds).toEqual([firstGrantId, secondGrantId, thirdGrantId]);
+  });
+
+  it('serializes concurrent opening-v2 idempotent retries into one consumption and replay', async () => {
+    const creatorId = await createCreator();
+    const rewardVersionId = await createReward(creatorId, { mode: 'unlimited' });
+    const box = await createOpeningV2Box(creatorId, rewardVersionId, '2');
+    const user = await createUser('1');
+    await grantOpeningEntitlement(user.id, creatorId, box.boxId, 2n);
+    const key = `opening_${randomUUID()}`;
+    const service = createOpeningService({ database, fairnessService: fairness, logger });
+
+    const results = await Promise.all([
+      openWith(service, user, box.boxId, key),
+      openWith(service, user, box.boxId, key),
+    ]);
+    expect(results.filter(({ replayed }) => replayed)).toHaveLength(1);
+    expect(results[0].body).toEqual(results[1].body);
+    const counts = await adminDatabase.query<{
+      readonly consumptions: string;
+      readonly nonce: string;
+      readonly openings: string;
+      readonly outbox: string;
+    }>(
+      `select
+        (select count(*)::text from app.opening_entitlement_consumptions
+          where user_id = $1 and box_id = $2) as consumptions,
+        (select count(*)::text from app.box_opens where user_id = $1 and box_id = $2) as openings,
+        (select next_nonce::text from app.rng_seed_sets where id = $3) as nonce,
+        (select count(*)::text from app.event_outbox where aggregate_id in (
+          select id from app.box_opens where user_id = $1 and box_id = $2
+        )) as outbox`,
+      [user.id, box.boxId, user.seedSetId],
+    );
+    expect(counts.rows).toEqual([{ consumptions: '1', nonce: '1', openings: '1', outbox: '2' }]);
+  });
+
+  it('rolls back opening-v2 entitlement and nonce after a post-selection failure', async () => {
+    const creatorId = await createCreator();
+    const rewardVersionId = await createReward(creatorId, { mode: 'unlimited' });
+    const box = await createOpeningV2Box(creatorId, rewardVersionId);
+    const user = await createUser('1');
+    await grantOpeningEntitlement(user.id, creatorId, box.boxId, 1n);
+    const failingService = createOpeningService({
+      database,
+      fairnessService: {
+        selectForOpening: async (transaction, input) => {
+          await fairness.selectForOpening(transaction, input);
+          throw new Error('Synthetic post-selection R1B failure.');
+        },
+      },
+      logger,
+    });
+
+    await expect(openWith(failingService, user, box.boxId)).rejects.toThrow(
+      'Synthetic post-selection R1B failure.',
+    );
+    const state = await adminDatabase.query<{
+      readonly claims: string;
+      readonly consumptions: string;
+      readonly nonce: string;
+      readonly openings: string;
+    }>(
+      `select
+        (select count(*)::text from app.idempotency_records
+          where actor_user_id = $1 and operation = 'box.open') as claims,
+        (select count(*)::text from app.opening_entitlement_consumptions
+          where user_id = $1 and box_id = $2) as consumptions,
+        (select count(*)::text from app.box_opens where user_id = $1 and box_id = $2) as openings,
+        (select next_nonce::text from app.rng_seed_sets where id = $3) as nonce`,
+      [user.id, box.boxId, user.seedSetId],
+    );
+    expect(state.rows).toEqual([{ claims: '0', consumptions: '0', nonce: '0', openings: '0' }]);
+  });
+
+  it('replays an opening-v2 historical result after fairness rotation without another use', async () => {
+    const creatorId = await createCreator();
+    const rewardVersionId = await createReward(creatorId, { mode: 'unlimited' });
+    const box = await createOpeningV2Box(creatorId, rewardVersionId, '1');
+    const user = await createUser('1');
+    await grantOpeningEntitlement(user.id, creatorId, box.boxId, 2n);
+    const key = `opening_${randomUUID()}`;
+    const first = await open(user, box.boxId, key);
+    nextServerSeed = randomBytes(32);
+    await fairness.rotate({
+      idempotencyKey: `rotation_${randomUUID()}`,
+      requestId: randomUUID(),
+      userId: user.id,
+    });
+    const replay = await open(user, box.boxId, key);
+    expect(replay).toEqual({ ...first, replayed: true });
+    expect(
+      (
+        await adminDatabase.query<{ readonly consumptions: string; readonly openings: string }>(
+          `select
+            (select count(*)::text from app.opening_entitlement_consumptions
+              where user_id = $1 and box_id = $2) as consumptions,
+            (select count(*)::text from app.box_opens
+              where user_id = $1 and box_id = $2) as openings`,
+          [user.id, box.boxId],
+        )
+      ).rows,
+    ).toEqual([{ consumptions: '1', openings: '1' }]);
+  });
+
+  it('does not serialize opening-v2 guards for different users of the same box', async () => {
+    const creatorId = await createCreator();
+    const rewardVersionId = await createReward(creatorId, { mode: 'unlimited' });
+    const box = await createOpeningV2Box(creatorId, rewardVersionId, '2');
+    const firstUser = await createUser('1');
+    const secondUser = await createUser('1');
+    await grantOpeningEntitlement(firstUser.id, creatorId, box.boxId, 1n);
+    await grantOpeningEntitlement(secondUser.id, creatorId, box.boxId, 1n);
+    const firstService = createOpeningService({
+      database: firstConcurrencyDatabase,
+      fairnessService: fairness,
+      logger,
+    });
+    const secondService = createOpeningService({
+      database: secondConcurrencyDatabase,
+      fairnessService: fairness,
+      logger,
+    });
+    const firstPid = await readBackendPid(firstConcurrencyDatabase);
+    const barrier = await holdOpeningV2Guard(firstUser.id, creatorId, box.boxId);
+    const blockedFirst = trackSettlement(openWith(firstService, firstUser, box.boxId));
+    expect(await observeBlocking(database, firstPid, barrier.blockerPid, blockedFirst)).toBe(
+      'blocked',
+    );
+    const unrelated = await openWith(secondService, secondUser, box.boxId);
+    expect(unrelated.replayed).toBe(false);
+    barrier.release();
+    await barrier.done;
+    expect(await blockedFirst).toMatchObject({ status: 'fulfilled' });
+  });
+
+  it('rolls back the losing opening-v2 entitlement in a final-unit inventory race', async () => {
+    const creatorId = await createCreator();
+    const rewardVersionId = await createReward(creatorId, { mode: 'finite', quantity: '1' });
+    const poolId = await inventoryPoolForVersion(rewardVersionId);
+    const box = await createOpeningV2Box(creatorId, rewardVersionId, '1');
+    const firstUser = await createUser('1');
+    const secondUser = await createUser('1');
+    await grantOpeningEntitlement(firstUser.id, creatorId, box.boxId, 1n);
+    await grantOpeningEntitlement(secondUser.id, creatorId, box.boxId, 1n);
+    const firstService = createOpeningService({
+      database: firstConcurrencyDatabase,
+      fairnessService: fairness,
+      logger,
+    });
+    const secondService = createOpeningService({
+      database: secondConcurrencyDatabase,
+      fairnessService: fairness,
+      logger,
+    });
+    const firstPid = await readBackendPid(firstConcurrencyDatabase);
+    const secondPid = await readBackendPid(secondConcurrencyDatabase);
+    const blockerStarted = createDeferred<number>();
+    const releaseBlocker = createDeferred<undefined>();
+    const blocker = adminDatabase.transaction(async (transaction) => {
+      const pid = await readBackendPid(transaction);
+      await transaction.query(`select id from app.inventory_pools where id = $1 for update`, [
+        poolId,
+      ]);
+      blockerStarted.resolve(pid);
+      await releaseBlocker.promise;
+    });
+    const blockerPid = await blockerStarted.promise;
+    const first = trackSettlement(openWith(firstService, firstUser, box.boxId));
+    const second = trackSettlement(openWith(secondService, secondUser, box.boxId));
+    try {
+      expect(await observeBlocking(database, firstPid, blockerPid, first)).toBe('blocked');
+      expect(await observeBlocking(database, secondPid, blockerPid, second)).toBe('blocked');
+    } finally {
+      releaseBlocker.resolve(undefined);
+    }
+    await blocker;
+    const outcomes = await Promise.all([first, second]);
+    expect(outcomes.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.filter(({ status }) => status === 'rejected')).toHaveLength(1);
+
+    const state = await adminDatabase.query<{
+      readonly consumptions: string;
+      readonly fulfillments: string;
+      readonly inventoryConsumptions: string;
+      readonly nonces: string;
+      readonly openings: string;
+      readonly outbox: string;
+      readonly quantity: string;
+      readonly wins: string;
+    }>(
+      `select
+         (select count(*)::text from app.opening_entitlement_consumptions
+           where user_id = any($1::uuid[]) and box_id = $2) as consumptions,
+         (select count(*)::text from app.box_opens
+           where user_id = any($1::uuid[]) and box_id = $2) as openings,
+         (select count(*)::text from app.reward_wins
+           where user_id = any($1::uuid[]) and opening_id in (
+             select id from app.box_opens where box_id = $2
+           )) as wins,
+         (select count(*)::text from app.fulfillment_obligations
+           where opening_id in (
+             select id from app.box_opens where user_id = any($1::uuid[]) and box_id = $2
+           )) as fulfillments,
+         (select count(*)::text from app.inventory_consumptions
+           where inventory_pool_id = $3) as "inventoryConsumptions",
+         (select sum(next_nonce)::text from app.rng_seed_sets
+           where user_id = any($1::uuid[]) and status = 'active') as nonces,
+         (select count(*)::text from app.event_outbox
+           where aggregate_id in (
+             select id from app.box_opens where user_id = any($1::uuid[]) and box_id = $2
+           )) as outbox,
+         (select available_quantity::text from app.inventory_pools where id = $3) as quantity`,
+      [[firstUser.id, secondUser.id], box.boxId, poolId],
+    );
+    expect(state.rows).toEqual([
+      {
+        consumptions: '1',
+        fulfillments: '1',
+        inventoryConsumptions: '1',
+        nonces: '1',
+        openings: '1',
+        outbox: '2',
+        quantity: '0',
+        wins: '1',
+      },
+    ]);
   });
 
   it('rolls back nonce, idempotency, money, inventory, and history after RNG failure', async () => {
@@ -2176,6 +2936,9 @@ describe('atomic box opening', { concurrent: false }, () => {
 
     const result = await open(user, draft.id);
     expect(result.body.opening.reward.rewardVersionId).toBe(normalRewardVersionId);
+    if ('openingCompatibilityVersion' in result.body.opening) {
+      throw new Error('Expected a paid opening-v1 response.');
+    }
     expect(result.body.opening.pointsAwarded).toBe(5);
     expect(
       (

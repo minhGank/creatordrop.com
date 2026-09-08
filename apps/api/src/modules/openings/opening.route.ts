@@ -2,7 +2,10 @@ import { Router, type Request, type RequestHandler } from 'express';
 import { rateLimit } from 'express-rate-limit';
 
 import { ApiError } from '../../http/errors.js';
-import { createOpeningController } from './opening.controller.js';
+import {
+  createOpeningController,
+  createOpeningEntitlementStateController,
+} from './opening.controller.js';
 import type { OpeningService } from './opening.service.js';
 
 export const createOpeningRouter = (options: {
@@ -28,6 +31,12 @@ export const createOpeningRouter = (options: {
     if (request.actor === undefined) throw new Error('Authenticated opening actor is missing.');
     return request.actor.user.id;
   });
+  router.get(
+    '/boxes/:boxId/opening-entitlement',
+    preAuthenticationLimit,
+    options.authenticate,
+    createOpeningEntitlementStateController(options.service),
+  );
   router.post(
     '/boxes/:boxId/open',
     preAuthenticationLimit,

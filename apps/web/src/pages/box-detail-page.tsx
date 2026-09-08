@@ -8,7 +8,7 @@ import { useApi } from '../api/use-api.js';
 import { useApiResource } from '../api/use-api-resource.js';
 import type { SessionState } from '../auth/session-context-value.js';
 import { useSession } from '../auth/use-session.js';
-import { isOpeningV1Catalog } from '../components/opening-catalog.js';
+import { isOpeningV1Catalog, isOpeningV2Catalog } from '../components/opening-catalog.js';
 import { OpeningExperience } from '../components/opening-experience.js';
 import { ErrorState, LoadingState } from '../components/page-states.js';
 import { formatMinorUnits } from '../formatting/money.js';
@@ -50,7 +50,7 @@ const BoxDetailContent = ({
 }) => {
   const [box, setBox] = useState(initial.box);
   const creator = initial.creator;
-  const openable = isOpeningV1Catalog(box);
+  const openable = isOpeningV1Catalog(box) || isOpeningV2Catalog(box);
   return (
     <article className="page box-detail">
       <Link className="back-link" to={`/creators/${creator.customSlug}`}>
@@ -67,10 +67,10 @@ const BoxDetailContent = ({
               : formatMinorUnits(box.version.priceMinor, box.version.currency)}
           </p>
           <span className={`status-pill ${openable ? 'openable' : 'legacy'}`}>
-            {openable
-              ? 'Opening-compatible'
-              : box.version.openingCompatibilityVersion === 'opening-v2'
-                ? 'Free-entry opening · available after R1B'
+            {isOpeningV2Catalog(box)
+              ? 'Free-entry opening'
+              : openable
+                ? 'Opening-compatible'
                 : 'Legacy version · cannot be opened'}
           </span>
         </div>
@@ -128,7 +128,7 @@ const BoxDetailContent = ({
         </ol>
       </section>
 
-      {isOpeningV1Catalog(box) ? (
+      {isOpeningV1Catalog(box) || isOpeningV2Catalog(box) ? (
         <OpeningExperience
           api={api}
           box={box}

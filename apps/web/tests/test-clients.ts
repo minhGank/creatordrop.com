@@ -35,6 +35,21 @@ export const createTestApiClient = (
       Promise.resolve({ box: publishedBoxFixture, creator: publicCreatorResponseFixture.creator })),
   getOpeningFairnessProof:
     overrides.getOpeningFairnessProof ?? (() => Promise.resolve(pendingOpeningProofFixture)),
+  getOpeningEntitlementState:
+    overrides.getOpeningEntitlementState ??
+    (() =>
+      Promise.resolve({
+        entitlement: {
+          available: false,
+          boxId: publishedBoxFixture.manifest.boxId,
+          consumed: '0',
+          granted: '0',
+          limitReached: false,
+          maxOpeningsPerUser: '1',
+          remaining: '0',
+          successfulOpenings: '0',
+        },
+      })),
   getPublishedBoxVersion:
     overrides.getPublishedBoxVersion ?? (() => Promise.resolve(publishedBoxFixture)),
   listCreatorBoxes:

@@ -5,6 +5,7 @@ import { Link } from 'react-router-dom';
 import type {
   BoxOpeningResponse,
   CurrentFairnessResponse,
+  OpeningV2EntitlementStateContract,
   OpeningFairnessProofResponse,
   PublishedBoxVersionResponse,
   RewardRarity,
@@ -21,7 +22,7 @@ import { usePrefersReducedMotion } from '../accessibility/use-prefers-reduced-mo
 import type { SessionState } from '../auth/session-context-value.js';
 import { formatMinorUnits } from '../formatting/money.js';
 import { formatProbability } from '../formatting/probability.js';
-import { isOpeningV1Catalog, type OpeningV1Catalog } from './opening-catalog.js';
+import { isOpeningV1Catalog, isOpeningV2Catalog, type OpeningCatalog } from './opening-catalog.js';
 import { calculateReelWinnerTranslation } from './reel-geometry.js';
 
 type Opening = BoxOpeningResponse['opening'];
@@ -110,8 +111,21 @@ const generateClientSeed = (): string => {
 const catalogMatchesOpening = (
   catalog: PublishedBoxVersionResponse,
   opening: Opening,
-): catalog is OpeningV1Catalog => {
-  if (!isOpeningV1Catalog(catalog)) return false;
+): catalog is OpeningCatalog => {
+  if ('openingCompatibilityVersion' in opening) {
+    if (!isOpeningV2Catalog(catalog)) return false;
+    if (catalog.version.maxOpeningsPerUser !== opening.entitlement.maxOpeningsPerUser) return false;
+  } else {
+    if (!isOpeningV1Catalog(catalog)) return false;
+    if (
+      catalog.version.priceMinor !== opening.cost.priceMinor ||
+      catalog.version.currency !== opening.cost.currency ||
+      catalog.manifest.priceMinor !== opening.cost.priceMinor ||
+      catalog.manifest.currency !== opening.cost.currency
+    ) {
+      return false;
+    }
+  }
   if (
     catalog.manifest.boxId !== opening.boxId ||
     catalog.manifest.boxVersionId !== opening.boxVersionId ||
@@ -119,10 +133,6 @@ const catalogMatchesOpening = (
     catalog.configurationHash !== opening.fairness.configurationHash ||
     catalog.version.configurationHash !== opening.fairness.configurationHash ||
     catalog.version.state !== 'published' ||
-    catalog.version.priceMinor !== opening.cost.priceMinor ||
-    catalog.version.currency !== opening.cost.currency ||
-    catalog.manifest.priceMinor !== opening.cost.priceMinor ||
-    catalog.manifest.currency !== opening.cost.currency ||
     catalog.version.totalWeight !== catalog.manifest.totalWeight ||
     catalog.entries.length !== catalog.manifest.entries.length
   ) {
@@ -269,7 +279,7 @@ export const OpeningExperience = ({
   session,
 }: {
   readonly api: CreatorDropApiClient;
-  readonly box: OpeningV1Catalog;
+  readonly box: OpeningCatalog;
   readonly customSlug: string;
   readonly onCatalogChange: (catalog: PublishedBoxVersionResponse) => void;
   readonly session: SessionState;
@@ -277,8 +287,9 @@ export const OpeningExperience = ({
   const reducedMotion = usePrefersReducedMotion();
   const [stage, setStage] = useState<Stage>('idle');
   const [opening, setOpening] = useState<Opening>();
-  const [confirmationCatalog, setConfirmationCatalog] = useState<OpeningV1Catalog>();
-  const [committedCatalog, setCommittedCatalog] = useState<OpeningV1Catalog>();
+  const [confirmationCatalog, setConfirmationCatalog] = useState<OpeningCatalog>();
+  const [committedCatalog, setCommittedCatalog] = useState<OpeningCatalog>();
+  const [entitlementState, setEntitlementState] = useState<OpeningV2EntitlementStateContract>();
   const [error, setError] = useState<string>();
   const [resultError, setResultError] = useState<string>();
   const [clientSeed, setClientSeed] = useState<string>();
@@ -294,6 +305,14 @@ export const OpeningExperience = ({
   const confirming = useRef(false);
   const preparingConfirmation = useRef(false);
   const recovered = useRef(false);
+  const entitlementAvailability =
+    entitlementState === undefined
+      ? 'Checking Drop availability…'
+      : entitlementState.limitReached
+        ? `This Drop's personal limit of ${entitlementState.maxOpeningsPerUser} has been reached.`
+        : entitlementState.remaining === '0'
+          ? 'No Drops available'
+          : `${entitlementState.remaining} ${entitlementState.remaining === '1' ? 'Drop' : 'Drops'} available`;
 
   const loadOrInitializeFairness = useCallback(async () => {
     let fairness: CurrentFairnessResponse;
@@ -354,18 +373,45 @@ export const OpeningExperience = ({
     throw new Error('Fairness setup changed repeatedly. Review it and try again.');
   }, [api]);
 
-  const loadCurrentCatalog = useCallback(async (): Promise<OpeningV1Catalog> => {
+  const loadCurrentCatalog = useCallback(async (): Promise<OpeningCatalog> => {
     const current = await api.getCreatorBox(customSlug, box.manifest.boxId);
     if (
       current.creator.customSlug !== customSlug ||
-      current.box.manifest.boxId !== box.manifest.boxId ||
-      !isOpeningV1Catalog(current.box)
+      current.box.manifest.boxId !== box.manifest.boxId
     ) {
+      throw new Error('The current box version is not available for opening.');
+    }
+    if (isOpeningV2Catalog(box)) {
+      if (!isOpeningV2Catalog(current.box)) {
+        throw new Error('The current box version is not available for opening.');
+      }
+      onCatalogChange(current.box);
+      return current.box;
+    }
+    if (!isOpeningV1Catalog(current.box)) {
       throw new Error('The current box version is not available for opening.');
     }
     onCatalogChange(current.box);
     return current.box;
-  }, [api, box.manifest.boxId, customSlug, onCatalogChange]);
+  }, [api, box, customSlug, onCatalogChange]);
+
+  useEffect(() => {
+    if (!isOpeningV2Catalog(box) || session.status !== 'authenticated') {
+      return;
+    }
+    let current = true;
+    void api
+      .getOpeningEntitlementState(box.manifest.boxId)
+      .then(({ entitlement }) => {
+        if (current) setEntitlementState(entitlement);
+      })
+      .catch(() => {
+        if (current) setEntitlementState(undefined);
+      });
+    return () => {
+      current = false;
+    };
+  }, [api, box, session.status]);
 
   const resolveCommittedCatalog = useCallback(
     async (committedOpening: Opening, forceFetch = false): Promise<void> => {
@@ -417,6 +463,12 @@ export const OpeningExperience = ({
           response.opening.fairness.commitment !== pending.expectedServerSeedCommitment
         ) {
           throw new Error('The committed opening did not match the confirmed fairness seed.');
+        }
+        if ('openingCompatibilityVersion' in response.opening) {
+          void api
+            .getOpeningEntitlementState(response.opening.boxId)
+            .then(({ entitlement }) => setEntitlementState(entitlement))
+            .catch(() => setEntitlementState(undefined));
         }
         setOpening(response.opening);
         await resolveCommittedCatalog(response.opening);
@@ -688,7 +740,11 @@ export const OpeningExperience = ({
     if (session.status !== 'authenticated') {
       return (
         <section className="opening-callout">
-          <p>Sign in to spend wallet balance and open this box.</p>
+          <p>
+            {isOpeningV2Catalog(box)
+              ? 'Sign in to use an available Drop entitlement.'
+              : 'Sign in to spend wallet balance and open this box.'}
+          </p>
           <Link className="button primary" to="/auth">
             Sign in to open
           </Link>
@@ -698,13 +754,25 @@ export const OpeningExperience = ({
     return (
       <section className="opening-callout">
         <p>The result is committed by the backend before the reveal animation begins.</p>
+        {isOpeningV2Catalog(box) ? (
+          <p>
+            <strong>{entitlementAvailability}</strong>
+            {entitlementState === undefined || entitlementState.limitReached
+              ? null
+              : ` · ${entitlementState.successfulOpenings} of ${entitlementState.maxOpeningsPerUser} opened`}
+          </p>
+        ) : null}
         {error === undefined ? null : (
           <p className="inline-error" role="alert">
             {error}
           </p>
         )}
-        <button className="button primary" onClick={() => void beginConfirmation()}>
-          Open this box
+        <button
+          className="button primary"
+          disabled={isOpeningV2Catalog(box) && !entitlementState?.available}
+          onClick={() => void beginConfirmation()}
+        >
+          {isOpeningV2Catalog(box) ? 'Open Drop' : 'Open this box'}
         </button>
       </section>
     );
@@ -714,7 +782,11 @@ export const OpeningExperience = ({
     return (
       <section className="opening-dialog">
         <p className="eyebrow">Preparing confirmation</p>
-        <p role="status">Checking the current authoritative box version and price…</p>
+        <p role="status">
+          {isOpeningV2Catalog(box)
+            ? 'Checking the current authoritative box version and entitlement…'
+            : 'Checking the current authoritative box version and price…'}
+        </p>
       </section>
     );
   }
@@ -726,15 +798,23 @@ export const OpeningExperience = ({
         <h2 id="opening-confirm-heading" ref={confirmationHeading} tabIndex={-1}>
           Open {confirmationCatalog.version.name}?
         </h2>
-        <p className="opening-confirmation-price">
-          {formatMinorUnits(
-            confirmationCatalog.version.priceMinor,
-            confirmationCatalog.version.currency,
-          )}
-        </p>
-        <p className="opening-confirmation-charge">
-          This amount will be deducted from your wallet.
-        </p>
+        {isOpeningV1Catalog(confirmationCatalog) ? (
+          <>
+            <p className="opening-confirmation-price">
+              {formatMinorUnits(
+                confirmationCatalog.version.priceMinor,
+                confirmationCatalog.version.currency,
+              )}
+            </p>
+            <p className="opening-confirmation-charge">
+              This amount will be deducted from your wallet.
+            </p>
+          </>
+        ) : (
+          <p className="opening-confirmation-charge">
+            This uses one available Drop entitlement. It does not charge your wallet.
+          </p>
+        )}
         <details className="opening-confirmation-fairness">
           <summary>
             <span className="opening-confirmation-fairness-status">
@@ -796,7 +876,11 @@ export const OpeningExperience = ({
             disabled={stage === 'submitting' || !/^[0-9a-f]{64}$/u.test(clientSeed ?? '')}
             onClick={() => void confirm()}
           >
-            {stage === 'submitting' ? 'Committing opening…' : 'Open box'}
+            {stage === 'submitting'
+              ? 'Committing opening…'
+              : isOpeningV2Catalog(confirmationCatalog)
+                ? 'Open Drop'
+                : 'Open box'}
           </button>
           <button
             className="button secondary"
@@ -912,8 +996,16 @@ export const OpeningExperience = ({
       <p className="rarity-name">{rarityLabel(winnerEntry.rarity)}</p>
       <p>
         Opened {committedCatalog.version.name}, published version{' '}
-        {committedCatalog.version.versionNumber.toString()}, for{' '}
-        <strong>{formatMinorUnits(opening.cost.priceMinor, opening.cost.currency)}</strong>.
+        {committedCatalog.version.versionNumber.toString()}
+        {'cost' in opening ? (
+          <>
+            , for{' '}
+            <strong>{formatMinorUnits(opening.cost.priceMinor, opening.cost.currency)}</strong>
+          </>
+        ) : (
+          <> using one Drop entitlement</>
+        )}
+        .
       </p>
       <p>
         Exact odds:{' '}
@@ -923,8 +1015,20 @@ export const OpeningExperience = ({
         ({winnerEntry.weight} / {committedCatalog.manifest.totalWeight})
       </p>
       <p>
-        <strong>+{opening.pointsAwarded.toString()} points</strong> · Fulfillment:{' '}
-        {opening.fulfillmentStatus.replaceAll('_', ' ')}
+        {'pointsAwarded' in opening ? (
+          <>
+            <strong>+{opening.pointsAwarded.toString()} points</strong> ·{' '}
+          </>
+        ) : (
+          <>
+            <strong>
+              {opening.entitlement.remaining}{' '}
+              {opening.entitlement.remaining === '1' ? 'Drop' : 'Drops'} remaining
+            </strong>{' '}
+            ·{' '}
+          </>
+        )}
+        Fulfillment: {opening.fulfillmentStatus.replaceAll('_', ' ')}
       </p>
       <FairnessProof api={api} opening={opening} />
       <button

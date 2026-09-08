@@ -25,6 +25,7 @@ interface CatalogHeaderRow {
   readonly configurationHash: unknown;
   readonly creatorId: unknown;
   readonly currency: unknown;
+  readonly maxOpeningsPerUser: unknown;
   readonly openingCompatibilityVersion: unknown;
   readonly priceMinor: unknown;
   readonly rngAlgorithmVersion: unknown;
@@ -76,10 +77,11 @@ export interface OpeningCatalog {
   readonly boxVersionId: BoxVersionId;
   readonly configurationHash: string;
   readonly creatorId: CreatorId;
-  readonly currency: Currency;
+  readonly currency: Currency | null;
   readonly entries: readonly OpeningCatalogEntry[];
-  readonly openingCompatibilityVersion: string | null;
-  readonly priceMinor: MoneyMinor;
+  readonly maxOpeningsPerUser: string | null;
+  readonly openingCompatibilityVersion: 'opening-v1' | 'opening-v2' | null;
+  readonly priceMinor: MoneyMinor | null;
   readonly rngAlgorithmVersion: string;
   readonly totalWeight: string;
 }
@@ -93,7 +95,12 @@ export interface LockedInventoryPool {
 
 export interface OpeningHistoryInsert {
   readonly allocationLedgerTransactionId: LedgerTransactionId;
-  readonly catalog: OpeningCatalog;
+  readonly catalog: OpeningCatalog & {
+    readonly currency: Currency;
+    readonly maxOpeningsPerUser: null;
+    readonly openingCompatibilityVersion: 'opening-v1';
+    readonly priceMinor: MoneyMinor;
+  };
   readonly creatorShareMinor: MoneyMinor;
   readonly earningsAvailableAt: string;
   readonly fulfillmentId: string;
@@ -113,6 +120,64 @@ export interface OpeningHistoryInsert {
   readonly userId: UserId;
   readonly creatorEarningId: string;
   readonly createdAt: string;
+}
+
+export interface OpeningV2HistoryInsert {
+  readonly catalog: OpeningCatalog & {
+    readonly currency: null;
+    readonly maxOpeningsPerUser: string;
+    readonly openingCompatibilityVersion: 'opening-v2';
+    readonly priceMinor: null;
+  };
+  readonly createdAt: string;
+  readonly fulfillmentId: string;
+  readonly fulfillmentStatus: FulfillmentStatus;
+  readonly idempotencyRecordId: IdempotencyRecordId;
+  readonly inventoryPoolId: InventoryPoolId | null;
+  readonly openingId: OpeningId;
+  readonly outboxPrivateId: string;
+  readonly outboxPublicId: string;
+  readonly publicId: string;
+  readonly rewardWinId: string;
+  readonly selectedEntry: OpeningCatalogEntry;
+  readonly selection: OpeningFairnessSelection;
+  readonly userId: UserId;
+}
+
+interface EntitlementConsumptionRow {
+  readonly maxOpeningsPerUser: unknown;
+  readonly outcome: unknown;
+  readonly remainingEntitlements: unknown;
+  readonly successfulOpenings: unknown;
+}
+
+export interface OpeningV2EntitlementConsumption {
+  readonly maxOpeningsPerUser: string;
+  readonly outcome: 'consumed' | 'entitlement_required' | 'max_reached';
+  readonly remainingEntitlements: string;
+  readonly successfulOpenings: string;
+}
+
+interface EntitlementStateRow {
+  readonly available: unknown;
+  readonly boxId: unknown;
+  readonly consumed: unknown;
+  readonly granted: unknown;
+  readonly limitReached: unknown;
+  readonly maxOpeningsPerUser: unknown;
+  readonly remaining: unknown;
+  readonly successfulOpenings: unknown;
+}
+
+export interface OpeningV2EntitlementState {
+  readonly available: boolean;
+  readonly boxId: BoxId;
+  readonly consumed: string;
+  readonly granted: string;
+  readonly limitReached: boolean;
+  readonly maxOpeningsPerUser: string;
+  readonly remaining: string;
+  readonly successfulOpenings: string;
 }
 
 const requiredString = (value: unknown, label: string): string => {
@@ -143,6 +208,11 @@ const requiredNumber = (value: unknown, label: string): number => {
   return value;
 };
 
+const requiredBoolean = (value: unknown, label: string): boolean => {
+  if (typeof value !== 'boolean') throw new Error(`Database returned an invalid ${label}.`);
+  return value;
+};
+
 const requiredHex256 = (value: unknown, label: string): string => {
   const parsed = requiredString(value, label);
   if (!/^[0-9a-f]{64}$/u.test(parsed)) throw new Error(`Database returned an invalid ${label}.`);
@@ -170,6 +240,7 @@ export const findOpeningCatalog = async (
             box.creator_id::text as "creatorId", version.id::text as "boxVersionId",
             version.opening_compatibility_version as "openingCompatibilityVersion",
             version.price_minor::text as "priceMinor", version.currency::text as currency,
+            version.max_openings_per_user::text as "maxOpeningsPerUser",
             version.total_weight::text as "totalWeight",
             encode(version.configuration_hash, 'hex') as "configurationHash",
             version.rng_algorithm_version as "rngAlgorithmVersion"
@@ -247,19 +318,32 @@ export const findOpeningCatalog = async (
       weight: requiredBigint(row.weight, 'reward weight').toString(),
     };
   });
+  const openingCompatibilityVersion = nullableOneOf(
+    header.openingCompatibilityVersion,
+    ['opening-v1', 'opening-v2'] as const,
+    'opening compatibility version',
+  );
+  const isVersionTwo = openingCompatibilityVersion === 'opening-v2';
+  if (
+    isVersionTwo
+      ? header.currency !== null || header.priceMinor !== null || header.maxOpeningsPerUser === null
+      : header.currency === null || header.priceMinor === null || header.maxOpeningsPerUser !== null
+  ) {
+    throw new Error('Database returned an invalid opening model shape.');
+  }
   return {
     boxId: requiredUuid(header.boxId, 'box ID') as BoxId,
     boxStatus: boxStatus as OpeningCatalog['boxStatus'],
     boxVersionId,
     configurationHash: requiredHex256(header.configurationHash, 'configuration hash'),
     creatorId: requiredUuid(header.creatorId, 'creator ID') as CreatorId,
-    currency: parseCurrency(header.currency),
+    currency: isVersionTwo ? null : parseCurrency(header.currency),
     entries,
-    openingCompatibilityVersion:
-      header.openingCompatibilityVersion === null
-        ? null
-        : requiredString(header.openingCompatibilityVersion, 'opening compatibility version'),
-    priceMinor: toMoneyMinor(requiredBigint(header.priceMinor, 'box price')),
+    maxOpeningsPerUser: isVersionTwo
+      ? requiredBigint(header.maxOpeningsPerUser, 'maximum openings per user').toString()
+      : null,
+    openingCompatibilityVersion,
+    priceMinor: isVersionTwo ? null : toMoneyMinor(requiredBigint(header.priceMinor, 'box price')),
     rngAlgorithmVersion: requiredString(header.rngAlgorithmVersion, 'RNG algorithm version'),
     totalWeight: requiredBigint(header.totalWeight, 'total weight').toString(),
   };
@@ -360,6 +444,87 @@ export const lockLeaderboardSeasonForOpening = async (
   return requiredUuid(seasonId, 'leaderboard season ID');
 };
 
+export const consumeOpeningV2Entitlement = async (
+  transaction: TransactionExecutor,
+  input: {
+    readonly boxId: BoxId;
+    readonly boxVersionId: BoxVersionId;
+    readonly configurationHash: string;
+    readonly consumptionId: string;
+    readonly creatorId: CreatorId;
+    readonly openingId: OpeningId;
+    readonly userId: UserId;
+  },
+): Promise<OpeningV2EntitlementConsumption> => {
+  assertTransactionExecutor(transaction);
+  const result = await transaction.query<EntitlementConsumptionRow>(
+    `select outcome,
+            max_openings_per_user as "maxOpeningsPerUser",
+            successful_openings as "successfulOpenings",
+            remaining_entitlements as "remainingEntitlements"
+       from app.consume_opening_v2_entitlement(
+         $1, $2, $3, $4, $5, $6, decode($7, 'hex')
+       )`,
+    [
+      input.consumptionId,
+      input.openingId,
+      input.userId,
+      input.creatorId,
+      input.boxId,
+      input.boxVersionId,
+      input.configurationHash,
+    ],
+  );
+  const row = result.rows[0];
+  if (row === undefined) throw new Error('Database did not return an entitlement outcome.');
+  const outcome = requiredString(row.outcome, 'entitlement outcome');
+  if (!['consumed', 'entitlement_required', 'max_reached'].includes(outcome)) {
+    throw new Error('Database returned an invalid entitlement outcome.');
+  }
+  return {
+    maxOpeningsPerUser: requiredBigint(
+      row.maxOpeningsPerUser,
+      'maximum openings per user',
+    ).toString(),
+    outcome: outcome as OpeningV2EntitlementConsumption['outcome'],
+    remainingEntitlements: requiredBigint(
+      row.remainingEntitlements,
+      'remaining entitlements',
+    ).toString(),
+    successfulOpenings: requiredBigint(row.successfulOpenings, 'successful openings').toString(),
+  };
+};
+
+export const readOpeningV2EntitlementState = async (
+  executor: QueryExecutor,
+  userId: UserId,
+  boxId: BoxId,
+): Promise<OpeningV2EntitlementState | undefined> => {
+  const result = await executor.query<EntitlementStateRow>(
+    `select box_id::text as "boxId",
+            max_openings_per_user as "maxOpeningsPerUser",
+            successful_openings as "successfulOpenings",
+            granted, consumed, remaining, available, limit_reached as "limitReached"
+       from app.read_opening_v2_entitlement_state($1, $2)`,
+    [userId, boxId],
+  );
+  const row = result.rows[0];
+  if (row === undefined) return undefined;
+  return {
+    available: requiredBoolean(row.available, 'entitlement availability'),
+    boxId: requiredUuid(row.boxId, 'entitlement box ID') as BoxId,
+    consumed: requiredBigint(row.consumed, 'consumed entitlements').toString(),
+    granted: requiredBigint(row.granted, 'granted entitlements').toString(),
+    limitReached: requiredBoolean(row.limitReached, 'opening limit state'),
+    maxOpeningsPerUser: requiredBigint(
+      row.maxOpeningsPerUser,
+      'maximum openings per user',
+    ).toString(),
+    remaining: requiredBigint(row.remaining, 'remaining entitlements').toString(),
+    successfulOpenings: requiredBigint(row.successfulOpenings, 'successful openings').toString(),
+  };
+};
+
 export const insertOpeningHistory = async (
   transaction: TransactionExecutor,
   input: OpeningHistoryInsert,
@@ -454,6 +619,111 @@ export const insertOpeningHistory = async (
       input.creatorShareMinor.toString(),
       input.catalog.currency,
       input.earningsAvailableAt,
+      input.createdAt,
+    ],
+  );
+  await transaction.query(
+    `insert into app.event_outbox (
+       id, aggregate_type, aggregate_id, event_type, audience, payload, occurred_at, created_at
+     ) values ($1, 'box_open', $2, 'opening.completed.v1', 'private', $3::jsonb, $4, $4)`,
+    [
+      input.outboxPrivateId,
+      input.openingId,
+      JSON.stringify({
+        boxId: input.catalog.boxId,
+        boxVersionId: input.catalog.boxVersionId,
+        creatorId: input.catalog.creatorId,
+        openingId: input.openingId,
+        rewardVersionId: input.selectedEntry.rewardVersionId,
+        userId: input.userId,
+      }),
+      input.createdAt,
+    ],
+  );
+  await transaction.query(
+    `insert into app.event_outbox (
+       id, aggregate_type, aggregate_id, event_type, audience, payload, occurred_at, created_at
+     ) values ($1, 'box_open', $2, 'drop.created.v1', 'public', $3::jsonb, $4, $4)`,
+    [
+      input.outboxPublicId,
+      input.openingId,
+      JSON.stringify({
+        boxId: input.catalog.boxId,
+        creatorId: input.catalog.creatorId,
+        openingId: input.publicId,
+        reward: {
+          imageUrl: input.selectedEntry.imageUrl,
+          name: input.selectedEntry.name,
+          rewardId: input.selectedEntry.rewardId,
+        },
+      }),
+      input.createdAt,
+    ],
+  );
+};
+
+export const insertOpeningV2History = async (
+  transaction: TransactionExecutor,
+  input: OpeningV2HistoryInsert,
+): Promise<void> => {
+  assertTransactionExecutor(transaction);
+  await transaction.query(
+    `insert into app.box_opens (
+       id, public_id, user_id, creator_id, box_id, box_version_id,
+       selected_box_version_reward_id, reward_version_id, inventory_pool_id,
+       rng_seed_set_id, nonce, client_seed, server_seed_commitment,
+       rng_algorithm_version, rng_digest, rng_selection, rng_selection_round,
+       configuration_hash, idempotency_record_id, opening_compatibility_version, created_at
+     ) values (
+       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+       decode($13, 'hex'), $14, decode($15, 'hex'), $16, $17,
+       decode($18, 'hex'), $19, 'opening-v2', $20
+     )`,
+    [
+      input.openingId,
+      input.publicId,
+      input.userId,
+      input.catalog.creatorId,
+      input.catalog.boxId,
+      input.catalog.boxVersionId,
+      input.selectedEntry.id,
+      input.selectedEntry.rewardVersionId,
+      input.inventoryPoolId,
+      input.selection.seedSetId,
+      input.selection.nonce.toString(),
+      input.selection.clientSeed,
+      input.selection.serverSeedCommitment,
+      input.selection.algorithmVersion,
+      input.selection.acceptedDigestHex,
+      input.selection.selectionValue.toString(),
+      input.selection.acceptedRound.toString(),
+      input.catalog.configurationHash,
+      input.idempotencyRecordId,
+      input.createdAt,
+    ],
+  );
+  await transaction.query(
+    `insert into app.reward_wins (
+       id, opening_id, user_id, creator_id, reward_version_id, created_at
+     ) values ($1, $2, $3, $4, $5, $6)`,
+    [
+      input.rewardWinId,
+      input.openingId,
+      input.userId,
+      input.catalog.creatorId,
+      input.selectedEntry.rewardVersionId,
+      input.createdAt,
+    ],
+  );
+  await transaction.query(
+    `insert into app.fulfillment_obligations (
+       id, opening_id, reward_win_id, status, created_at
+     ) values ($1, $2, $3, $4, $5)`,
+    [
+      input.fulfillmentId,
+      input.openingId,
+      input.rewardWinId,
+      input.fulfillmentStatus,
       input.createdAt,
     ],
   );

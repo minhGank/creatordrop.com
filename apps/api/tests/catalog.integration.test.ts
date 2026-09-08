@@ -718,6 +718,25 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
     expect((await readEntitlementState(otherUser.userId)).rows).toEqual([
       { boxId: draft.id, consumed: '0', granted: '0', remaining: '0' },
     ]);
+    for (const suffix of ['one', 'two']) {
+      await entitlementOperator.grant({
+        ...grantInput,
+        grantId: uuidv7(),
+        grantedByUserId: null,
+        quantity: 9_223_372_036_854_775_807n,
+        reason: 'R1B numeric aggregate regression',
+        sourceIdentity: `${sourceIdentity}-max-${suffix}`,
+        userId: otherUser.userId,
+      });
+    }
+    expect((await readEntitlementState(otherUser.userId)).rows).toEqual([
+      {
+        boxId: draft.id,
+        consumed: '0',
+        granted: '18446744073709551614',
+        remaining: '18446744073709551614',
+      },
+    ]);
 
     await expect(
       applicationDatabase.query(
@@ -749,19 +768,6 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
       ),
     ).rejects.toThrow(/permission denied/iu);
 
-    const openingId = uuidv7();
-    await migrationDatabase.query(
-      `insert into app.opening_entitlement_consumptions (
-         id,grant_id,user_id,creator_id,box_id,opening_id
-       ) values ($1,$2,$3,$4,$5,$6)`,
-      [uuidv7(), firstGrantId, owner.userId, creator.id, draft.id, openingId],
-    );
-    await migrationDatabase.query(
-      `insert into app.opening_entitlement_consumptions (
-         id,grant_id,user_id,creator_id,box_id,opening_id
-       ) values ($1,$2,$3,$4,$5,$6)`,
-      [uuidv7(), firstGrantId, owner.userId, creator.id, draft.id, uuidv7()],
-    );
     await expect(
       migrationDatabase.query(
         `insert into app.opening_entitlement_consumptions (
@@ -769,11 +775,11 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
          ) values ($1,$2,$3,$4,$5,$6)`,
         [uuidv7(), firstGrantId, owner.userId, creator.id, draft.id, uuidv7()],
       ),
-    ).rejects.toThrow(/cannot be over-consumed/iu);
+    ).rejects.toThrow(/opening_scope_fk/iu);
     expect((await readEntitlementState(owner.userId)).rows[0]).toMatchObject({
-      consumed: '2',
+      consumed: '0',
       granted: '3',
-      remaining: '1',
+      remaining: '3',
     });
     const secondGrant = await entitlementOperator.grant({
       ...grantInput,
@@ -784,9 +790,9 @@ describe('box and reward catalog publication', { concurrent: false }, () => {
     });
     expect(secondGrant).toMatchObject({ replayed: false });
     expect((await readEntitlementState(owner.userId)).rows[0]).toMatchObject({
-      consumed: '2',
+      consumed: '0',
       granted: '4',
-      remaining: '2',
+      remaining: '4',
     });
     await expect(
       migrationDatabase.query(

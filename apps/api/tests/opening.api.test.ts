@@ -1,6 +1,8 @@
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 
+import type { BoxOpeningResponse, OpeningV2EntitlementStateResponse } from '@creatordrop/contracts';
+
 import type { OpeningService } from '../src/modules/openings/opening.service.js';
 import { FairnessConfirmationStaleError } from '../src/modules/fairness/fairness.errors.js';
 import { OpeningConfirmationStaleError } from '../src/modules/openings/opening.errors.js';
@@ -14,6 +16,12 @@ const expectedServerSeedCommitment = '22'.repeat(32);
 const clientSeed = 'ab'.repeat(32);
 
 describe('box opening API boundary', () => {
+  const openingService = (openBox: OpeningService['openBox']): OpeningService => ({
+    getEntitlementState: vi
+      .fn<OpeningService['getEntitlementState']>()
+      .mockRejectedValue(new Error('Entitlement state was not configured for this test.')),
+    openBox,
+  });
   it('derives the actor, validates exact input, and returns an allowlisted response', async () => {
     const body = {
       opening: {
@@ -51,7 +59,7 @@ describe('box opening API boundary', () => {
       replayed: false,
       statusCode: 201,
     });
-    const response = await request(createTestApp({ openingService: { openBox } }))
+    const response = await request(createTestApp({ openingService: openingService(openBox) }))
       .post(`/v1/boxes/${boxId}/open`)
       .set('Authorization', 'Bearer synthetic')
       .set('Idempotency-Key', 'opening-key-1')
@@ -79,6 +87,89 @@ describe('box opening API boundary', () => {
       userId: '019c0000-0000-7000-8000-000000000001',
     });
     expect(typeof command.requestId).toBe('string');
+  });
+
+  it('returns an allowlisted non-financial opening-v2 response', async () => {
+    const body = {
+      opening: {
+        boxId,
+        boxVersionId: expectedBoxVersionId,
+        entitlement: { maxOpeningsPerUser: '3', remaining: '1', successfulOpenings: '1' },
+        fairness: {
+          clientSeed,
+          commitment: expectedServerSeedCommitment,
+          configurationHash: expectedConfigurationHash,
+          nonce: '0',
+          seedSetId: expectedSeedSetId,
+        },
+        fulfillmentStatus: 'pending_fulfillment' as const,
+        id: '019c0000-0000-7000-8000-000000000013',
+        openingCompatibilityVersion: 'opening-v2' as const,
+        reward: {
+          id: '019c0000-0000-7000-8000-000000000014',
+          imageUrl: null,
+          name: 'Reward',
+          rarity: 'common' as const,
+          rarityPolicyVersion: 'rarity-v1' as const,
+          rewardVersionId: '019c0000-0000-7000-8000-000000000015',
+        },
+      },
+    };
+    const openBox = vi.fn<OpeningService['openBox']>().mockResolvedValue({
+      body,
+      replayed: false,
+      statusCode: 201,
+    });
+    const response = await request(createTestApp({ openingService: openingService(openBox) }))
+      .post(`/v1/boxes/${boxId}/open`)
+      .set('Authorization', 'Bearer synthetic')
+      .set('Idempotency-Key', 'opening-key-v2')
+      .send({
+        clientSeed,
+        expectedBoxVersionId,
+        expectedConfigurationHash,
+        expectedSeedSetId,
+        expectedServerSeedCommitment,
+      });
+
+    expect(response.status).toBe(201);
+    expect(response.body).toEqual(body);
+    const responseBody = response.body as BoxOpeningResponse;
+    expect(responseBody.opening).not.toHaveProperty('cost');
+    expect(responseBody.opening).not.toHaveProperty('wallet');
+    expect(responseBody.opening).not.toHaveProperty('pointsAwarded');
+  });
+
+  it('derives the entitlement-state user from authentication', async () => {
+    const getEntitlementState = vi.fn<OpeningService['getEntitlementState']>().mockResolvedValue({
+      entitlement: {
+        available: true,
+        boxId,
+        consumed: '1',
+        granted: '3',
+        limitReached: false,
+        maxOpeningsPerUser: '4',
+        remaining: '2',
+        successfulOpenings: '1',
+      },
+    });
+    const service: OpeningService = {
+      getEntitlementState,
+      openBox: vi.fn<OpeningService['openBox']>(),
+    };
+    const response = await request(createTestApp({ openingService: service }))
+      .get(`/v1/boxes/${boxId}/opening-entitlement`)
+      .set('Authorization', 'Bearer synthetic');
+
+    expect(response.status).toBe(200);
+    expect((response.body as OpeningV2EntitlementStateResponse).entitlement).toMatchObject({
+      available: true,
+      remaining: '2',
+    });
+    expect(getEntitlementState).toHaveBeenCalledWith({
+      boxId,
+      userId: '019c0000-0000-7000-8000-000000000001',
+    });
   });
 
   it.each([
@@ -146,7 +237,7 @@ describe('box opening API boundary', () => {
     },
   ])('rejects noncanonical or client-authoritative requests: %o', async ({ body, key }) => {
     const openBox = vi.fn<OpeningService['openBox']>();
-    let operation = request(createTestApp({ openingService: { openBox } }))
+    let operation = request(createTestApp({ openingService: openingService(openBox) }))
       .post(`/v1/boxes/${boxId}/open`)
       .set('Authorization', 'Bearer synthetic');
     if (key !== undefined) operation = operation.set('Idempotency-Key', key);
@@ -159,7 +250,7 @@ describe('box opening API boundary', () => {
     const openBox = vi
       .fn<OpeningService['openBox']>()
       .mockRejectedValue(new OpeningConfirmationStaleError());
-    const response = await request(createTestApp({ openingService: { openBox } }))
+    const response = await request(createTestApp({ openingService: openingService(openBox) }))
       .post(`/v1/boxes/${boxId}/open`)
       .set('Authorization', 'Bearer synthetic')
       .set('Idempotency-Key', 'opening-key-stale')
@@ -185,7 +276,7 @@ describe('box opening API boundary', () => {
     const openBox = vi
       .fn<OpeningService['openBox']>()
       .mockRejectedValue(new FairnessConfirmationStaleError());
-    const response = await request(createTestApp({ openingService: { openBox } }))
+    const response = await request(createTestApp({ openingService: openingService(openBox) }))
       .post(`/v1/boxes/${boxId}/open`)
       .set('Authorization', 'Bearer synthetic')
       .set('Idempotency-Key', 'opening-key-fairness-stale')

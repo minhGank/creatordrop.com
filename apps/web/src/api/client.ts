@@ -6,6 +6,7 @@ import type {
   BoxOpeningResponse,
   CurrentFairnessResponse,
   OpeningFairnessProofResponse,
+  OpeningV2EntitlementStateResponse,
   PublishedBoxVersionResponse,
   PublicCreatorBoxResponse,
   PublicCreatorBoxesResponse,
@@ -227,39 +228,90 @@ const walletSchema = z
 const walletsResponseSchema = z.object({ wallets: z.array(walletSchema) }).strict();
 const walletTestCreditResponseSchema = z.object({ wallet: walletSchema }).strict();
 
-const boxOpeningResponseSchema = z
+const openingFairnessSchema = z
   .object({
-    opening: z
+    clientSeed: hex256Schema,
+    commitment: hex256Schema,
+    configurationHash: hex256Schema,
+    nonce: canonicalDecimalSchema,
+    seedSetId: uuidSchema,
+  })
+  .strict();
+
+const openingRewardSchema = z
+  .object({
+    id: uuidSchema,
+    imageUrl: nullableHttpsUrlSchema,
+    name: z.string().min(1).max(120),
+    rarity: z.union([raritySchema, z.null()]),
+    rarityPolicyVersion: z.union([z.literal('rarity-v1'), z.null()]),
+    rewardVersionId: uuidSchema,
+  })
+  .strict()
+  .refine((reward) => (reward.rarity === null) === (reward.rarityPolicyVersion === null));
+
+const openingV2RewardSchema = z
+  .object({
+    id: uuidSchema,
+    imageUrl: nullableHttpsUrlSchema,
+    name: z.string().min(1).max(120),
+    rarity: raritySchema,
+    rarityPolicyVersion: z.literal('rarity-v1'),
+    rewardVersionId: uuidSchema,
+  })
+  .strict();
+
+const paidBoxOpeningSchema = z
+  .object({
+    boxId: uuidSchema,
+    boxVersionId: uuidSchema,
+    cost: z
+      .object({ currency: z.string().regex(/^[A-Z]{3}$/u), priceMinor: positiveDecimalSchema })
+      .strict(),
+    fairness: openingFairnessSchema,
+    fulfillmentStatus: z.enum(['awaiting_restock', 'pending_fulfillment']),
+    id: uuidSchema,
+    pointsAwarded: z.union([z.literal(5), z.literal(20)]),
+    reward: openingRewardSchema,
+    wallet: walletSchema,
+  })
+  .strict();
+
+const entitlementBoxOpeningSchema = z
+  .object({
+    boxId: uuidSchema,
+    boxVersionId: uuidSchema,
+    entitlement: z
       .object({
+        maxOpeningsPerUser: positiveDecimalSchema,
+        remaining: canonicalDecimalSchema,
+        successfulOpenings: positiveDecimalSchema,
+      })
+      .strict(),
+    fairness: openingFairnessSchema,
+    fulfillmentStatus: z.enum(['awaiting_restock', 'pending_fulfillment']),
+    id: uuidSchema,
+    openingCompatibilityVersion: z.literal('opening-v2'),
+    reward: openingV2RewardSchema,
+  })
+  .strict();
+
+const boxOpeningResponseSchema = z
+  .object({ opening: z.union([paidBoxOpeningSchema, entitlementBoxOpeningSchema]) })
+  .strict();
+
+const openingV2EntitlementStateResponseSchema = z
+  .object({
+    entitlement: z
+      .object({
+        available: z.boolean(),
         boxId: uuidSchema,
-        boxVersionId: uuidSchema,
-        cost: z
-          .object({ currency: z.string().regex(/^[A-Z]{3}$/u), priceMinor: positiveDecimalSchema })
-          .strict(),
-        fairness: z
-          .object({
-            clientSeed: hex256Schema,
-            commitment: hex256Schema,
-            configurationHash: hex256Schema,
-            nonce: canonicalDecimalSchema,
-            seedSetId: uuidSchema,
-          })
-          .strict(),
-        fulfillmentStatus: z.enum(['awaiting_restock', 'pending_fulfillment']),
-        id: uuidSchema,
-        pointsAwarded: z.union([z.literal(5), z.literal(20)]),
-        reward: z
-          .object({
-            id: uuidSchema,
-            imageUrl: nullableHttpsUrlSchema,
-            name: z.string().min(1).max(120),
-            rarity: z.union([raritySchema, z.null()]),
-            rarityPolicyVersion: z.union([z.literal('rarity-v1'), z.null()]),
-            rewardVersionId: uuidSchema,
-          })
-          .strict()
-          .refine((reward) => (reward.rarity === null) === (reward.rarityPolicyVersion === null)),
-        wallet: walletSchema,
+        consumed: canonicalDecimalSchema,
+        granted: canonicalDecimalSchema,
+        limitReached: z.boolean(),
+        maxOpeningsPerUser: positiveDecimalSchema,
+        remaining: canonicalDecimalSchema,
+        successfulOpenings: canonicalDecimalSchema,
       })
       .strict(),
   })
@@ -389,6 +441,10 @@ export interface CreatorDropApiClient {
     publicOpeningId: string,
     signal?: AbortSignal,
   ): Promise<OpeningFairnessProofResponse>;
+  getOpeningEntitlementState(
+    boxId: string,
+    signal?: AbortSignal,
+  ): Promise<OpeningV2EntitlementStateResponse>;
   getPublishedBoxVersion(
     boxId: string,
     versionId: string,
@@ -531,6 +587,12 @@ export const createApiClient = ({
       request(
         `/v1/catalog/creators/${encodeURIComponent(customSlug)}/boxes/${encodeURIComponent(boxId)}`,
         publicCreatorBoxResponseSchema,
+        signal === undefined ? {} : { signal },
+      ),
+    getOpeningEntitlementState: (boxId, signal) =>
+      request(
+        `/v1/boxes/${encodeURIComponent(boxId)}/opening-entitlement`,
+        openingV2EntitlementStateResponseSchema,
         signal === undefined ? {} : { signal },
       ),
     getOpeningFairnessProof: (publicOpeningId, signal) =>

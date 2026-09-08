@@ -51,6 +51,8 @@ import {
   InventoryUnavailableError,
   OpeningConfirmationStaleError,
   OpeningCurrencyUnavailableError,
+  OpeningEntitlementRequiredError,
+  OpeningLimitReachedError,
   OpeningRetryableError,
 } from '../modules/openings/opening.errors.js';
 import {
@@ -223,6 +225,22 @@ const normalizeError = (error: unknown): ApiError => {
 
   if (error instanceof OpeningCurrencyUnavailableError) {
     return new ApiError(422, 'OPENING_CURRENCY_NOT_ENABLED', 'The box currency is not enabled.');
+  }
+
+  if (error instanceof OpeningEntitlementRequiredError) {
+    return new ApiError(
+      409,
+      'OPENING_ENTITLEMENT_REQUIRED',
+      'No available Drop entitlement remains for this box.',
+    );
+  }
+
+  if (error instanceof OpeningLimitReachedError) {
+    return new ApiError(
+      409,
+      'OPENING_LIMIT_REACHED',
+      'The per-user opening limit for this box has been reached.',
+    );
   }
 
   if (error instanceof OpeningRetryableError) {

@@ -132,8 +132,9 @@ identity is `active` and whose current version is published. Paused, archived, u
 draft boxes are excluded. An active grandfathered version remains readable and is returned as
 `availability: "legacy"` with a null opening-compatibility marker, so clients cannot present it as
 openable. An `opening-v2` version is returned with null price/currency, its positive immutable
-`maxOpeningsPerUser`, and `availability: "opening-v2"`; during R1A this means published/staged, not
-yet accepted by the production opening command. As before, an archived or paused box has no current public read, while a specifically
+`maxOpeningsPerUser`, and `availability: "opening-v2"`; the authenticated opening command accepts
+it only when the caller has entitlement capacity and remains below that personal maximum. As
+before, an archived or paused box has no current public read, while a specifically
 addressed immutable published version remains available for historical audit.
 
 The creator-scoped detail endpoint resolves the slug, box ownership, active statuses, and current
@@ -190,9 +191,26 @@ Legacy `PUT .../draft/rewards` accepts `{ "entries": [{ "rewardVersionId": "uuid
 
 The publish response returns the immutable discriminated version, reward snapshots, exact ordered weights, calculated `totalWeight`, version-specific canonical manifest, and `configurationHash`. The server calculates totals, rarity, and hashes; client totals/rarity are never authoritative. `opening-v1` responses retain price/currency and legacy manifest bytes. `opening-v2` responses contain null price/currency, positive `maxOpeningsPerUser`, and the non-financial manifest. Publication failures use stable codes including `CATALOG_PUBLICATION_EMPTY_CONFIGURATION`, `CATALOG_PUBLICATION_BASE_REWARD_INVALID`, `CATALOG_PUBLICATION_INELIGIBLE_REWARD`, `CATALOG_PUBLICATION_INVALID_INVENTORY`, and `CATALOG_PUBLICATION_WEIGHT_OVERFLOW`. Optimistic revision and row locking serialize publication against edits.
 
-## Opening entitlement foundation
+## Opening entitlements
 
-R1A adds no public or authenticated entitlement mutation/read endpoint. Immutable non-financial grants are operator/development records scoped to a user and stable box identity, with a globally unique source type/identity and SHA-256 request fingerprint. Their derived state is `granted - consumed = remaining`. The application and worker roles have no table access and cannot execute the private grant/read functions. The local-only `npm run grant:entitlement:dev -- ...` command uses migration credentials, validates explicit development/test plus local Supabase, performs an idempotent grant, and prints the aggregate state. R1B will add the constrained transaction-owned consumption path; R1A does not let the current opening command consume these rows.
+Immutable non-financial grants are operator/development records scoped to a user and stable box
+identity, with a globally unique source type/identity and SHA-256 request fingerprint. The
+local-only `npm run grant:entitlement:dev -- ...` command uses migration credentials, validates
+explicit development/test plus local Supabase, performs an idempotent grant, and prints the exact
+numeric aggregate state. No fan-facing mutation endpoint exists; application and worker roles
+cannot read or write grant/consumption tables or execute the private operator grant/read functions.
+
+R1B adds only this authenticated state read:
+
+| Method | Path                                   | Auth | Purpose                                       |
+| ------ | -------------------------------------- | ---- | --------------------------------------------- |
+| `GET`  | `/v1/boxes/:boxId/opening-entitlement` | user | Read the caller's current opening-v2 capacity |
+
+It derives the user from authentication and returns the stable box ID, decimal-string `granted`,
+`consumed`, `remaining`, `maxOpeningsPerUser`, and `successfulOpenings`, plus `available` and
+`limitReached`. It exposes no grant/source/reviewer identity. The opening service alone calls the
+constrained transaction-owned consumption function, which selects an eligible grant server-side
+and cannot commit an orphan consumption.
 
 The shared creator policy—not controllers—allows owner/manager/editor draft writes, owner/manager publication and archival actions, and viewer reads. Same-creator insufficient roles receive `403`; nonmembers, cross-creator actors, or mismatched resources receive concealed `404`. Catalog mutations emit allowlisted `catalog.audit` records for creation, publication, and archival without tokens, headers, secrets, or profile data.
 
@@ -200,7 +218,10 @@ The shared creator policy—not controllers—allows owner/manager/editor draft 
 
 ### `POST /v1/boxes/:boxId/open`
 
-This remains the paid `opening-v1` command during R1A. `opening-v2` is deliberately rejected until R1B provides atomic entitlement consumption.
+The command explicitly dispatches the current published catalog to the preserved paid
+`opening-v1` path or the non-financial entitlement-backed `opening-v2` path. Null, unsupported, or
+internally inconsistent models return the stable `BOX_NOT_OPENABLE` boundary instead of falling
+through another model's implementation.
 
 Requires user authentication and `Idempotency-Key`. Request:
 
@@ -219,14 +240,14 @@ the command to the exact active public commitment the user saw; PostgreSQL locks
 authoritative active row rather than trusting those client values. A mismatch returns
 `409 FAIRNESS_CONFIRMATION_STALE` before nonce allocation, RNG, debit, inventory, or opening writes
 and requires fresh confirmation. The expected version and configuration hash bind the command to
-the immutable catalog snapshot the user explicitly confirmed. PostgreSQL still supplies the
-authoritative price and currency; the client does not submit or control either financial value. If
+the immutable catalog snapshot the user explicitly confirmed. PostgreSQL supplies the authoritative
+price and currency for v1; v2 has neither and rejects client financial values. If
 the current openable version no longer matches, the transaction returns
 `409 OPENING_CONFIRMATION_STALE` before wallet, nonce, RNG, or inventory work and the client must
 show the new version for fresh confirmation. There is intentionally no client-authoritative
 price, currency, weight, probability, balance, reward, nonce, or server-seed value.
 
-Successful `201` (or replayed original response):
+Successful paid `opening-v1` `201` (or replayed original response):
 
 ```json
 {
@@ -260,9 +281,49 @@ Successful `201` (or replayed original response):
 }
 ```
 
+Successful non-financial `opening-v2` `201` (or replayed original response):
+
+```json
+{
+  "opening": {
+    "id": "public-opening-id",
+    "boxId": "uuid",
+    "boxVersionId": "uuid",
+    "openingCompatibilityVersion": "opening-v2",
+    "entitlement": {
+      "maxOpeningsPerUser": "3",
+      "successfulOpenings": "1",
+      "remaining": "2"
+    },
+    "reward": {
+      "id": "uuid",
+      "rewardVersionId": "uuid",
+      "name": "Signed poster",
+      "imageUrl": "https://...",
+      "rarity": "rare",
+      "rarityPolicyVersion": "rarity-v1"
+    },
+    "fairness": {
+      "seedSetId": "uuid",
+      "commitment": "64-hex",
+      "clientSeed": "64-hex",
+      "nonce": "7",
+      "configurationHash": "64-hex"
+    },
+    "fulfillmentStatus": "pending_fulfillment"
+  }
+}
+```
+
+The v2 response never contains cost, currency, wallet, ledger, fee/share, earnings, points, or
+entitlement-grant identity. PostgreSQL locks one user/stable-box authorization boundary, checks the
+successful-opening maximum before availability, and consumes the oldest eligible grant ordered by
+creation time and canonical ID. `OPENING_LIMIT_REACHED` and `OPENING_ENTITLEMENT_REQUIRED` are
+distinct `409` responses and neither commits a consumption, nonce, inventory movement, or opening.
+
 The reward object also contains the immutable per-entry `rarity` and `rarityPolicyVersion` snapshots. Both are null only for historical pre-rarity publications. New publications contain one of `common`, `uncommon`, `rare`, `epic`, or `legendary` with `rarityPolicyVersion: "rarity-v1"`.
 
-The server has already decided and committed the reward when this response is generated. The frontend reel must land on that reward. Grandfathered versions without `opening-v1` and exactly one base designation return `BOX_NOT_OPENABLE`. Other stable errors include `OPENING_CONFIRMATION_STALE`, `CLIENT_SEED_MISMATCH`, `INVENTORY_UNAVAILABLE`, `INSUFFICIENT_BALANCE`, `OPENING_CURRENCY_NOT_ENABLED`, `SEED_ROTATION_REQUIRED`, `OPENING_RETRY_REQUIRED`, and `IDEMPOTENCY_KEY_REUSED`. `OPENING_CONFIRMATION_STALE` is a definitive non-commit response that requires the current version to be shown and explicitly confirmed. `OPENING_RETRY_REQUIRED` means PostgreSQL aborted the transaction after RNG may have run; all state rolled back and the client may retry with the same idempotency key.
+The server has already decided and committed the reward when either response is generated. The frontend reel must land on that reward. Grandfathered or inconsistent versions return `BOX_NOT_OPENABLE`. Other stable errors include `OPENING_CONFIRMATION_STALE`, `FAIRNESS_CONFIRMATION_STALE`, `OPENING_ENTITLEMENT_REQUIRED`, `OPENING_LIMIT_REACHED`, `CLIENT_SEED_MISMATCH`, `INVENTORY_UNAVAILABLE`, `INSUFFICIENT_BALANCE`, `OPENING_CURRENCY_NOT_ENABLED`, `SEED_ROTATION_REQUIRED`, `OPENING_RETRY_REQUIRED`, and `IDEMPOTENCY_KEY_REUSED`. `OPENING_CONFIRMATION_STALE` is a definitive non-commit response that requires the current version to be shown and explicitly confirmed. `OPENING_RETRY_REQUIRED` means PostgreSQL aborted the transaction after RNG may have run; all state rolled back and the client may retry with the same idempotency key.
 
 Opening-receipt reads and private fulfillment-list endpoints remain deferred. Phase 9 adds only the authenticated opening command; it does not add public wallet, fulfillment, or delivery-data reads.
 

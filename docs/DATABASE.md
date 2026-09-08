@@ -103,9 +103,20 @@ Draft-only mutable designations link a generated ID, box version, and one of tha
 
 ### `opening_entitlement_grants` and `opening_entitlement_consumptions`
 
-R1A grants are immutable non-financial authority scoped to `(user_id, creator_id, box_id)`, where the composite box/creator foreign key proves stable Drop ownership. Each row records positive `quantity_granted`, a generic source type/identity, globally unique SHA-256 semantic fingerprint, optional granting actor, reason, and timestamp. The unique source and fingerprint constraints plus the private grant primitive make exact retry idempotent and reject semantic reuse across a different user, creator, box, quantity, actor, or reason.
+Grants are immutable non-financial authority scoped to `(user_id, creator_id, box_id)`, where the composite box/creator foreign key proves stable Drop ownership. Each row records positive `quantity_granted`, a generic source type/identity, globally unique SHA-256 semantic fingerprint, optional granting actor, reason, and timestamp. The unique source and fingerprint constraints plus the private grant primitive make exact retry idempotent and reject semantic reuse across a different user, creator, box, quantity, actor, or reason.
 
-Consumption rows prepare R1B linkage: each row repeats the exact grant scope and has a globally unique `opening_id`. A before-insert guard locks its grant, counts prior immutable consumptions, and prevents remaining quantity from becoming negative. The current opening transaction does not insert these rows. Grant and consumption updates/deletes are trigger-prohibited; all table access and private grant/aggregate functions are revoked from application and worker roles. A local operator command can grant and query `sum(grants)`, `count(consumptions)`, and their remaining difference without exposing source metadata to a fan API.
+R1B consumption rows repeat the exact grant scope, carry the `opening-v2` model marker, and have a
+globally unique `opening_id`. A deferred composite foreign key requires that ID to be one immutable
+v2 opening with the same user, creator, and stable box. The converse deferred opening guard requires
+exactly one consumption for v2 and zero for v1. A before-insert grant guard locks the grant and
+prevents over-consumption. The opening path first locks a private `(user_id, box_id)` guard shared
+by all versions of one stable Drop, checks the successful v2 count against the current version's
+maximum, and then chooses the oldest available grant by `(created_at, id)` under lock. This makes
+multi-grant use and the stable-box maximum concurrency-safe without serializing unrelated users.
+Grant/consumption updates and deletes are prohibited. Application and worker roles have no table
+access or operator grant/read access; the app receives only the constrained consumption function
+and authenticated aggregate-state read. Aggregate sums use exact `numeric`, so multiple maximum
+signed-bigint grants cannot overflow authorization or read state.
 
 ## Fairness state
 
@@ -152,13 +163,14 @@ Unique `(actor_user_id, operation, idempotency_key)`. Keys are opaque allowliste
 
 ### `box_opens`
 
-- identity: `id`, `public_id` unique, `user_id`, `creator_id`, `box_id`, `box_version_id`, selected association/reward version, optional selected inventory pool;
-- money snapshot: gross price/currency, platform fee basis points/amount, creator share, and earnings availability timestamp;
-- points snapshot: `leaderboard-v1`, base 5, bonus 0/15, total 5/20, and creator scope;
+- identity: `id`, `public_id` unique, `user_id`, `creator_id`, `box_id`, `box_version_id`, immutable `opening_compatibility_version`, selected association/reward version, optional selected inventory pool;
+- v1-only money snapshot: gross price/currency, platform fee basis points/amount, creator share, earnings availability timestamp, and unique sale/allocation ledger references;
+- v1-only points snapshot: `leaderboard-v1`, base 5, bonus 0/15, total 5/20, and creator scope;
+- v2 shape: every money, ledger, earnings-hold, and legacy-points column is null and exactly one scoped entitlement consumption is required;
 - fairness proof: `rng_seed_set_id`, commitment, client seed, nonce, algorithm version, HMAC digest, unbiased `numeric(78,0)` selection, rejection round, and configuration hash;
-- references: unique idempotency record and unique sale/allocation ledger transactions, immutable completed status and timestamp.
+- references: unique idempotency record, immutable completed status, and timestamp.
 
-Unique `(rng_seed_set_id, nonce)` guarantees no nonce reuse. Indexes `(user_id, created_at desc, id)`, `(box_id, created_at desc, id)`, `(box_version_id)`, and `(box_version_reward_id)`. The proof columns and all references are immutable. `selection_value` is the unbiased integer in `[0,total_weight)`, not a floating-point roll.
+Unique `(rng_seed_set_id, nonce)` guarantees no nonce reuse. Indexes `(user_id, created_at desc, id)`, `(box_id, created_at desc, id)`, `(box_version_id)`, and `(box_version_reward_id)`. The proof columns and all references are immutable. `selection_value` is the unbiased integer in `[0,total_weight)`, not a floating-point roll. Both models require one win, one fulfillment obligation, matching inventory history, completed idempotency, and exactly the private/public outbox pair. Only v1 may have a creator earning or enter `leaderboard-v1`; v2 has neither.
 
 ### `reward_wins`, `fulfillment_obligations`, and `creator_earnings`
 

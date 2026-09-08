@@ -1,6 +1,6 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 
-import type { BoxOpeningResponse } from '@creatordrop/contracts';
+import type { BoxOpeningResponse, OpeningV2EntitlementStateResponse } from '@creatordrop/contracts';
 
 import { ApiError } from '../../http/errors.js';
 import type { UserId } from '../creators/creator.js';
@@ -45,5 +45,18 @@ export const createOpeningController =
         userId: requireActorUserId(request),
       });
       response.status(result.statusCode).json(result.body);
+    }, next);
+  };
+
+export const createOpeningEntitlementStateController =
+  (service: OpeningService): RequestHandler =>
+  (request, response: Response<OpeningV2EntitlementStateResponse>, next) => {
+    run(async () => {
+      parseEmptyOpeningQuery(request.query);
+      const result = await service.getEntitlementState({
+        boxId: parseOpeningBoxId(parameter(request.params.boxId)),
+        userId: requireActorUserId(request),
+      });
+      response.status(200).json(result);
     }, next);
   };

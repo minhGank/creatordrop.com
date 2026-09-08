@@ -26,7 +26,12 @@ PostgreSQL owns users, configuration versions, openings, balances, ledger entrie
 
 `opening-v1` retains the completed paid-opening contract, including its historical financial manifest and Phase 9 transaction. `opening-v2` is the target free-entry contract. Its canonical manifest contains the model marker, box/version identity, ordered rewards and weights, immutable rarity snapshots, total weight, and `maxOpeningsPerUser`; it deliberately contains no financial field. Both formats use the unchanged `hmac-sha256-rejection-v1` selector and separate exact parsers/canonicalizers.
 
-R1A is foundation only. PostgreSQL can publish and audit `opening-v2` versions and hold immutable non-financial grants for stable box identities, but the production opening command still accepts only `opening-v1` and performs the existing wallet transaction. R1B will atomically consume an entitlement and enforce the per-user maximum for an `opening-v2` opening. Until then the web labels `opening-v2` catalog entries as staged and does not present the paid opening component for them.
+R1B makes both models explicit at the production opening boundary. `opening-v1` follows the
+unchanged paid wallet/ledger path. `opening-v2` requires one available stable-box entitlement,
+atomically enforces the published per-user maximum, and performs the same fairness, inventory,
+win, fulfillment, idempotency, and outbox work without any wallet, ledger, earnings, currency,
+price, or legacy-points operation. R1C remains responsible for retiring active fan financial
+surfaces across the wider product; R1B does not remove historical or still-supported v1 code.
 
 ### One currency per wallet and integer amounts
 
@@ -126,9 +131,10 @@ Creator authorization always scopes database access by both resource ID and crea
 
 ## Box-opening consistency model
 
-This section describes the still-active `opening-v1` paid transaction. R1A does not alter its lock order, accounting, RNG, inventory, or idempotency behavior.
+The opening endpoint dispatches to one of two explicit models. R1B does not alter the
+`opening-v1` paid lock order, accounting, RNG, inventory, or idempotency behavior.
 
-The opening endpoint is a short PostgreSQL transaction at `READ COMMITTED` with explicit row locks. Lock order is fixed to reduce deadlocks:
+The paid `opening-v1` endpoint is a short PostgreSQL transaction at `READ COMMITTED` with explicit row locks. Its lock order remains:
 
 1. idempotency key claim;
 2. matching active leaderboard-season row in shared mode, when the database timestamp is in a season;
@@ -138,6 +144,16 @@ The opening endpoint is a short PostgreSQL transaction at `READ COMMITTED` with 
 6. the selected shared inventory pool, if finite;
 7. affected box identity rows in UUID order (shared availability check, upgraded for atomic pause);
 8. ledger/open/fulfillment/outbox inserts.
+
+The non-financial `opening-v2` order is idempotency claim → per-user/stable-box guard → oldest
+eligible grant row → `fairness_profiles` → active `rng_seed_sets` → selected inventory pool →
+affected box rows → opening/win/fulfillment/entitlement/outbox inserts. The guard is keyed by
+`(user_id, box_id)`, so every version of one stable Drop shares its personal-limit and entitlement
+serialization boundary while different users or boxes remain concurrent. After taking the guard,
+PostgreSQL counts committed v2 openings for the stable box, checks the immutable maximum, chooses
+the oldest still-available grant ordered by `(created_at, id)`, locks it, and appends one deferred
+opening-linked consumption. The maximum is checked before entitlement availability, so unused
+grants cannot bypass a reached limit.
 
 Season finalization takes the same season row exclusively before deriving permanent results. An
 opening therefore commits into the authoritative season history before finalization can observe
@@ -153,9 +169,9 @@ row. Different users lock different profile rows and remain independent.
 
 The wallet is locked and sufficient funds are checked before nonce allocation or RNG, then the debit update remains conditional (`balance >= cost`) and checked by affected-row count. A unique idempotency record and unique `box_opens.idempotency_record_id` prevent double charge. Deadlocks and serialization failures may be retried a small bounded number of times only before the selector boundary. Once nonce allocation/RNG may have run, the whole transaction rolls back and a retryable error is returned without invoking the selector again; a client retry uses the same idempotency key.
 
-Phase 8 establishes the first two locks and the financial composition boundary. A command first claims `(actor, operation, idempotency key)`, then locks the actor's currency wallet through a narrow security-definer lock function. `creditWallet`, `debitWallet`, reversal posting, and Phase 9 opening postings require the branded caller-owned `TransactionExecutor`; they never commit internally. The authoritative opening order is idempotency claim → wallet → `fairness_profiles` → active `rng_seed_sets` → selected `inventory_pools` row → affected `boxes` rows in UUID order → financial/business/outbox inserts. Different wallets and different selected inventory pools do not share row locks.
+Phase 8 establishes the financial composition boundary for v1. A paid command first claims `(actor, operation, idempotency key)`, then locks the actor's currency wallet through a narrow security-definer lock function. `creditWallet`, `debitWallet`, reversal posting, and Phase 9 opening postings require the branded caller-owned `TransactionExecutor`; they never commit internally. Different wallets, v2 user/box guards, and selected inventory pools do not share locks across unrelated scopes.
 
-Detailed flow:
+Paid `opening-v1` detailed flow:
 
 1. Require authenticated actor, `Idempotency-Key`, and a request body containing `clientSeed`, the exact active seed-set ID and commitment shown to the user, plus the immutable box-version ID and configuration hash explicitly confirmed by the user. Canonicalize and hash method, route, actor, box, and the complete body as the request fingerprint. Price, currency, and the active fairness state remain PostgreSQL-authoritative rather than client inputs.
 2. Begin a database transaction. Insert the user-scoped idempotency row. A unique conflict waits for the first transaction; replay the stored response if the fingerprint matches, otherwise return `409 IDEMPOTENCY_KEY_REUSED`.
@@ -171,7 +187,16 @@ Detailed flow:
 12. Store the exact successful response in the idempotency row and commit.
 13. Return the decided outcome. The Phase 10 worker consumes the outbox only after commit and
     emits the two versioned realtime events. The independent Phase 13 projection queue consumes
-    only `opening.completed.v1` after commit. The reel animates the returned result only.
+    only eligible v1 `opening.completed.v1` history after commit. The reel animates the returned
+    result only.
+
+For `opening-v2`, steps 1–3 retain the same actor, idempotency, immutable-version, and fairness
+confirmation inputs. The model-specific branch then locks the user/stable-box guard, enforces
+`maxOpeningsPerUser`, and consumes the deterministic eligible entitlement before crossing the RNG
+boundary. It skips the season, wallet, financial, earnings, and points steps entirely; the same
+nonce/RNG, inventory, box revalidation, reward-win, fulfillment, and two outbox-event operations
+then commit with the consumption. Any failure rolls all of them back. A committed replay returns
+the stored historical model-specific response before current catalog or seed state is consulted.
 
 Failures before commit leave no charge, nonce, opening, fulfillment, or event. If commit succeeds but the HTTP response is lost, retry returns the stored result.
 

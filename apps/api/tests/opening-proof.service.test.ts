@@ -47,7 +47,9 @@ const databaseFor = (status: RngSeedSetStatus): Database => {
             configurationHash,
             currency: 'USD',
             manifestConfigurationHash: configurationHash,
+            maxOpeningsPerUser: null,
             nonce: '0',
+            openingCompatibilityVersion: 'opening-v1',
             openedAt: new Date('2026-09-05T00:00:00.000Z'),
             openingId,
             position: 0,
@@ -64,7 +66,16 @@ const databaseFor = (status: RngSeedSetStatus): Database => {
             totalWeight: '1',
           },
         ]
-      : [{ boxVersionRewardId: entryId, position: 0, rewardVersionId, weight: '1' }];
+      : [
+          {
+            boxVersionRewardId: entryId,
+            position: 0,
+            rarity: null,
+            rarityPolicyVersion: null,
+            rewardVersionId,
+            weight: '1',
+          },
+        ];
     return Promise.resolve(queryResult(rows as unknown as Row[]));
   };
   const executor = { query } as TransactionExecutor;

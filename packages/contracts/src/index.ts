@@ -418,34 +418,73 @@ export interface WalletFundingIntentResponse {
   };
 }
 
-export interface BoxOpeningResponse {
-  readonly opening: {
-    readonly boxId: string;
-    readonly boxVersionId: string;
-    readonly cost: {
-      readonly currency: string;
-      readonly priceMinor: string;
-    };
-    readonly fairness: {
-      readonly clientSeed: string;
-      readonly commitment: string;
-      readonly configurationHash: string;
-      readonly nonce: string;
-      readonly seedSetId: string;
-    };
-    readonly fulfillmentStatus: 'awaiting_restock' | 'pending_fulfillment';
-    readonly id: string;
-    readonly pointsAwarded: 5 | 20;
-    readonly reward: {
-      readonly id: string;
-      readonly imageUrl: string | null;
-      readonly name: string;
-      readonly rarity: RewardRarity | null;
-      readonly rarityPolicyVersion: RarityPolicyVersion | null;
-      readonly rewardVersionId: string;
-    };
-    readonly wallet: WalletContract;
+interface BoxOpeningFairnessContract {
+  readonly clientSeed: string;
+  readonly commitment: string;
+  readonly configurationHash: string;
+  readonly nonce: string;
+  readonly seedSetId: string;
+}
+
+interface BoxOpeningRewardContract {
+  readonly id: string;
+  readonly imageUrl: string | null;
+  readonly name: string;
+  readonly rarity: RewardRarity | null;
+  readonly rarityPolicyVersion: RarityPolicyVersion | null;
+  readonly rewardVersionId: string;
+}
+
+export interface OpeningV2EntitlementStateContract {
+  readonly available: boolean;
+  readonly boxId: string;
+  readonly consumed: string;
+  readonly granted: string;
+  readonly limitReached: boolean;
+  readonly maxOpeningsPerUser: string;
+  readonly remaining: string;
+  readonly successfulOpenings: string;
+}
+
+export interface OpeningV2EntitlementStateResponse {
+  readonly entitlement: OpeningV2EntitlementStateContract;
+}
+
+interface PaidBoxOpeningContract {
+  readonly boxId: string;
+  readonly boxVersionId: string;
+  readonly cost: {
+    readonly currency: string;
+    readonly priceMinor: string;
   };
+  readonly fairness: BoxOpeningFairnessContract;
+  readonly fulfillmentStatus: 'awaiting_restock' | 'pending_fulfillment';
+  readonly id: string;
+  readonly pointsAwarded: 5 | 20;
+  readonly reward: BoxOpeningRewardContract;
+  readonly wallet: WalletContract;
+}
+
+interface EntitlementBoxOpeningContract {
+  readonly boxId: string;
+  readonly boxVersionId: string;
+  readonly entitlement: {
+    readonly maxOpeningsPerUser: string;
+    readonly remaining: string;
+    readonly successfulOpenings: string;
+  };
+  readonly fairness: BoxOpeningFairnessContract;
+  readonly fulfillmentStatus: 'awaiting_restock' | 'pending_fulfillment';
+  readonly id: string;
+  readonly openingCompatibilityVersion: 'opening-v2';
+  readonly reward: Omit<BoxOpeningRewardContract, 'rarity' | 'rarityPolicyVersion'> & {
+    readonly rarity: RewardRarity;
+    readonly rarityPolicyVersion: 'rarity-v1';
+  };
+}
+
+export interface BoxOpeningResponse {
+  readonly opening: PaidBoxOpeningContract | EntitlementBoxOpeningContract;
 }
 
 export interface OpeningFairnessProofResponse {

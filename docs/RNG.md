@@ -108,7 +108,7 @@ R1A adds a separate `opening-v2` non-financial shape:
 }
 ```
 
-All 64-bit integers are decimal strings in the manifest and public JSON. Entry order is ascending `position`. The v2 manifest must not contain price, currency, wallet, fee, share, or entitlement-source fields. Publication derives the rarity snapshots from authoritative weights before hashing. Separate exact parsers/canonicalizers prevent any v1 history from being reinterpreted with v2 semantics. Both shapes normalize to the same ordered weights for the unchanged HMAC/rejection selector. The publish operation calculates the manifest and hash once inside its database transaction. Opening proofs continue to carry their exact historical manifest; actual v2 proofs begin only when R1B wires free openings.
+All 64-bit integers are decimal strings in the manifest and public JSON. Entry order is ascending `position`. The v2 manifest must not contain price, currency, wallet, fee, share, or entitlement-source fields. Publication derives the rarity snapshots from authoritative weights before hashing. Separate exact parsers/canonicalizers prevent any v1 history from being reinterpreted with v2 semantics. Both shapes normalize to the same ordered weights for the unchanged HMAC/rejection selector. The publish operation calculates the manifest and hash once inside its database transaction. R1B opening proofs carry the exact committed v1 or v2 historical manifest; entitlement selection never enters the RNG message or proof.
 
 ## Seed lifecycle
 

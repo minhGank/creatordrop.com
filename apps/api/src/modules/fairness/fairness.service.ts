@@ -10,12 +10,12 @@ import {
 } from '@creatordrop/database';
 import type { OpeningFairnessProofResponse } from '@creatordrop/contracts';
 import {
-  parsePublishedManifest,
+  parseVersionedPublishedManifest,
   rngAlgorithmVersion,
   selectReward,
   verifyPublishedManifestHash,
 } from '@creatordrop/domain';
-import type { PublishedManifest } from '@creatordrop/domain';
+import type { VersionedPublishedManifest } from '@creatordrop/domain';
 import type { Logger } from '@creatordrop/observability';
 
 import type { UserId } from '../creators/creator.js';
@@ -163,7 +163,7 @@ export interface FairnessService {
       readonly expectedSeedSetId: RngSeedSetId;
       readonly expectedServerSeedCommitment: string;
       readonly expectedManifestHash: string;
-      readonly manifest: PublishedManifest;
+      readonly manifest: VersionedPublishedManifest;
       readonly userId: UserId;
     },
   ): Promise<OpeningFairnessSelection>;
@@ -761,15 +761,39 @@ export const createFairnessService = ({
           const header = await findOpeningProofHeader(transaction, publicOpeningId);
           if (header === undefined) throw new OpeningFairnessProofNotFoundError();
           const entries = await listOpeningProofManifestEntries(transaction, header.boxVersionId);
-          const manifest = parsePublishedManifest({
-            algorithmVersion: header.algorithmVersion,
-            boxId: header.boxId,
-            boxVersionId: header.boxVersionId,
-            currency: header.currency,
-            entries,
-            priceMinor: header.priceMinor,
-            totalWeight: header.totalWeight,
-          });
+          const manifest = parseVersionedPublishedManifest(
+            header.openingCompatibilityVersion === 'opening-v2'
+              ? {
+                  algorithmVersion: header.algorithmVersion,
+                  boxId: header.boxId,
+                  boxVersionId: header.boxVersionId,
+                  entries: entries.map((entry) => ({
+                    boxVersionRewardId: entry.boxVersionRewardId,
+                    position: entry.position,
+                    rarity: entry.rarity,
+                    rarityPolicyVersion: entry.rarityPolicyVersion,
+                    rewardVersionId: entry.rewardVersionId,
+                    weight: entry.weight,
+                  })),
+                  maxOpeningsPerUser: header.maxOpeningsPerUser,
+                  openingCompatibilityVersion: 'opening-v2',
+                  totalWeight: header.totalWeight,
+                }
+              : {
+                  algorithmVersion: header.algorithmVersion,
+                  boxId: header.boxId,
+                  boxVersionId: header.boxVersionId,
+                  currency: header.currency,
+                  entries: entries.map((entry) => ({
+                    boxVersionRewardId: entry.boxVersionRewardId,
+                    position: entry.position,
+                    rewardVersionId: entry.rewardVersionId,
+                    weight: entry.weight,
+                  })),
+                  priceMinor: header.priceMinor,
+                  totalWeight: header.totalWeight,
+                },
+          );
           verifyPublishedManifestHash(manifest, header.configurationHash);
 
           const selected = manifest.entries[header.position];

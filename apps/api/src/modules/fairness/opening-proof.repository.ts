@@ -15,9 +15,11 @@ interface OpeningProofHeaderRow {
   readonly currency: unknown;
   readonly manifestConfigurationHash: unknown;
   readonly nonce: unknown;
+  readonly openingCompatibilityVersion: unknown;
   readonly openedAt: unknown;
   readonly openingId: unknown;
   readonly position: unknown;
+  readonly maxOpeningsPerUser: unknown;
   readonly priceMinor: unknown;
   readonly revealedServerSeedHex: unknown;
   readonly rewardVersionId: unknown;
@@ -34,9 +36,18 @@ interface OpeningProofHeaderRow {
 interface OpeningProofManifestEntryRow {
   readonly boxVersionRewardId: unknown;
   readonly position: unknown;
+  readonly rarity: unknown;
+  readonly rarityPolicyVersion: unknown;
   readonly rewardVersionId: unknown;
   readonly weight: unknown;
 }
+
+const proofRarities = ['common', 'uncommon', 'rare', 'epic', 'legendary'] as const;
+
+const isProofRarity = (
+  value: unknown,
+): value is Exclude<OpeningProofManifestEntry['rarity'], null> =>
+  proofRarities.some((rarity) => rarity === value);
 
 export interface OpeningProofHeader {
   readonly acceptedDigestHex: string;
@@ -46,12 +57,14 @@ export interface OpeningProofHeader {
   readonly boxVersionId: string;
   readonly clientSeed: string;
   readonly configurationHash: string;
-  readonly currency: string;
+  readonly currency: string | null;
+  readonly maxOpeningsPerUser: string | null;
   readonly nonce: string;
   readonly openedAt: string;
   readonly openingId: string;
+  readonly openingCompatibilityVersion: 'opening-v1' | 'opening-v2';
   readonly position: number;
-  readonly priceMinor: string;
+  readonly priceMinor: string | null;
   readonly revealedServerSeedHex: string | null;
   readonly rewardVersionId: string;
   readonly seedSetId: string;
@@ -65,6 +78,8 @@ export interface OpeningProofHeader {
 export interface OpeningProofManifestEntry {
   readonly boxVersionRewardId: string;
   readonly position: number;
+  readonly rarity: 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary' | null;
+  readonly rarityPolicyVersion: 'rarity-v1' | null;
   readonly rewardVersionId: string;
   readonly weight: string;
 }
@@ -133,7 +148,9 @@ export const findOpeningProofHeader = async (
             opening.selected_box_version_reward_id::text as "selectedBoxVersionRewardId",
             opening.reward_version_id::text as "rewardVersionId",
             selected.position,
+            opening.opening_compatibility_version as "openingCompatibilityVersion",
             version.price_minor::text as "priceMinor", version.currency::text as currency,
+            version.max_openings_per_user::text as "maxOpeningsPerUser",
             version.total_weight::text as "totalWeight",
             encode(version.configuration_hash, 'hex') as "manifestConfigurationHash",
             seed.status as "seedStatus", seed.rng_algorithm_version as "seedAlgorithmVersion",
@@ -172,6 +189,21 @@ export const findOpeningProofHeader = async (
     throw new Error('Opening proof has inconsistent seed commitments.');
   }
   const status = seedStatus(row.seedStatus);
+  const openingCompatibilityVersion = row.openingCompatibilityVersion;
+  if (
+    openingCompatibilityVersion !== 'opening-v1' &&
+    openingCompatibilityVersion !== 'opening-v2'
+  ) {
+    throw new Error('Opening proof has an invalid opening model.');
+  }
+  const isVersionTwo = openingCompatibilityVersion === 'opening-v2';
+  if (
+    isVersionTwo
+      ? row.currency !== null || row.priceMinor !== null || row.maxOpeningsPerUser === null
+      : row.currency === null || row.priceMinor === null || row.maxOpeningsPerUser !== null
+  ) {
+    throw new Error('Opening proof has an invalid opening model shape.');
+  }
   const revealedServerSeedHex =
     row.revealedServerSeedHex === null
       ? null
@@ -187,17 +219,22 @@ export const findOpeningProofHeader = async (
     boxVersionId: canonicalUuid(row.boxVersionId, 'box version ID'),
     clientSeed: hex256(row.clientSeed, 'client seed'),
     configurationHash,
-    currency:
-      typeof row.currency === 'string' && /^[A-Z]{3}$/u.test(row.currency)
+    currency: isVersionTwo
+      ? null
+      : typeof row.currency === 'string' && /^[A-Z]{3}$/u.test(row.currency)
         ? row.currency
         : (() => {
             throw new Error('Database returned an invalid proof currency.');
           })(),
+    maxOpeningsPerUser: isVersionTwo
+      ? canonicalDecimal(row.maxOpeningsPerUser, 'maximum openings per user', true)
+      : null,
     nonce: canonicalDecimal(row.nonce, 'nonce'),
     openedAt: timestamp(row.openedAt, 'opening timestamp'),
     openingId: canonicalUuid(row.openingId, 'public opening ID'),
+    openingCompatibilityVersion,
     position: position(row.position),
-    priceMinor: canonicalDecimal(row.priceMinor, 'price', true),
+    priceMinor: isVersionTwo ? null : canonicalDecimal(row.priceMinor, 'price', true),
     revealedServerSeedHex,
     rewardVersionId: canonicalUuid(row.rewardVersionId, 'reward version ID'),
     seedSetId: canonicalUuid(row.seedSetId, 'seed-set ID'),
@@ -217,17 +254,33 @@ export const listOpeningProofManifestEntries = async (
   boxVersionId: string,
 ): Promise<readonly OpeningProofManifestEntry[]> => {
   const result = await executor.query<OpeningProofManifestEntryRow>(
-    `select id::text as "boxVersionRewardId", position,
+    `select id::text as "boxVersionRewardId", position, rarity,
+            rarity_policy_version as "rarityPolicyVersion",
             reward_version_id::text as "rewardVersionId", weight::text as weight
        from app.box_version_rewards
       where box_version_id = $1
       order by position`,
     [boxVersionId],
   );
-  return result.rows.map((row) => ({
-    boxVersionRewardId: canonicalUuid(row.boxVersionRewardId, 'manifest entry ID'),
-    position: position(row.position),
-    rewardVersionId: canonicalUuid(row.rewardVersionId, 'manifest reward version ID'),
-    weight: canonicalDecimal(row.weight, 'manifest weight', true),
-  }));
+  return result.rows.map((row) => {
+    const rarity = row.rarity;
+    if (rarity !== null && !isProofRarity(rarity)) {
+      throw new Error('Database returned an invalid manifest rarity.');
+    }
+    const rarityPolicyVersion = row.rarityPolicyVersion;
+    if (rarityPolicyVersion !== null && rarityPolicyVersion !== 'rarity-v1') {
+      throw new Error('Database returned an invalid manifest rarity policy.');
+    }
+    if ((rarity === null) !== (rarityPolicyVersion === null)) {
+      throw new Error('Database returned an incomplete manifest rarity snapshot.');
+    }
+    return {
+      boxVersionRewardId: canonicalUuid(row.boxVersionRewardId, 'manifest entry ID'),
+      position: position(row.position),
+      rarity,
+      rarityPolicyVersion,
+      rewardVersionId: canonicalUuid(row.rewardVersionId, 'manifest reward version ID'),
+      weight: canonicalDecimal(row.weight, 'manifest weight', true),
+    };
+  });
 };
