@@ -33,9 +33,6 @@ import { createFulfillmentService } from './modules/fulfillment/fulfillment.serv
 import { createOpeningService } from './modules/openings/opening.service.js';
 import { createLeaderboardRepository } from './modules/leaderboards/leaderboard.repository.js';
 import { createLeaderboardService } from './modules/leaderboards/leaderboard.service.js';
-import { createPaymentService } from './modules/payments/payment.service.js';
-import { createStripeFundingProvider } from './modules/payments/stripe.provider.js';
-import { createWalletService } from './modules/wallet/wallet.service.js';
 import { createRealtimeServer } from './platform/realtime/realtime.server.js';
 
 const environment = getApiEnvironment();
@@ -102,12 +99,6 @@ const fairnessService = createFairnessService({
     maxOpenings: rngEnvironment.maxOpeningsPerSeed,
   },
 });
-const testCreditsEnabled = environment.testCreditsEnabled;
-const walletService = createWalletService({
-  database,
-  logger,
-  testCreditsEnabled,
-});
 const openingService = createOpeningService({ database, fairnessService, logger });
 const fulfillmentService = createFulfillmentService({
   actorBindingProvider: createEnvironmentFulfillmentActorBindingProvider({
@@ -130,21 +121,6 @@ const fulfillmentService = createFulfillmentService({
   logger,
   retentionMs: fulfillmentEnvironment.retentionMs,
 });
-const stripeProvider =
-  environment.stripeFundingEnabled &&
-  environment.stripeSecretKey !== null &&
-  environment.stripeWebhookSecret !== null
-    ? createStripeFundingProvider({
-        apiKey: environment.stripeSecretKey,
-        webhookSecret: environment.stripeWebhookSecret,
-      })
-    : null;
-const paymentService = createPaymentService({
-  database,
-  enabled: environment.stripeFundingEnabled,
-  logger,
-  provider: stripeProvider,
-});
 const app = createApp({
   authenticate,
   catalogService,
@@ -154,9 +130,7 @@ const app = createApp({
   leaderboardService,
   logger,
   openingService,
-  paymentService,
   publicCatalogService,
-  runtime: { stripeFundingEnabled: environment.stripeFundingEnabled, testCreditsEnabled },
   security: {
     allowedOrigins: environment.corsAllowedOrigins,
     authRateLimitMax: environment.authRateLimitMax,
@@ -165,12 +139,10 @@ const app = createApp({
     creatorMutationRateLimitWindowMs: environment.creatorMutationRateLimitWindowMs,
     fairnessMutationRateLimitMax: rngEnvironment.fairnessMutationRateLimitMax,
     fairnessMutationRateLimitWindowMs: rngEnvironment.fairnessMutationRateLimitWindowMs,
+    openingMutationRateLimitMax: environment.openingMutationRateLimitMax,
+    openingMutationRateLimitWindowMs: environment.openingMutationRateLimitWindowMs,
     requestBodyLimitBytes: environment.requestBodyLimitBytes,
-    stripeWebhookBodyLimitBytes: environment.stripeWebhookBodyLimitBytes,
-    walletMutationRateLimitMax: environment.walletMutationRateLimitMax,
-    walletMutationRateLimitWindowMs: environment.walletMutationRateLimitWindowMs,
   },
-  walletService,
 });
 
 const server = createServer(app);

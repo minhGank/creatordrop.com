@@ -14,36 +14,18 @@ const legacyKey = (role: string): string =>
 describe('web environment configuration', () => {
   it('parses public build-time configuration', () => {
     expect(
-      parseWebEnvironment(
-        {
-          VITE_API_BASE_URL: 'https://api.example.test',
-          VITE_APP_ENV: 'test',
-          VITE_SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_public_test_key',
-          VITE_SUPABASE_URL: 'https://project.supabase.co',
-        },
-        { testCreditsEnabled: true },
-      ),
+      parseWebEnvironment({
+        VITE_API_BASE_URL: 'https://api.example.test',
+        VITE_APP_ENV: 'test',
+        VITE_SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_public_test_key',
+        VITE_SUPABASE_URL: 'https://project.supabase.co',
+      }),
     ).toEqual({
       apiBaseUrl: 'https://api.example.test',
       appEnvironment: 'test',
       supabasePublishableKey: 'sb_publishable_public_test_key',
       supabaseUrl: 'https://project.supabase.co',
-      testCreditsEnabled: true,
     });
-  });
-
-  it('forces test-credit capability off in the production app environment', () => {
-    expect(
-      parseWebEnvironment(
-        {
-          VITE_API_BASE_URL: 'https://api.example.test',
-          VITE_APP_ENV: 'production',
-          VITE_SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_public_test_key',
-          VITE_SUPABASE_URL: 'https://project.supabase.co',
-        },
-        { testCreditsEnabled: true },
-      ).testCreditsEnabled,
-    ).toBe(false);
   });
 
   it('rejects malformed public configuration', () => {

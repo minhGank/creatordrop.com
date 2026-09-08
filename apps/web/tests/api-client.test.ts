@@ -57,45 +57,6 @@ describe('CreatorDrop API client', () => {
     });
   });
 
-  it('reads wallets and posts the fixed USD test-credit grant with caller idempotency', async () => {
-    const wallet = {
-      balanceMinor: '100000',
-      currency: 'USD',
-      id: '00000000-0000-4000-8000-000000000501',
-      revision: '1',
-    } as const;
-    const fetcher = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse({ wallets: [wallet] }))
-      .mockResolvedValueOnce(jsonResponse({ wallet }, 201));
-    const client = createApiClient({
-      baseUrl: 'https://api.example.test',
-      fetcher,
-      getAccessToken: () => Promise.resolve('session-token'),
-    });
-
-    await expect(client.listWallets()).resolves.toEqual({ wallets: [wallet] });
-    await expect(client.grantUsdTestCredits('wallet_test_credit_click-one')).resolves.toEqual({
-      wallet,
-    });
-    expect(fetcher.mock.calls[0]?.[0]).toBe('https://api.example.test/v1/me/wallets');
-    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({
-      headers: { Authorization: 'Bearer session-token' },
-      method: 'GET',
-    });
-    expect(fetcher.mock.calls[1]?.[0]).toBe(
-      'https://api.example.test/v1/me/wallets/USD/test-credits',
-    );
-    expect(fetcher.mock.calls[1]?.[1]).toMatchObject({
-      body: JSON.stringify({ amountMinor: '100000' }),
-      headers: {
-        Authorization: 'Bearer session-token',
-        'Idempotency-Key': 'wallet_test_credit_click-one',
-      },
-      method: 'POST',
-    });
-  });
-
   it('uses the creator-scoped public box-detail route', async () => {
     const response = { box: publishedBoxFixture, creator: publicCreatorResponseFixture.creator };
     const fetcher = vi.fn<typeof fetch>(() => Promise.resolve(jsonResponse(response)));

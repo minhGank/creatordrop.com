@@ -61,8 +61,11 @@ Phase 10 adds durable outbox delivery and Socket.io only. Phase 11 adds Stripe t
 funding, signed webhooks, provider compensation/deficits, and read-only reconciliation. Phase 12
 adds typed fulfillment, protected delivery data, audited creator access, and manual immutable
 restock events. Phase 13 adds disposable Redis leaderboards/public catalog cache plus authoritative
-PostgreSQL seasons/champion achievements. Payout, carrier integration, automatic restock/box
-resume, currency conversion, and leaderboard UI remain absent.
+PostgreSQL seasons/champion achievements. R1A–R1C add the free-entry `opening-v2` model and atomic
+entitlements, then retire active fan wallet/funding routes and UI while preserving the Phase 8–11
+schema and code for historical v1 audit/regression needs. Claims, XP, creator SaaS billing, payout,
+carrier integration, automatic restock/box resume, currency conversion, and leaderboard UI remain
+absent.
 
 ## Database package
 
@@ -173,7 +176,13 @@ cp .env.example .env
 npm run dev:api
 ```
 
-Supabase Auth performs sign-up/sign-in. Send its access token as `Authorization: Bearer <token>` to `POST /v1/auth/session/exchange` with `{}` to create or retrieve the local user. The same token can use the creator/catalog/fairness APIs and `GET /v1/me/wallets`. With the explicit local `.env.example` opt-in `WALLET_TEST_CREDITS_ENABLED=true`, `POST /v1/me/wallets/USD/test-credits` accepts a canonical decimal-string `amountMinor` and `Idempotency-Key`. The flag defaults false and is rejected in production, where the route is absent and the service is disabled. Monetary amounts, inventory quantities, and weights are JSON decimal strings. The API needs only the public JWKS URL for verification; never add a Supabase service-role/secret key to browser code.
+Supabase Auth performs sign-up/sign-in. Send its access token as `Authorization: Bearer <token>` to
+`POST /v1/auth/session/exchange` with `{}` to create or retrieve the local user. The same token can
+use the creator, catalog, fairness, v2 entitlement-state, and opening APIs. Fan wallet reads,
+test-credit grants, funding intents, and the Stripe funding webhook are not mounted by the active
+application. Inventory quantities, weights, and entitlement counts are JSON decimal strings. The
+API needs only the public JWKS URL for verification; never add a Supabase service-role/secret key
+to browser code.
 
 For the Phase 14 web app, copy the local `API_URL` and `PUBLISHABLE_KEY` reported by
 `supabase status --workdir infra --output json` into `VITE_SUPABASE_URL` and
@@ -188,25 +197,30 @@ npm run dev:web
 The web app uses per-tab `sessionStorage` for Supabase session restoration. Public catalog routes
 work without a session. All CreatorDrop requests flow through `apps/web/src/api/client.ts`, which
 validates shared contracts and error envelopes. UI code must keep catalog text in React's escaped
-text path, format money from decimal minor-unit strings, preserve exact integer odds alongside any
-percentage display, provide explicit loading/error/empty states, and respect reduced motion.
+text path, display v2 probabilities as percentages without raw weight fractions, omit financial
+fields from v2 pages, provide explicit loading/error/empty states, and respect reduced motion.
+Legacy v1 response parsing remains exact for compatibility, but the web app does not present v1
+as an actionable Drop.
 
-When `WALLET_TEST_CREDITS_ENABLED=true`, the local Vite development server derives a boolean-only
-capability for the authenticated account page and shows the clearly labeled test-credit control.
-It does not expose the raw server environment. Vite builds force the capability off, and the
-backend's development/test-only route registration and service check remain authoritative.
+Phase 11 integration tests remain as historical regression coverage: they mock only Stripe
+transport/event normalization, while intents, provider-event idempotency, ledger postings, wallet
+projections, refunds/disputes, deficits, rollback, and reconciliation assertions use real local
+PostgreSQL. `npm run test:integration` also applies the Phase 8 → current forward-upgrade harness.
+These modules are not wired into active API startup. The application never stored raw webhook
+payloads or card data; retained history contains only allowlisted identities/state and an exact
+raw-payload SHA-256 hash.
 
-For Stripe sandbox funding, set `STRIPE_FUNDING_ENABLED=true` only with explicit `NODE_ENV=development` or `test`, then supply a test-mode `STRIPE_SECRET_KEY` and the signing secret printed by `stripe listen --forward-to http://127.0.0.1:3000/v1/webhooks/stripe`. Never commit either value. Create a funding intent with `POST /v1/me/wallets/USD/funding-intents`, `{ "amountMinor": "2000" }`, and an `Idempotency-Key`; confirm the PaymentIntent using Stripe's client SDK/test payment methods. Only the signed webhook can credit the wallet. The configured limits are USD 500–50000 minor units. Local funding is closed-loop/nonwithdrawable, and no self-service refund route exists.
+The bootstrap, creator, fairness, and opening-mutation limiters are intentionally in memory and per
+API process. Configure opening limits with `OPENING_MUTATION_RATE_LIMIT_MAX` and
+`OPENING_MUTATION_RATE_LIMIT_WINDOW_MS`. Before horizontally scaled production deployment, choose
+a shared limiter store and define the trusted reverse-proxy/IP policy.
 
-Phase 11 integration tests mock only Stripe transport/event normalization; all intents, provider-event idempotency, ledger postings, wallet projections, refunds/disputes, deficits, rollback, and reconciliation assertions use real local PostgreSQL. `npm run test:integration` also applies the Phase 8 → current forward-upgrade harness. The application never stores raw webhook payloads or card data; only allowlisted identities/state and an exact raw-payload SHA-256 hash are retained.
-
-The bootstrap, creator, fairness, and wallet-mutation limiters are intentionally in memory and per API process. Wallet test-credit mutations use a pre-authentication IP gate followed by an actor-keyed budget. Before horizontally scaled production deployment, choose a shared limiter store and define the trusted reverse-proxy/IP policy. Redis is not introduced in Phase 8.
-
-Financial mutation primitives accept only the branded transaction executor. The Phase 9 opening
+Retained financial mutation primitives accept only the branded transaction executor. The v1 Phase 9 opening
 composition acquires the idempotency claim, wallet, fairness profile, seed, and inventory locks
 in the documented order, then inserts ledger/business/outbox rows before one final commit.
 Ledger history is authoritative; `reconcileWallet` compares the cached wallet projection with
-the signed-entry sum and never repairs history.
+the signed-entry sum and never repairs history. Active v2 openings use the separate entitlement
+lock order and perform no wallet or ledger operation.
 
 ## Durable outbox and realtime worker
 
@@ -273,7 +287,7 @@ provision a scheduled row, activate it with the private migration/operator funct
 worker reconcile and finalize after `ends_at`. Do not insert champion results or achievements
 manually.
 
-## Phase 15 local rarity demo
+## R1C local free-entry rarity demo
 
 The demo catalog command is deliberately restricted to explicit `development`/`test` mode, the
 local Supabase PostgreSQL port, and the restricted `creatordrop_app` role. It loads `.env`
@@ -294,16 +308,16 @@ history. `npm run db:reset` and `npm run db:migrations:validate` erase demo data
 `npm run seed:demo` afterward.
 
 The public creator is **CreatorDrop Test Creator** (`@creatordrop_test`) at slug
-`creatordrop-test`. Its **Every Rarity Test Box** costs USD 100 minor units and has unlimited
-digital test rewards with a total weight of 1000:
+`creatordrop-test`. Its **Every Rarity Test Box** is an `opening-v2` Drop with a personal maximum
+of 10 openings and unlimited digital test rewards:
 
-| Reward                | Weight | Exact probability | Published rarity | Base |
-| --------------------- | -----: | ----------------: | ---------------- | ---- |
-| Common Test Reward    |    720 |               72% | common           | yes  |
-| Uncommon Test Reward  |    190 |               19% | uncommon         | no   |
-| Rare Test Reward      |     70 |                7% | rare             | no   |
-| Epic Test Reward      |     16 |              1.6% | epic             | no   |
-| Legendary Test Reward |      4 |              0.4% | legendary        | no   |
+| Reward                | Displayed probability | Published rarity |
+| --------------------- | --------------------: | ---------------- |
+| Common Test Reward    |                   72% | common           |
+| Uncommon Test Reward  |                   19% | uncommon         |
+| Rare Test Reward      |                    7% | rare             |
+| Epic Test Reward      |                  1.6% | epic             |
+| Legendary Test Reward |                  0.4% | legendary        |
 
 With the API and web development servers running, open the URL printed by the seed command, or:
 
@@ -318,31 +332,25 @@ particular tier is never guaranteed. For deterministic presentation coverage of 
 the controlled web-test fixtures instead of weakening selection:
 
 ```bash
-npx vitest run apps/web/tests/app.test.tsx -t "renders the test-only" --reporter=verbose
+npx vitest run apps/web/tests/app.test.tsx -t "renders all v2 rarity percentages" --reporter=verbose
 ```
 
-To open the box, create/sign in to a local web account first. On the first opening attempt, the
-browser asks the authenticated API to create the encrypted server seed and public commitment. Only
-after that commitment exists does it generate a fresh client seed with Web Crypto and save it
-through the revision-checked client-seed endpoint. The confirmation displays the authoritative
-seed-set ID, server-seed commitment, and editable client seed before any opening is submitted. No
-manual fairness request is needed.
-
-Copy that local Supabase session's `access_token` from browser developer tools (Application →
-Session Storage) into a temporary shell variable; never paste it into source files or logs. Grant
-synthetic USD credit through the normal authenticated API:
+To open the Drop, create/sign in to a local web account first. Find the resulting local user,
+creator, and box IDs through operator-only PostgreSQL inspection, then grant that user a synthetic
+development entitlement:
 
 ```bash
-export ACCESS_TOKEN='<local browser access token>'
-curl -sS -X POST http://127.0.0.1:3000/v1/me/wallets/USD/test-credits \
-  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-  -H 'Content-Type: application/json' \
-  -H 'Idempotency-Key: phase15-demo-credit-100000-v1' \
-  --data '{"amountMinor":"100000"}'
+npm run grant:entitlement:dev -- \
+  <userId> 019f1500-0000-7000-8000-000000000010 \
+  019f1500-0000-7000-8000-000000000200 3 development_manual \
+  r1c-local-grant-001 "Local R1C opening entitlement"
 ```
 
-This uses only the explicit local `WALLET_TEST_CREDITS_ENABLED=true` path and does not require
-Stripe. Reusing that credit idempotency key replays the same grant rather than crediting twice.
+The operator command is local-only, source-idempotent, and not an HTTP endpoint. Reusing the same
+source identity and semantics replays the same grant rather than adding quantity. The authenticated
+web page then displays the server-returned remaining count and enables `Open Drop` without a wallet,
+credits, price, or Stripe. On first use, the browser still initializes and binds the fairness
+profile before submitting, but the normal confirmation does not expose raw seed or hash details.
 
 A normal opening initially demonstrates `pending_reveal` without exposing its active seed. Rotate
 the user's active seed through `POST /v1/me/fairness/rotate` to exercise the retired
@@ -356,13 +364,14 @@ npx vitest run apps/api/tests/opening-proof.service.test.ts packages/rng-verifie
 
 Never read/decrypt an active seed or alter seed status directly to manufacture a local result.
 
-## R1A/R1B opening-v2 entitlements
+## R1 free-entry opening-v2 entitlements
 
-R1A preserves the paid `opening-v1` runtime while adding publishable `opening-v2` catalog data and
+R1A preserved the paid `opening-v1` runtime while adding publishable `opening-v2` catalog data and
 operator-only non-financial entitlement records. An `opening-v2` version has no price/currency or
-base reward; it has a positive immutable `maxOpeningsPerUser`. R1B makes that model openable: one
+base reward; it has a positive immutable `maxOpeningsPerUser`. R1B made that model openable: one
 successful opening atomically consumes one entitlement and performs no wallet, ledger, earnings,
-or points operation. Do not use wallet/test-credit terminology for entitlement grants.
+or points operation. R1C makes it the active fan flow and unregisters wallet/funding routes and UI.
+Do not use wallet/test-credit terminology for entitlement grants.
 
 The repeatable development grant command loads the root `.env`, requires raw
 `NODE_ENV=development|test`, rejects non-local PostgreSQL, and uses `DATABASE_MIGRATION_URL` so the
@@ -371,7 +380,7 @@ shared application role never gains grant authority:
 ```bash
 npm run grant:entitlement:dev -- \
   <userId> <creatorId> <boxId> 3 development_manual \
-  r1a-local-grant-001 "Local R1A opening entitlement"
+  r1-local-grant-001 "Local opening entitlement"
 ```
 
 The command prints the immutable grant ID/replay flag and exact aggregate `granted`, `consumed`, and
@@ -381,7 +390,8 @@ test fixtures or PostgreSQL operator inspection. There is intentionally no HTTP 
 fan can grant itself entries. Once granted, the signed-in fan can visit the active v2 box and use
 `Open Drop`; the UI reads only that user's availability from
 `GET /v1/boxes/:boxId/opening-entitlement`. The backend chooses the grant and consumes it inside the
-opening transaction. R1C—not R1B—removes the wider active wallet/funding product surfaces.
+opening transaction. The active web uses this state directly; no client-calculated availability is
+authoritative.
 
 ## Full validation
 

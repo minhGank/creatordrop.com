@@ -30,18 +30,13 @@ describe('API environment adapter', () => {
       creatorMutationRateLimitWindowMs: 60_000,
       host: '127.0.0.1',
       nodeEnvironment: 'test',
+      openingMutationRateLimitMax: 20,
+      openingMutationRateLimitWindowMs: 60_000,
       port: 4321,
       publicCatalogCacheTtlSeconds: 300,
       realtimeWorkerToken: 'synthetic-realtime-worker-token-00000001',
       redisUrl: null,
       requestBodyLimitBytes: 32_768,
-      stripeFundingEnabled: false,
-      stripeSecretKey: null,
-      stripeWebhookBodyLimitBytes: 262_144,
-      stripeWebhookSecret: null,
-      testCreditsEnabled: false,
-      walletMutationRateLimitMax: 20,
-      walletMutationRateLimitWindowMs: 60_000,
     });
 
     vi.unstubAllEnvs();

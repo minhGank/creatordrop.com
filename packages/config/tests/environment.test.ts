@@ -43,18 +43,13 @@ describe('environment configuration', () => {
       creatorMutationRateLimitWindowMs: 60_000,
       host: '127.0.0.1',
       nodeEnvironment: 'development',
+      openingMutationRateLimitMax: 20,
+      openingMutationRateLimitWindowMs: 60_000,
       port: 3000,
       publicCatalogCacheTtlSeconds: 300,
       realtimeWorkerToken: 'synthetic-realtime-worker-token-00000001',
       redisUrl: null,
       requestBodyLimitBytes: 32_768,
-      stripeFundingEnabled: false,
-      stripeSecretKey: null,
-      stripeWebhookBodyLimitBytes: 262_144,
-      stripeWebhookSecret: null,
-      testCreditsEnabled: false,
-      walletMutationRateLimitMax: 20,
-      walletMutationRateLimitWindowMs: 60_000,
     });
     expect(parseWorkerEnvironment(requiredWorkerEnvironment)).toEqual({
       batchSize: 25,
@@ -93,11 +88,10 @@ describe('environment configuration', () => {
         CREATOR_MUTATION_RATE_LIMIT_WINDOW_MS: '7000',
         HOST: '0.0.0.0',
         NODE_ENV: 'test',
+        OPENING_MUTATION_RATE_LIMIT_MAX: '11',
+        OPENING_MUTATION_RATE_LIMIT_WINDOW_MS: '9000',
         PORT: '4100',
         REQUEST_BODY_LIMIT_BYTES: '4096',
-        WALLET_MUTATION_RATE_LIMIT_MAX: '11',
-        WALLET_MUTATION_RATE_LIMIT_WINDOW_MS: '9000',
-        WALLET_TEST_CREDITS_ENABLED: 'true',
       }),
     ).toEqual({
       authAudience: 'creator-fans',
@@ -111,19 +105,29 @@ describe('environment configuration', () => {
       creatorMutationRateLimitWindowMs: 7000,
       host: '0.0.0.0',
       nodeEnvironment: 'test',
+      openingMutationRateLimitMax: 11,
+      openingMutationRateLimitWindowMs: 9000,
       port: 4100,
       publicCatalogCacheTtlSeconds: 300,
       realtimeWorkerToken: 'synthetic-realtime-worker-token-00000001',
       redisUrl: null,
       requestBodyLimitBytes: 4096,
-      stripeFundingEnabled: false,
-      stripeSecretKey: null,
-      stripeWebhookBodyLimitBytes: 262_144,
-      stripeWebhookSecret: null,
-      testCreditsEnabled: true,
-      walletMutationRateLimitMax: 11,
-      walletMutationRateLimitWindowMs: 9000,
     });
+  });
+
+  it('starts without and ignores retired fan-funding configuration', () => {
+    const parsed = parseApiEnvironment({
+      ...requiredApiEnvironment,
+      STRIPE_FUNDING_ENABLED: 'true',
+      STRIPE_SECRET_KEY: 'malformed-retired-value',
+      STRIPE_WEBHOOK_SECRET: 'malformed-retired-value',
+      WALLET_TEST_CREDITS_ENABLED: 'true',
+    });
+
+    expect(parsed).not.toHaveProperty('stripeFundingEnabled');
+    expect(parsed).not.toHaveProperty('stripeSecretKey');
+    expect(parsed).not.toHaveProperty('stripeWebhookSecret');
+    expect(parsed).not.toHaveProperty('testCreditsEnabled');
   });
 
   it('validates disposable Redis endpoints and projection/cache bounds', () => {
@@ -158,65 +162,6 @@ describe('environment configuration', () => {
       parseWorkerEnvironment({
         ...requiredWorkerEnvironment,
         REDIS_URL: 'ftp://cache.example.test',
-      }),
-    ).toThrow();
-  });
-
-  it.each(['development', 'test'] as const)(
-    'enables test credits only with an explicit %s runtime',
-    (nodeEnvironment) => {
-      expect(
-        parseApiEnvironment({
-          ...requiredApiEnvironment,
-          NODE_ENV: nodeEnvironment,
-          WALLET_TEST_CREDITS_ENABLED: 'true',
-        }).testCreditsEnabled,
-      ).toBe(true);
-    },
-  );
-
-  it.each(['development', 'test'] as const)(
-    'enables Stripe test-mode funding only with an explicit %s runtime',
-    (nodeEnvironment) => {
-      expect(
-        parseApiEnvironment({
-          ...requiredApiEnvironment,
-          NODE_ENV: nodeEnvironment,
-          STRIPE_FUNDING_ENABLED: 'true',
-          STRIPE_SECRET_KEY: 'sk_test_synthetic_key_12345678',
-          STRIPE_WEBHOOK_SECRET: 'whsec_synthetic_secret_12345678',
-        }),
-      ).toMatchObject({
-        stripeFundingEnabled: true,
-        stripeSecretKey: 'sk_test_synthetic_key_12345678',
-        stripeWebhookSecret: 'whsec_synthetic_secret_12345678',
-      });
-    },
-  );
-
-  it.each([
-    { environment: {}, label: 'omitted' },
-    { environment: { NODE_ENV: '' }, label: 'empty' },
-    { environment: { NODE_ENV: 'production' }, label: 'production' },
-    { environment: { NODE_ENV: 'staging' }, label: 'unsupported' },
-  ])('rejects Stripe funding when NODE_ENV is $label', ({ environment }) => {
-    expect(() =>
-      parseApiEnvironment({
-        ...requiredApiEnvironment,
-        ...environment,
-        STRIPE_FUNDING_ENABLED: 'true',
-        STRIPE_SECRET_KEY: 'sk_test_synthetic_key_12345678',
-        STRIPE_WEBHOOK_SECRET: 'whsec_synthetic_secret_12345678',
-      }),
-    ).toThrow();
-  });
-
-  it('rejects enabled Stripe funding without both server-side secrets', () => {
-    expect(() =>
-      parseApiEnvironment({
-        ...requiredApiEnvironment,
-        NODE_ENV: 'test',
-        STRIPE_FUNDING_ENABLED: 'true',
       }),
     ).toThrow();
   });
@@ -259,21 +204,6 @@ describe('environment configuration', () => {
       ).toThrow();
     },
   );
-
-  it.each([
-    { environment: {}, label: 'omitted' },
-    { environment: { NODE_ENV: '' }, label: 'empty' },
-    { environment: { NODE_ENV: 'production' }, label: 'production' },
-    { environment: { NODE_ENV: 'staging' }, label: 'unsupported' },
-  ])('rejects test credits when NODE_ENV is $label', ({ environment }) => {
-    expect(() =>
-      parseApiEnvironment({
-        ...requiredApiEnvironment,
-        ...environment,
-        WALLET_TEST_CREDITS_ENABLED: 'true',
-      }),
-    ).toThrow();
-  });
 
   it.each([
     {},

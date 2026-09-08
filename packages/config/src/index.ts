@@ -53,70 +53,20 @@ const apiEnvironmentSchema = z
       .max(86_400_000)
       .default(60_000),
     HOST: z.string().trim().min(1).default('127.0.0.1'),
-    PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
-    PUBLIC_CATALOG_CACHE_TTL_SECONDS: z.coerce.number().int().min(1).max(86_400).default(300),
-    REDIS_URL: redisUrlSchema.optional(),
-    REQUEST_BODY_LIMIT_BYTES: z.coerce.number().int().min(1_024).max(1_048_576).default(32_768),
-    REALTIME_WORKER_TOKEN: realtimeWorkerTokenSchema,
-    STRIPE_FUNDING_ENABLED: z.enum(['false', 'true']).default('false'),
-    STRIPE_SECRET_KEY: z
-      .string()
-      .regex(/^sk_test_[A-Za-z0-9_]{8,240}$/u)
-      .optional(),
-    STRIPE_WEBHOOK_BODY_LIMIT_BYTES: z.coerce
-      .number()
-      .int()
-      .min(1_024)
-      .max(1_048_576)
-      .default(262_144),
-    STRIPE_WEBHOOK_SECRET: z
-      .string()
-      .regex(/^whsec_[A-Za-z0-9_]{8,240}$/u)
-      .optional(),
-    WALLET_MUTATION_RATE_LIMIT_MAX: z.coerce.number().int().min(1).max(10_000).default(20),
-    WALLET_MUTATION_RATE_LIMIT_WINDOW_MS: z.coerce
+    OPENING_MUTATION_RATE_LIMIT_MAX: z.coerce.number().int().min(1).max(10_000).default(20),
+    OPENING_MUTATION_RATE_LIMIT_WINDOW_MS: z.coerce
       .number()
       .int()
       .min(1_000)
       .max(86_400_000)
       .default(60_000),
-    WALLET_TEST_CREDITS_ENABLED: z.enum(['false', 'true']).default('false'),
+    PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
+    PUBLIC_CATALOG_CACHE_TTL_SECONDS: z.coerce.number().int().min(1).max(86_400).default(300),
+    REDIS_URL: redisUrlSchema.optional(),
+    REQUEST_BODY_LIMIT_BYTES: z.coerce.number().int().min(1_024).max(1_048_576).default(32_768),
+    REALTIME_WORKER_TOKEN: realtimeWorkerTokenSchema,
   })
   .superRefine((environment, context) => {
-    if (environment.STRIPE_FUNDING_ENABLED === 'true') {
-      if (environment.NODE_ENV !== 'development' && environment.NODE_ENV !== 'test') {
-        context.addIssue({
-          code: 'custom',
-          message: 'Stripe test-mode funding requires an explicit development or test runtime.',
-          path: ['STRIPE_FUNDING_ENABLED'],
-        });
-      }
-      if (environment.STRIPE_SECRET_KEY === undefined) {
-        context.addIssue({
-          code: 'custom',
-          message: 'Stripe funding requires a test-mode API secret.',
-          path: ['STRIPE_SECRET_KEY'],
-        });
-      }
-      if (environment.STRIPE_WEBHOOK_SECRET === undefined) {
-        context.addIssue({
-          code: 'custom',
-          message: 'Stripe funding requires a webhook signing secret.',
-          path: ['STRIPE_WEBHOOK_SECRET'],
-        });
-      }
-    }
-    if (
-      environment.WALLET_TEST_CREDITS_ENABLED === 'true' &&
-      environment.NODE_ENV !== 'development' &&
-      environment.NODE_ENV !== 'test'
-    ) {
-      context.addIssue({
-        code: 'custom',
-        message: 'Test credits require an explicit development or test runtime.',
-        path: ['WALLET_TEST_CREDITS_ENABLED'],
-      });
-    }
     if (
       environment.REALTIME_WORKER_TOKEN === localRealtimeWorkerToken &&
       environment.NODE_ENV !== 'development' &&
@@ -454,18 +404,13 @@ export type ApiEnvironment = Readonly<{
   creatorMutationRateLimitWindowMs: number;
   host: string;
   nodeEnvironment: z.infer<typeof runtimeModeSchema>;
+  openingMutationRateLimitMax: number;
+  openingMutationRateLimitWindowMs: number;
   port: number;
   publicCatalogCacheTtlSeconds: number;
   redisUrl: string | null;
   realtimeWorkerToken: string;
   requestBodyLimitBytes: number;
-  stripeFundingEnabled: boolean;
-  stripeSecretKey: string | null;
-  stripeWebhookBodyLimitBytes: number;
-  stripeWebhookSecret: string | null;
-  testCreditsEnabled: boolean;
-  walletMutationRateLimitMax: number;
-  walletMutationRateLimitWindowMs: number;
 }>;
 
 export type WorkerEnvironment = Readonly<{
@@ -539,18 +484,13 @@ export const parseApiEnvironment = (input: NodeJS.ProcessEnv): ApiEnvironment =>
     creatorMutationRateLimitWindowMs: parsed.CREATOR_MUTATION_RATE_LIMIT_WINDOW_MS,
     host: parsed.HOST,
     nodeEnvironment: parsed.NODE_ENV ?? 'development',
+    openingMutationRateLimitMax: parsed.OPENING_MUTATION_RATE_LIMIT_MAX,
+    openingMutationRateLimitWindowMs: parsed.OPENING_MUTATION_RATE_LIMIT_WINDOW_MS,
     port: parsed.PORT,
     publicCatalogCacheTtlSeconds: parsed.PUBLIC_CATALOG_CACHE_TTL_SECONDS,
     redisUrl: parsed.REDIS_URL ?? null,
     realtimeWorkerToken: parsed.REALTIME_WORKER_TOKEN,
     requestBodyLimitBytes: parsed.REQUEST_BODY_LIMIT_BYTES,
-    stripeFundingEnabled: parsed.STRIPE_FUNDING_ENABLED === 'true',
-    stripeSecretKey: parsed.STRIPE_SECRET_KEY ?? null,
-    stripeWebhookBodyLimitBytes: parsed.STRIPE_WEBHOOK_BODY_LIMIT_BYTES,
-    stripeWebhookSecret: parsed.STRIPE_WEBHOOK_SECRET ?? null,
-    testCreditsEnabled: parsed.WALLET_TEST_CREDITS_ENABLED === 'true',
-    walletMutationRateLimitMax: parsed.WALLET_MUTATION_RATE_LIMIT_MAX,
-    walletMutationRateLimitWindowMs: parsed.WALLET_MUTATION_RATE_LIMIT_WINDOW_MS,
   };
 };
 

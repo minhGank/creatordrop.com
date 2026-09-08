@@ -1,1 +1,25 @@
-Project Brief: Creator Gacha & Mystery Box Platform Core Concept A SaaS platform ("Shopify for Creator Gacha") enabling creators and influencers to host custom-branded mystery boxes or chests. Creators define the prizes, set the opening price, and control the odds, while fans pay to unbox digital or physical rewards. Key Features & Mechanics Creator Portal: Creators set custom box prices, add rewards (e.g., 1-on-1 calls, signed merch, digital roles), and configure explicit probability weights. CS2-Style Unboxing UX: A horizontal scrolling carousel/reel animation with smooth deceleration and sound effects revealing the won reward. Provably Fair RNG: HMAC-SHA256 server-side algorithm (server seed + client seed + nonce) guaranteeing deterministic, tamper-proof outcome verification. Community Features: Real-time Socket.io live drop feeds showing recent wins, plus Redis-cached leaderboards tracking top fan spend per creator. Recommended Tech Stack Frontend: React (TypeScript) + Tailwind CSS + Framer Motion (for smooth 60fps reel animations). Backend: Node.js (Express + TypeScript) + Socket.io + Redis. Database: PostgreSQL (Supabase) for ACID-compliant monetary transactions and probability execution. Core Database Schema users (id, username, wallet_balance, created_at) creators (id, user_id, handle, custom_slug) boxes (id, creator_id, name, price, active) rewards (id, box_id, name, image_url, value, odds_weight) box_opens (id, user_id, box_id, won_reward_id, cost, server_seed, client_seed, nonce, created_at)
+# CreatorDrop Product Brief
+
+CreatorDrop is a creator-led, free-entry reward platform. Creators publish Drops with explicit
+reward chances; eligible fans use earned opening entitlements to reveal a backend-selected reward
+through a provably fair reel experience.
+
+The active fan journey is:
+
+```text
+opening entitlement → opening-v2 → free atomic opening → reward
+```
+
+Fans do not fund a CreatorDrop wallet, buy credits, pay a Drop price, or create a financial
+transaction. Entitlement availability and personal opening limits are PostgreSQL-authoritative.
+The backend consumes exactly one entitlement in the same transaction as the nonce, deterministic
+selection, opening, reward win, fulfillment obligation, idempotency result, and outbox records.
+
+Published Drop versions and reward odds are immutable. The versioned HMAC-SHA256 rejection
+sampling protocol remains independently verifiable, while the primary consumer experience shows
+percentage odds and keeps raw proof details optional.
+
+The retired paid `opening-v1` model, wallet/ledger records, funding history, migrations, and proof
+parsers remain immutable compatibility and audit history. They are not active fan product
+surfaces. Entry claims, XP/levels, Universal Entries, creator SaaS billing, and the creator
+management redesign remain future roadmap work.

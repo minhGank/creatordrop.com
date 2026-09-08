@@ -6,7 +6,6 @@ import type { PublicBoxSummaryContract } from '@creatordrop/contracts';
 import { useApi } from '../api/use-api.js';
 import { useApiResource } from '../api/use-api-resource.js';
 import { EmptyState, ErrorState, LoadingState } from '../components/page-states.js';
-import { formatMinorUnits } from '../formatting/money.js';
 
 export const CreatorDetailPage = () => {
   const customSlug = useParams<{ readonly customSlug: string }>().customSlug ?? '';
@@ -85,17 +84,13 @@ const CreatorCatalog = ({ customSlug }: { readonly customSlug: string }) => {
                 )}
                 <span className="box-card-body">
                   <span className={`status-pill ${box.availability}`}>
-                    {box.availability === 'openable'
-                      ? 'Published'
-                      : box.availability === 'opening-v2'
-                        ? 'Free-entry'
-                        : 'Legacy · view only'}
+                    {box.availability === 'opening-v2' ? 'Drop' : 'Legacy · view only'}
                   </span>
                   <strong>{box.name}</strong>
                   <small>
                     {box.availability === 'opening-v2'
-                      ? `${box.maxOpeningsPerUser} max openings per user`
-                      : formatMinorUnits(box.priceMinor, box.currency)}
+                      ? 'Open with an available Drop'
+                      : 'Historical paid-opening version'}
                   </small>
                 </span>
               </Link>

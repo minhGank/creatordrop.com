@@ -24,13 +24,6 @@ import { createLeaderboardRouter } from './modules/leaderboards/leaderboard.rout
 import type { LeaderboardService } from './modules/leaderboards/leaderboard.service.js';
 import { createOpeningRouter } from './modules/openings/opening.route.js';
 import type { OpeningService } from './modules/openings/opening.service.js';
-import {
-  createPaymentRouter,
-  createStripeWebhookRouter,
-} from './modules/payments/payment.route.js';
-import type { PaymentService } from './modules/payments/payment.service.js';
-import { createWalletRouter } from './modules/wallet/wallet.route.js';
-import type { WalletService } from './modules/wallet/wallet.service.js';
 
 const sendStatus =
   (status: ServiceStatusResponse['status']) =>
@@ -47,12 +40,7 @@ export interface AppOptions {
   readonly logger: Logger;
   readonly leaderboardService?: LeaderboardService;
   readonly openingService?: OpeningService;
-  readonly paymentService?: PaymentService;
   readonly publicCatalogService?: PublicCatalogService;
-  readonly runtime: {
-    readonly testCreditsEnabled: boolean;
-    readonly stripeFundingEnabled?: boolean;
-  };
   readonly security: {
     readonly allowedOrigins: readonly string[];
     readonly authRateLimitMax: number;
@@ -61,12 +49,10 @@ export interface AppOptions {
     readonly creatorMutationRateLimitWindowMs: number;
     readonly fairnessMutationRateLimitMax: number;
     readonly fairnessMutationRateLimitWindowMs: number;
+    readonly openingMutationRateLimitMax: number;
+    readonly openingMutationRateLimitWindowMs: number;
     readonly requestBodyLimitBytes: number;
-    readonly stripeWebhookBodyLimitBytes?: number;
-    readonly walletMutationRateLimitMax: number;
-    readonly walletMutationRateLimitWindowMs: number;
   };
-  readonly walletService: WalletService;
 }
 
 export const createApp = ({
@@ -78,11 +64,8 @@ export const createApp = ({
   leaderboardService,
   logger,
   openingService,
-  paymentService,
   publicCatalogService,
-  runtime,
   security,
-  walletService,
 }: AppOptions): Express => {
   const app = express();
 
@@ -91,15 +74,6 @@ export const createApp = ({
   app.use(requestLoggingMiddleware({ logger }));
   app.use(helmet());
   app.use(cors(createCorsOptions(security.allowedOrigins)));
-  if (runtime.stripeFundingEnabled && paymentService !== undefined) {
-    app.use(
-      '/v1/webhooks',
-      createStripeWebhookRouter({
-        bodyLimitBytes: security.stripeWebhookBodyLimitBytes ?? 262_144,
-        service: paymentService,
-      }),
-    );
-  }
   app.use(express.json({ limit: security.requestBodyLimitBytes }));
   app.get('/health', sendStatus('ok'));
   app.get('/ready', sendStatus('ready'));
@@ -122,8 +96,8 @@ export const createApp = ({
       '/v1',
       createOpeningRouter({
         authenticate,
-        mutationRateLimitMax: security.walletMutationRateLimitMax,
-        mutationRateLimitWindowMs: security.walletMutationRateLimitWindowMs,
+        mutationRateLimitMax: security.openingMutationRateLimitMax,
+        mutationRateLimitWindowMs: security.openingMutationRateLimitWindowMs,
         service: openingService,
       }),
     );
@@ -137,17 +111,6 @@ export const createApp = ({
       service: catalogService,
     }),
   );
-  if (runtime.stripeFundingEnabled && paymentService !== undefined) {
-    app.use(
-      '/v1',
-      createPaymentRouter({
-        authenticate,
-        mutationRateLimitMax: security.walletMutationRateLimitMax,
-        mutationRateLimitWindowMs: security.walletMutationRateLimitWindowMs,
-        service: paymentService,
-      }),
-    );
-  }
   app.use(
     '/v1',
     createFairnessRouter({
@@ -168,16 +131,6 @@ export const createApp = ({
       }),
     );
   }
-  app.use(
-    '/v1',
-    createWalletRouter({
-      authenticate,
-      mutationRateLimitMax: security.walletMutationRateLimitMax,
-      mutationRateLimitWindowMs: security.walletMutationRateLimitWindowMs,
-      service: walletService,
-      testCreditsEnabled: runtime.testCreditsEnabled,
-    }),
-  );
   app.use(
     '/v1',
     createCreatorRouter({

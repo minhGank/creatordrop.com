@@ -27,19 +27,19 @@ export const publicCreatorsResponseFixture: PublicCreatorsResponse = {
 export const publicCreatorBoxesResponseFixture: PublicCreatorBoxesResponse = {
   boxes: [
     {
-      availability: 'openable',
-      configurationHash: 'a'.repeat(64),
-      currency: 'USD',
-      currentPublishedVersionId: '00000000-0000-4000-8000-000000000102',
-      description: 'A published box.',
-      id: '00000000-0000-4000-8000-000000000101',
+      availability: 'opening-v2',
+      configurationHash: '9'.repeat(64),
+      currency: null,
+      currentPublishedVersionId: '00000000-0000-4000-8000-000000000504',
+      description: 'A free-entry Drop.',
+      id: '00000000-0000-4000-8000-000000000503',
       imageUrl: null,
-      maxOpeningsPerUser: null,
-      name: 'First Drop',
-      openingCompatibilityVersion: 'opening-v1',
-      priceMinor: '999',
-      publishedAt: '2026-09-02T12:00:00.000Z',
-      versionNumber: 2,
+      maxOpeningsPerUser: '3',
+      name: 'Free Drop',
+      openingCompatibilityVersion: 'opening-v2',
+      priceMinor: null,
+      publishedAt: '2026-09-07T00:00:00.000Z',
+      versionNumber: 1,
     },
   ],
   nextCursor: null,
@@ -282,6 +282,30 @@ export const openingV2ResponseFixture: BoxOpeningResponse = {
       rarityPolicyVersion: 'rarity-v1',
       rewardVersionId: '00000000-0000-4000-8000-000000000502',
     },
+  },
+};
+
+export const pendingOpeningV2ProofFixture: OpeningFairnessProofResponse = {
+  proof: {
+    algorithmVersion: 'hmac-sha256-rejection-v1',
+    clientSeed: currentClientSeedFixture,
+    configurationHash: openingV2BoxFixture.configurationHash,
+    manifest: openingV2BoxFixture.manifest,
+    nonce: '0',
+    openedAt: '2026-09-07T00:01:00.000Z',
+    openingId: openingV2ResponseFixture.opening.id,
+    recorded: {
+      acceptedDigestHex: 'd'.repeat(64),
+      acceptedRound: '0',
+      boxVersionRewardId: '00000000-0000-4000-8000-000000000501',
+      position: 0,
+      rewardVersionId: '00000000-0000-4000-8000-000000000502',
+      selectionValue: '0',
+    },
+    seedSetId: currentFairnessFixture.fairness.activeSeedSet.id,
+    serverSeedCommitment: currentFairnessFixture.fairness.activeSeedSet.commitment,
+    specificationId: 'creatordrop-rng-hmac-sha256-rejection-v1',
+    verificationStatus: 'pending_reveal',
   },
 };
 

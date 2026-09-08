@@ -89,6 +89,8 @@ export interface OpeningService {
 }
 
 export interface OpeningServiceOptions {
+  /** Explicit opt-in for legacy regression tooling, never configured by active startup. */
+  readonly allowLegacyPaidOpenings?: boolean;
   readonly createId?: () => string;
   readonly database: Database;
   readonly earningsHoldMs?: number;
@@ -519,6 +521,7 @@ const retryableTransaction = async <Result>(
 };
 
 export const createOpeningService = ({
+  allowLegacyPaidOpenings = false,
   createId = uuidv7,
   database,
   earningsHoldMs = defaultEarningsHoldMs,
@@ -598,6 +601,10 @@ export const createOpeningService = ({
           const catalog = requireOpeningCatalog(
             await findOpeningCatalog(transaction, command.boxId),
           );
+          // Completed v1 commands may replay above, but new fan commands cannot spend a wallet.
+          if (!allowLegacyPaidOpenings && catalog.openingCompatibilityVersion !== 'opening-v2') {
+            throw new BoxNotOpenableError();
+          }
           if (
             catalog.boxVersionId !== command.expectedBoxVersionId ||
             catalog.configurationHash !== command.expectedConfigurationHash

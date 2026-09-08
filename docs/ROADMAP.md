@@ -141,7 +141,7 @@ Completed historical phases remain accurate: `opening-v1` is the paid wallet/led
 implemented in Phases 8–15. The target product removes fan payment from newly published Drops
 without rewriting that immutable financial or fairness history.
 
-### R1A — opening-v2 + entitlement foundation
+### R1A — opening-v2 + entitlement foundation ✅
 
 Completed: explicit non-financial `opening-v2` catalog versions, a separate deterministic manifest,
 positive immutable `maxOpeningsPerUser`, zero legacy base rewards, version-aware domain/verifier
@@ -150,7 +150,7 @@ identities. Local operator grants are source-idempotent and application-role ina
 Historical `opening-v1` bytes, hashes, proofs, and paid opening behavior remain unchanged. R1A
 prepared but did not itself consume entitlements.
 
-### R1B — Atomic free opening
+### R1B — Atomic free opening ✅
 
 Completed: the opening endpoint dispatches explicitly by compatibility model. `opening-v2`
 serializes each user/stable-box scope, enforces the published successful-opening maximum, selects
@@ -161,29 +161,33 @@ sale/allocation ledger posting, fee/share calculation, creator earning, or legac
 The response and UI are correspondingly non-financial. `opening-v1` keeps its paid Phase 9 path
 unchanged.
 
-### R1C — Runtime/product switch
+### R1C — Runtime/product switch ✅
 
-Planned: switch active API/frontend product surfaces to free-entry Drops, disable fan wallet and
-funding surfaces, provide the minimum new consumer flow, and complete the rebased normative docs.
-Historical financial records and their audit/read requirements remain preserved.
+Completed after full CI validation: `opening-v2` is the normal entitlement-backed fan flow. The
+active API composition no longer mounts wallet reads, test-credit grants, funding intents, or the
+fan Stripe webhook, and it no longer constructs their services or requires their environment
+settings. The active web product shows server-authoritative remaining Drops, percentage odds,
+free confirmation, consumer reward/fulfillment copy, and collapsed fairness verification without
+financial fields or raw implementation details. `opening-v1` backend behavior, proof parsing,
+immutable financial records, migrations, and audit/regression code remain preserved.
 
-### R2 — Entry claims & manual verification
+### R2 — Entry claims & manual verification (planned)
 
 Planned: screenshot evidence, authoritative usernames/handles, proof-review records, and creator
 approval/rejection workflows. Provider-specific Twitch, YouTube, Instagram, or Shopify integration
 requires its own approved design rather than being inferred by R1A.
 
-### R3 — XP, levels & Universal Entries
+### R3 — XP, levels & Universal Entries (planned)
 
 Planned: retire active points/leaderboards, introduce global XP and levels, and define Universal
 Entries. Finalized historical rankings/achievements remain immutable history.
 
-### R4 — Creator SaaS plans & hosted-opening quotas
+### R4 — Creator SaaS plans & hosted-opening quotas (planned)
 
 Planned: creator hosting plans, monthly usage limits, and later Stripe Billing. No creator billing
-or hosted-opening quota is introduced by R1A.
+or hosted-opening quota is introduced by R1.
 
-## Phase 16 — Creator management UI
+## Phase 16 — Creator management UI (future)
 
 Depends on: Phases 4, 5, 12, 14, and the R1 runtime/product switch.
 
@@ -193,7 +197,7 @@ fan-opening prerequisite. Tests cover client-side ergonomics plus authoritative 
 stale revisions, permission changes mid-session, exact weight display, and inaccessible
 cross-creator navigation.
 
-## Phase 17 — Dashboard and live community UI
+## Phase 17 — Dashboard and live community UI (future)
 
 Depends on: Phases 10, 13, 14, and R3.
 
@@ -203,7 +207,7 @@ remain readable immutable history, not the active progression system. Tests cove
 duplicate/out-of-order events, stale projections, Redis fallback, safe identity presentation, and
 high-volume rendering.
 
-## Phase 18 — Operational hardening and launch gate
+## Phase 18 — Operational hardening and launch gate (future)
 
 Depends on: all launch-scope phases and completed R1–R4 product decisions.
 
@@ -251,11 +255,19 @@ Maintain a table-driven actor/resource/action matrix, including unauthenticated,
 
 ### Contract and end-to-end tests
 
-Validate implementation against OpenAPI and versioned Socket.io schemas. E2E tests cover sign-in, funding sandbox flow, one opening and animation, lost-response replay, proof after seed reveal, creator publish, and fulfillment. Keep a small deterministic E2E suite; lower layers cover permutations.
+Validate implementation against OpenAPI and versioned Socket.io schemas. Active-product E2E tests
+cover sign-in, an operator-provisioned entitlement, one free v2 opening and animation,
+lost-response replay, proof after seed reveal, creator publish, and fulfillment. Retained v1 and
+funding integration suites cover historical compatibility separately. Keep a small deterministic
+E2E suite; lower layers cover permutations.
 
 ### Financial invariant/property tests
 
-Generate command sequences and assert: ledger sums zero per currency, posted entries never change, wallet equals its ledger projection, wallet never goes negative, every successful opening has exactly one debit/win/fulfillment, failed openings have none, and every provider settlement maps at most once.
+Generate command sequences and assert: ledger sums zero per currency, posted entries never change,
+wallet equals its ledger projection, wallet never goes negative, every successful v1 opening has
+exactly one debit/win/fulfillment, every successful v2 opening has exactly one entitlement
+consumption/win/fulfillment and no financial mutation, failed openings have none, and every
+provider settlement maps at most once.
 
 ## Definition of done for every implementation phase
 

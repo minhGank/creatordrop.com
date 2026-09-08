@@ -12,8 +12,6 @@ import type {
   PublicCreatorBoxesResponse,
   PublicCreatorResponse,
   PublicCreatorsResponse,
-  WalletsResponse,
-  WalletTestCreditResponse,
 } from '@creatordrop/contracts';
 
 const nullableHttpsUrlSchema = z.union([z.url({ protocol: /^https:$/u }), z.null()]);
@@ -216,18 +214,6 @@ const publicCreatorBoxResponseSchema = z
   .object({ box: publishedBoxSchema, creator: publicCreatorSchema })
   .strict();
 
-const walletSchema = z
-  .object({
-    balanceMinor: canonicalDecimalSchema,
-    currency: z.string().regex(/^[A-Z]{3}$/u),
-    id: uuidSchema,
-    revision: canonicalDecimalSchema,
-  })
-  .strict();
-
-const walletsResponseSchema = z.object({ wallets: z.array(walletSchema) }).strict();
-const walletTestCreditResponseSchema = z.object({ wallet: walletSchema }).strict();
-
 const openingFairnessSchema = z
   .object({
     clientSeed: hex256Schema,
@@ -273,7 +259,14 @@ const paidBoxOpeningSchema = z
     id: uuidSchema,
     pointsAwarded: z.union([z.literal(5), z.literal(20)]),
     reward: openingRewardSchema,
-    wallet: walletSchema,
+    wallet: z
+      .object({
+        balanceMinor: canonicalDecimalSchema,
+        currency: z.string().regex(/^[A-Z]{3}$/u),
+        id: uuidSchema,
+        revision: canonicalDecimalSchema,
+      })
+      .strict(),
   })
   .strict();
 
@@ -428,7 +421,6 @@ export class CreatorDropProtocolError extends Error {
 
 export interface CreatorDropApiClient {
   exchangeSession(accessToken: string): Promise<AuthSessionResponse>;
-  grantUsdTestCredits(idempotencyKey: string): Promise<WalletTestCreditResponse>;
   getCurrentFairness(signal?: AbortSignal): Promise<CurrentFairnessResponse>;
   initializeFairness(): Promise<CurrentFairnessResponse>;
   getCreator(customSlug: string, signal?: AbortSignal): Promise<PublicCreatorResponse>;
@@ -456,7 +448,6 @@ export interface CreatorDropApiClient {
     signal?: AbortSignal,
   ): Promise<PublicCreatorBoxesResponse>;
   listCreators(cursor?: string, signal?: AbortSignal): Promise<PublicCreatorsResponse>;
-  listWallets(signal?: AbortSignal): Promise<WalletsResponse>;
   openBox(
     boxId: string,
     clientSeed: string,
@@ -560,12 +551,6 @@ export const createApiClient = ({
         body: {},
         method: 'POST',
       }),
-    grantUsdTestCredits: (idempotencyKey) =>
-      request('/v1/me/wallets/USD/test-credits', walletTestCreditResponseSchema, {
-        body: { amountMinor: '100000' },
-        idempotencyKey,
-        method: 'POST',
-      }),
     getCurrentFairness: (signal) =>
       request(
         '/v1/me/fairness',
@@ -619,8 +604,6 @@ export const createApiClient = ({
         publicCreatorsSchema,
         signal === undefined ? {} : { signal },
       ),
-    listWallets: (signal) =>
-      request('/v1/me/wallets', walletsResponseSchema, signal === undefined ? {} : { signal }),
     openBox: (
       boxId,
       clientSeed,

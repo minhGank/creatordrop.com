@@ -6,24 +6,19 @@ import type {
 } from '../src/auth/auth-client.js';
 import {
   authSessionResponseFixture,
-  boxOpeningFixture,
   currentFairnessFixture,
-  pendingOpeningProofFixture,
+  openingV2BoxFixture,
+  openingV2ResponseFixture,
+  pendingOpeningV2ProofFixture,
   publicCreatorBoxesResponseFixture,
   publicCreatorResponseFixture,
   publicCreatorsResponseFixture,
-  publishedBoxFixture,
 } from './fixtures.js';
-
-const emptyWallets = { wallets: [] } as const;
 
 export const createTestApiClient = (
   overrides: Partial<CreatorDropApiClient> = {},
 ): CreatorDropApiClient => ({
   exchangeSession: overrides.exchangeSession ?? (() => Promise.resolve(authSessionResponseFixture)),
-  grantUsdTestCredits:
-    overrides.grantUsdTestCredits ??
-    (() => Promise.reject(new Error('The test did not configure test-credit grants.'))),
   getCurrentFairness:
     overrides.getCurrentFairness ?? (() => Promise.resolve(currentFairnessFixture)),
   initializeFairness:
@@ -32,31 +27,30 @@ export const createTestApiClient = (
   getCreatorBox:
     overrides.getCreatorBox ??
     (() =>
-      Promise.resolve({ box: publishedBoxFixture, creator: publicCreatorResponseFixture.creator })),
+      Promise.resolve({ box: openingV2BoxFixture, creator: publicCreatorResponseFixture.creator })),
   getOpeningFairnessProof:
-    overrides.getOpeningFairnessProof ?? (() => Promise.resolve(pendingOpeningProofFixture)),
+    overrides.getOpeningFairnessProof ?? (() => Promise.resolve(pendingOpeningV2ProofFixture)),
   getOpeningEntitlementState:
     overrides.getOpeningEntitlementState ??
     (() =>
       Promise.resolve({
         entitlement: {
           available: false,
-          boxId: publishedBoxFixture.manifest.boxId,
+          boxId: openingV2BoxFixture.manifest.boxId,
           consumed: '0',
           granted: '0',
           limitReached: false,
-          maxOpeningsPerUser: '1',
+          maxOpeningsPerUser: '3',
           remaining: '0',
           successfulOpenings: '0',
         },
       })),
   getPublishedBoxVersion:
-    overrides.getPublishedBoxVersion ?? (() => Promise.resolve(publishedBoxFixture)),
+    overrides.getPublishedBoxVersion ?? (() => Promise.resolve(openingV2BoxFixture)),
   listCreatorBoxes:
     overrides.listCreatorBoxes ?? (() => Promise.resolve(publicCreatorBoxesResponseFixture)),
   listCreators: overrides.listCreators ?? (() => Promise.resolve(publicCreatorsResponseFixture)),
-  listWallets: overrides.listWallets ?? (() => Promise.resolve(emptyWallets)),
-  openBox: overrides.openBox ?? (() => Promise.resolve(boxOpeningFixture)),
+  openBox: overrides.openBox ?? (() => Promise.resolve(openingV2ResponseFixture)),
   updateCurrentClientSeed:
     overrides.updateCurrentClientSeed ?? (() => Promise.resolve(currentFairnessFixture)),
 });

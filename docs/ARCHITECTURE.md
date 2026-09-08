@@ -22,16 +22,19 @@ PostgreSQL owns users, configuration versions, openings, balances, ledger entrie
 
 `boxes` and `rewards` are stable identities. Every publish creates immutable `box_versions`, `reward_versions`, and ordered weighted entries. Phase 9 adds an explicit `opening-v1` compatibility marker and exactly one explicit base-reward designation to newly published paid/openable versions. Earlier published versions are grandfathered unchanged with a null marker: they remain readable fairness history but cannot be opened. R1A adds the distinct `opening-v2` free-entry publication model: it has no price, currency, or base reward and instead snapshots a positive `maxOpeningsPerUser`. Republishing always creates a new version; no historical version is inferred, backfilled, or rehashed. An opening references exactly one compatible published box version. Edits create drafts/new versions and cannot rewrite history.
 
-### Dual opening model during the product rebase
+### Active free-entry model with legacy opening compatibility
 
-`opening-v1` retains the completed paid-opening contract, including its historical financial manifest and Phase 9 transaction. `opening-v2` is the target free-entry contract. Its canonical manifest contains the model marker, box/version identity, ordered rewards and weights, immutable rarity snapshots, total weight, and `maxOpeningsPerUser`; it deliberately contains no financial field. Both formats use the unchanged `hmac-sha256-rejection-v1` selector and separate exact parsers/canonicalizers.
+`opening-v1` retains the completed paid-opening contract, including its historical financial manifest and Phase 9 transaction. `opening-v2` is the active free-entry contract. Its canonical manifest contains the model marker, box/version identity, ordered rewards and weights, immutable rarity snapshots, total weight, and `maxOpeningsPerUser`; it deliberately contains no financial field. Both formats use the unchanged `hmac-sha256-rejection-v1` selector and separate exact parsers/canonicalizers.
 
-R1B makes both models explicit at the production opening boundary. `opening-v1` follows the
-unchanged paid wallet/ledger path. `opening-v2` requires one available stable-box entitlement,
+R1B made both models explicit at the opening service boundary. `opening-v1` retains its unchanged
+paid wallet/ledger implementation for immutable history, proof verification, and regression
+coverage. `opening-v2` requires one available stable-box entitlement,
 atomically enforces the published per-user maximum, and performs the same fairness, inventory,
 win, fulfillment, idempotency, and outbox work without any wallet, ledger, earnings, currency,
-price, or legacy-points operation. R1C remains responsible for retiring active fan financial
-surfaces across the wider product; R1B does not remove historical or still-supported v1 code.
+price, or legacy-points operation. R1C makes v2 the only actionable model in the active web
+product and unregisters fan wallet, test-credit, funding-intent, and Stripe funding webhook routes
+from normal API composition. Historical financial data, migrations, services, and v1 parsers are
+preserved for compatibility and audit; they are not active fan product surfaces.
 
 ### One currency per wallet and integer amounts
 
@@ -81,7 +84,7 @@ route -> middleware -> controller -> application service -> repository -> Postgr
 - **Realtime** writes transactional outbox rows and publishes only from a worker after commit.
 - **Caching** uses cache-aside reads and post-commit invalidation. Cache failure cannot change a financial outcome.
 
-Modules must not import another module's repository directly. They call its application interface or pure public domain types. In particular, opening coordinates published boxes, RNG, wallet, fulfillment, idempotency, and outbox through explicit interfaces.
+Modules must not import another module's repository directly. They call its application interface or pure public domain types. In particular, opening coordinates published boxes, RNG, fulfillment, idempotency, and outbox through explicit interfaces; the retained v1 branch additionally coordinates the wallet and ledger, while v2 never does.
 
 ## Phase 14 web boundary
 
@@ -99,20 +102,20 @@ secrets never enter the web build. Vite configuration rejects modern Supabase se
 legacy service-role JWTs before emitting browser assets; runtime parsing repeats the browser-key
 classification as defense in depth.
 
-Phase 14 routes are `/`, `/auth`, `/account`, `/creators`, `/creators/:customSlug`, and
+Phase 14 introduced `/`, `/auth`, `/account`, `/creators`, `/creators/:customSlug`, and
 `/creators/:customSlug/boxes/:boxId`. Public pages use allowlisted catalog APIs without
-authentication. The protected account shell demonstrates session gating and may expose the
-existing Phase 8 synthetic-credit command only through a clearly labeled development-server
-control. Vite derives one boolean from `WALLET_TEST_CREDITS_ENABLED` only when both its mode and the
-declared app environment are development/test; builds force the boolean off, and the backend route
-and service remain the authoritative gates. The account shell adds no creator dashboard or product
-mutation. React text escaping is the catalog XSS boundary; no catalog field is rendered as raw
-HTML. Creator box-detail routes use one creator-scoped backend lookup rather than composing a slug
-with a globally addressed box. Money formatting starts from integer minor-unit strings, and probability
-display starts from immutable integer weights using `BigInt`, always retaining the exact
-`weight / totalWeight` pair. Shared loading/error/empty states, semantic headings/forms, visible
-focus, skip navigation, responsive layouts, and `prefers-reduced-motion` support form the
+authentication. React text escaping is the catalog XSS boundary; no catalog field is rendered as
+raw HTML. Creator box-detail routes use one creator-scoped backend lookup rather than composing a
+slug with a globally addressed box. Shared loading/error/empty states, semantic headings/forms,
+visible focus, skip navigation, responsive layouts, and `prefers-reduced-motion` support form the
 accessibility baseline for later phases.
+
+R1C supersedes Phase 14's active wallet and synthetic-credit presentation. The account page is
+session-only guidance, browser configuration has no wallet/test-credit switch, and active v2
+catalog pages show percentages derived from immutable integer weights without exposing raw
+fractions. They show neither money nor a synthetic zero price. An `opening-v1` catalog version may
+remain readable as explicitly labeled historical content, but the web app supplies no opening
+control for it.
 
 ## Authentication and authorization
 
@@ -120,7 +123,7 @@ Use Supabase Auth as the initial identity provider. The API verifies JWT signatu
 
 Authorization uses a hybrid RBAC/resource-ownership model:
 
-- `fan`: read public boxes, open boxes, see own wallet/openings/fulfillments, manage own fairness client seed.
+- `fan`: read public Drops, read own v2 opening state, open an entitled v2 Drop, and manage own fairness client seed. Historical v1 financial state is not an active fan API surface.
 - `creator`: fan rights plus manage resources where `creator_memberships.user_id` matches and the role permits the operation.
 - `creator_owner`: manage membership and payout settings for that creator.
 - `support`: narrowly scoped read workflows; no direct ledger edits.
@@ -131,10 +134,13 @@ Creator authorization always scopes database access by both resource ID and crea
 
 ## Box-opening consistency model
 
-The opening endpoint dispatches to one of two explicit models. R1B does not alter the
-`opening-v1` paid lock order, accounting, RNG, inventory, or idempotency behavior.
+R1C's active opening service accepts new commands only for `opening-v2`. It resolves completed
+idempotency replays first (including v1 history), then rejects new v1 commands before wallet
+or RNG access. The legacy implementation requires an explicit service-level opt-in, used only
+by regression tests and never read from runtime configuration. Its historical lock order,
+accounting, RNG, inventory, and idempotency behavior remain intact.
 
-The paid `opening-v1` endpoint is a short PostgreSQL transaction at `READ COMMITTED` with explicit row locks. Its lock order remains:
+The retained paid `opening-v1` implementation is a short PostgreSQL transaction at `READ COMMITTED` with explicit row locks. Its lock order remains:
 
 1. idempotency key claim;
 2. matching active leaderboard-season row in shared mode, when the database timestamp is in a season;
@@ -198,9 +204,15 @@ nonce/RNG, inventory, box revalidation, reward-win, fulfillment, and two outbox-
 then commit with the consumption. Any failure rolls all of them back. A committed replay returns
 the stored historical model-specific response before current catalog or seed state is consulted.
 
-Failures before commit leave no charge, nonce, opening, fulfillment, or event. If commit succeeds but the HTTP response is lost, retry returns the stored result.
+Failures before commit leave no entitlement consumption, charge, nonce, opening, fulfillment, or event. If commit succeeds but the HTTP response is lost, retry returns the stored result.
 
-Phase 15 stores a server-derived `rarity-v1` tier on each immutable published box/reward association using exact weight/total comparisons; it does not change the RNG manifest or selection semantics. On first use, the browser first sends the empty `POST /v1/me/fairness` command so the backend creates the encrypted server seed and public commitment without receiving an opening client seed. Only after that commitment exists does the browser generate a fresh canonical client seed with Web Crypto and save it through the revision-checked client-seed command. The resulting authoritative seed-set ID, commitment, and client seed are displayed before the user can explicitly confirm an opening. The opening command binds all three values, and PostgreSQL rejects a rotated/substituted seed-set with `FAIRNESS_CONFIRMATION_STALE`; initialization is never combined with opening. Before confirmation, the web opening experience refreshes the current authoritative catalog and binds the command to its immutable version/configuration identity; a later mismatch cannot silently switch versions and instead requires the refreshed price and configuration to be explicitly confirmed. It persists one user-intended idempotency key and that complete expectation in session storage and retries only the same command. Only an ambiguous transport outcome is recovered automatically; a definitive server rejection clears recovery, while `OPENING_RETRY_REQUIRED` preserves the command for an explicit user retry. The result UI binds the committed box-version/configuration identity to the exact immutable published snapshot before deriving reel content, price, currency, or odds, and the reel measures the already committed winner's rendered geometry rather than assuming a pixel size. The independent browser verifier consumes the public proof endpoint after reveal and never imports the production selector. A ready proof is not described as verified until that independent recomputation succeeds.
+Phase 15 stores a server-derived `rarity-v1` tier on each immutable published box/reward association using exact weight/total comparisons; it does not change the RNG manifest or selection semantics. On first use, the browser first sends the empty `POST /v1/me/fairness` command so the backend creates the encrypted server seed and public commitment without receiving an opening client seed. Only after that commitment exists does the browser generate a fresh canonical client seed with Web Crypto and save it through the revision-checked client-seed command. The opening command binds the authoritative seed-set ID, commitment, and client seed, and PostgreSQL rejects a rotated/substituted seed-set with `FAIRNESS_CONFIRMATION_STALE`; initialization is never combined with opening. Before confirmation, the web opening experience refreshes the current authoritative catalog and binds the command to its immutable version/configuration identity. A later mismatch cannot silently switch versions and instead requires review and confirmation of the refreshed Drop. It persists one user-intended idempotency key and that complete expectation in session storage and retries only the same command. Only an ambiguous transport outcome is recovered automatically; a definitive server rejection clears recovery, while `OPENING_RETRY_REQUIRED` preserves the command for an explicit user retry. The result UI binds the committed box-version/configuration identity to the exact immutable published snapshot, and the reel measures the already committed winner's rendered geometry rather than assuming a pixel size. The independent browser verifier consumes the public proof endpoint after reveal and never imports the production selector. A ready proof is not described as verified until that independent recomputation succeeds.
+
+R1C keeps those fairness and idempotency bindings but moves their raw seed, commitment, hash, and
+algorithm details behind a collapsed verification affordance. The primary v2 confirmation asks
+only whether to use one available Drop. Entitlement availability comes from the authenticated
+server state, and a successful result shows the committed reward, rarity, percentage chance, and
+human fulfillment state without financial or internal implementation fields.
 
 ## Realtime and cache architecture
 
@@ -263,7 +275,14 @@ and post-commit publish/archive invalidation. Any parse, hash, or identity misma
 falls back to PostgreSQL; cache failure never blocks a catalog write or changes opening
 eligibility.
 
-## Payment and fulfillment architecture
+## Retained legacy payment architecture and active fulfillment
+
+R1C retires fan paid-opening runtime surfaces. Normal API composition does not mount wallet reads,
+test-credit grants, funding-intent creation, or the fan Stripe webhook, and startup does not parse
+or require their former environment settings. The Phase 8–11 modules and the following rules are
+retained solely to preserve immutable financial history, legacy v1 behavior, audit tools, and
+regression coverage. They are not authority to expose a fan funding product. A future creator SaaS
+billing integration belongs to R4 and must use a separately approved boundary.
 
 Wallet funding is an asynchronous state machine driven by signed, idempotent Stripe webhooks. The API creates the local intent before the test-mode Stripe PaymentIntent; Stripe network work stays outside PostgreSQL transactions. Browser redirects and client state are informational only. The webhook verifies the signature over exact raw bytes before any event is trusted, stores a unique provider event ID plus SHA-256 payload hash, validates the bound local intent/user/wallet/amount/currency, and credits the wallet only from `payment_intent.succeeded`.
 
@@ -369,14 +388,14 @@ Feature folders inside API modules use `*.route.ts`, `*.controller.ts`, `*.servi
 ## Security, operational, and compliance requirements
 
 - TLS everywhere; secrets come from a managed secret store. Phase 7 server seeds use versioned authenticated AES-256-GCM encryption under an environment-supplied key and are never logged; true per-record DEK/KMS envelope encryption remains production hardening.
-- Rate-limit login, seed rotation, opening, funding, and creator mutation endpoints by actor and network. Add bot/abuse signals without using them to silently alter odds.
+- Rate-limit login, seed rotation, active openings, and creator mutation endpoints by actor and network. Retained legacy funding tests keep their historical controls. Add bot/abuse signals without using them to silently alter odds.
 - Use secure headers, strict CORS allowlists, request size limits, structured redacted logs, dependency scanning, and regular key rotation.
 - Audit creator publishing, probability changes, seed lifecycle, support access, fulfillment address access, payouts, and ledger adjustments.
 - Back up PostgreSQL with point-in-time recovery and regularly test restore. Define RPO/RTO before launch.
 - Metrics include open success/failure by reason, transaction latency/retries, outbox lag, webhook lag, seed rotation state, ledger reconciliation, and cache drift. Never put high-cardinality secrets or personal data in metrics.
 - Run a daily reconciliation between wallet projections and ledger entries and between provider settlements and ledger transactions. Alert and halt affected financial operations on mismatch.
 - Establish data retention/deletion behavior. Financial/audit records may need legally required retention and should be pseudonymized rather than erased.
-- Complete jurisdiction-specific legal review for paid chance-based rewards: gambling/sweepstakes classification, age/geography controls, odds disclosure, no-purchase route if applicable, consumer protection, tax, AML/KYC, sanctions, creator onboarding, and prohibited prizes.
+- Complete jurisdiction-specific legal review for the active free-entry reward model and any future paid product before launch. Retained paid-opening records remain subject to their historical audit and retention obligations.
 
 ## Missing requirements and open decisions
 
@@ -399,4 +418,4 @@ These must be resolved before their affected phase:
 - **Redis balance/locks:** Redis durability and split-brain behavior are unsuitable as monetary authority; PostgreSQL row locks are sufficient initially.
 - **Mutable reward rows on openings:** this destroys reproducibility when creators edit boxes.
 - **Storing a server seed on each opening in plaintext:** it either leaks active secrets or creates unnecessary secret sprawl. Openings reference a protected seed-set and retain its commitment; the plaintext is published only after retirement.
-- **Provider payment during opening:** network calls inside the atomic path create uncertain outcomes and duplicate-charge risk. Users open only against settled wallet funds.
+- **Provider payment during opening:** network calls inside an atomic path create uncertain outcomes and duplicate-charge risk. The active v2 product uses an earned entitlement and no payment; retained v1 behavior only opened against settled historical wallet funds.

@@ -6,8 +6,7 @@ export const HomePage = () => (
       <p className="eyebrow">Creator-led drops, exact odds</p>
       <h1>Discover the next drop before it disappears.</h1>
       <p className="hero-copy">
-        Browse immutable published reward configurations and understand every weight before you
-        participate.
+        Earn Drops from your favorite creators, see the odds, and reveal your rewards.
       </p>
       <div className="hero-actions">
         <Link className="button primary" to="/creators">
@@ -21,12 +20,12 @@ export const HomePage = () => (
     <section className="principles" aria-labelledby="principles-heading">
       <div>
         <p className="eyebrow">Built in public</p>
-        <h2 id="principles-heading">A catalog you can inspect.</h2>
+        <h2 id="principles-heading">Know what each Drop can reveal.</h2>
       </div>
       <ul>
-        <li>Published reward weights stay tied to their immutable version.</li>
-        <li>Money is displayed from integer minor units.</li>
-        <li>Unavailable or legacy configurations are never presented as actionable.</li>
+        <li>Reward chances are shown before you open.</li>
+        <li>Your available Drops come from earned entries.</li>
+        <li>Each result is selected and recorded before the reveal.</li>
       </ul>
     </section>
   </div>

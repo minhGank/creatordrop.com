@@ -17,7 +17,7 @@ export const formatProbability = (weightText: string, totalText: string): string
 
   const whole = rounded / percentageScale;
   const fractional = (rounded % percentageScale).toString().padStart(decimalPlaces, '0');
-  const trimmed = fractional.replace(/0+$/u, '').padEnd(2, '0');
+  const trimmed = fractional.replace(/0+$/u, '');
   const exactAtDisplayedPrecision = scaledNumerator % total === 0n;
-  return `${exactAtDisplayedPrecision ? '' : '≈'}${whole.toString()}.${trimmed}%`;
+  return `${exactAtDisplayedPrecision ? '' : '≈'}${whole.toString()}${trimmed === '' ? '' : `.${trimmed}`}%`;
 };

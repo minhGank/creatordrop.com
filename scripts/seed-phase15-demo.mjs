@@ -13,10 +13,10 @@ import { findOrCreateUser } from '../apps/api/dist/modules/users/user.repository
 
 const demo = Object.freeze({
   box: Object.freeze({
-    description: 'Development-only Phase 15 box with every rarity-v1 presentation tier.',
+    description: 'Development-only free-entry Drop with every rarity presentation tier.',
     id: '019f1500-0000-7000-8000-000000000200',
     name: 'Every Rarity Test Box',
-    priceMinor: '100',
+    maxOpeningsPerUser: '10',
     versionId: '019f1500-0000-7000-8000-000000000201',
   }),
   creator: Object.freeze({
@@ -35,7 +35,7 @@ const demo = Object.freeze({
 
 const rewards = Object.freeze([
   Object.freeze({
-    base: true,
+    base: false,
     description: 'Development-only common rarity presentation fixture.',
     entryId: '019f1500-0000-7000-8000-000000000301',
     id: '019f1500-0000-7000-8000-000000000101',
@@ -110,7 +110,7 @@ const deterministicIds = (...values) => {
 
 const requireLocalSeedEnvironment = () => {
   if (process.env.NODE_ENV !== 'development' && process.env.NODE_ENV !== 'test') {
-    throw new Error('Phase 15 demo seeding requires explicit NODE_ENV=development or test.');
+    throw new Error('R1C demo seeding requires explicit NODE_ENV=development or test.');
   }
   const connectionString = process.env.DATABASE_URL;
   if (connectionString === undefined) {
@@ -120,11 +120,11 @@ const requireLocalSeedEnvironment = () => {
   const localHosts = new Set(['127.0.0.1', 'localhost', '[::1]']);
   requireCondition(
     localHosts.has(url.hostname) && url.port === '54322' && url.pathname === '/postgres',
-    'Phase 15 demo seeding is restricted to the local Supabase PostgreSQL endpoint.',
+    'R1C demo seeding is restricted to the local Supabase PostgreSQL endpoint.',
   );
   requireCondition(
     url.searchParams.get('options') === '-c role=creatordrop_app',
-    'Phase 15 demo seeding requires the restricted creatordrop_app database role.',
+    'R1C demo seeding requires the restricted creatordrop_app database role.',
   );
 };
 
@@ -299,11 +299,11 @@ const ensureBox = async (database, ownerId) => {
       actorUserId: ownerId,
       creatorId: demo.creator.id,
       ...parseBoxDraftInput({
-        currency: 'USD',
         description: demo.box.description,
         imageUrl: null,
+        maxOpeningsPerUser: demo.box.maxOpeningsPerUser,
         name: demo.box.name,
-        priceMinor: demo.box.priceMinor,
+        openingCompatibilityVersion: 'opening-v2',
       }),
       requestId: 'phase15-demo-seed-box',
     });
@@ -342,11 +342,11 @@ const ensureBox = async (database, ownerId) => {
         boxId: demo.box.id,
         creatorId: demo.creator.id,
         entries: rewards.map((reward) => ({
-          isBaseReward: reward.base,
           rewardVersionId: reward.versionId,
           weight: reward.weight,
         })),
         expectedRevision: box.revision,
+        openingCompatibilityVersion: 'opening-v2',
         requestId: 'phase15-demo-seed-configuration',
       });
       validateDraftEntries(configured);
@@ -388,14 +388,15 @@ const validatePublishedDemo = async (database, ownerId) => {
   requireCondition(
     published.version.id === demo.box.versionId &&
       published.version.state === 'published' &&
-      published.version.openingCompatibilityVersion === 'opening-v1' &&
+      published.version.openingCompatibilityVersion === 'opening-v2' &&
       published.version.name === demo.box.name &&
       published.version.description === demo.box.description &&
-      published.version.priceMinor === demo.box.priceMinor &&
-      published.version.currency === 'USD' &&
+      published.version.priceMinor === null &&
+      published.version.currency === null &&
+      published.version.maxOpeningsPerUser === demo.box.maxOpeningsPerUser &&
       published.manifest.totalWeight === totalWeight.toString() &&
       published.entries.length === rewards.length,
-    'The published demo box does not match the Phase 15 fixture.',
+    'The published demo box does not match the R1C fixture.',
   );
   for (const [index, reward] of rewards.entries()) {
     const entry = published.entries[index];
@@ -416,22 +417,17 @@ const validatePublishedDemo = async (database, ownerId) => {
   return published;
 };
 
-const printSummary = (published) => {
+const printSummary = () => {
   const lines = [
-    'Phase 15 demo catalog is ready.',
+    'R1C free-entry demo catalog is ready.',
     `Owner username: ${demo.owner.username}`,
     `Creator: ${demo.creator.displayName}`,
     `Creator handle: ${demo.creator.handle}`,
     `Creator slug: ${demo.creator.customSlug}`,
     `Box: ${demo.box.name}`,
     `Box ID: ${demo.box.id}`,
-    `Published version: ${published.version.id}`,
-    `Configuration hash: ${published.configurationHash}`,
     'Rewards:',
-    ...rewards.map(
-      (reward) =>
-        `- ${reward.name}: weight ${reward.weight.toString()}/${totalWeight.toString()} (${reward.probability}), ${reward.rarity}${reward.base ? ', base reward' : ''}`,
-    ),
+    ...rewards.map((reward) => `- ${reward.name}: ${reward.probability}, ${reward.rarity}`),
     `Open: http://localhost:5173/creators/${demo.creator.customSlug}/boxes/${demo.box.id}`,
   ];
   process.stdout.write(`${lines.join('\n')}\n`);
@@ -442,7 +438,7 @@ const main = async () => {
   const databaseEnvironment = parseDatabaseEnvironment(process.env);
   const database = createDatabasePool({
     ...databaseEnvironment,
-    applicationName: 'creatordrop-phase15-demo-seed',
+    applicationName: 'creatordrop-r1c-demo-seed',
     maxConnections: 2,
     onUnexpectedPoolError: (error) => {
       process.stderr.write(`Demo seed database pool error: ${error.name}\n`);
@@ -453,7 +449,8 @@ const main = async () => {
     await ensureCreator(database, ownerId);
     for (const reward of rewards) await ensureReward(database, ownerId, reward);
     await ensureBox(database, ownerId);
-    printSummary(await validatePublishedDemo(database, ownerId));
+    await validatePublishedDemo(database, ownerId);
+    printSummary();
   } finally {
     await database.close();
   }
@@ -463,6 +460,6 @@ try {
   await main();
 } catch (error) {
   const message = error instanceof Error ? error.message : 'Unknown demo seed failure.';
-  process.stderr.write(`Phase 15 demo seed failed: ${message}\n`);
+  process.stderr.write(`R1C demo seed failed: ${message}\n`);
   process.exitCode = 1;
 }

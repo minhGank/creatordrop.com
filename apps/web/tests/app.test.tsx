@@ -7,35 +7,58 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type {
   BoxOpeningResponse,
-  OpeningFairnessProofResponse,
+  CurrentFairnessResponse,
+  OpeningV2EntitlementStateResponse,
   PublishedBoxVersionResponse,
   PublicCreatorsResponse,
 } from '@creatordrop/contracts';
 
+import { usePrefersReducedMotion } from '../src/accessibility/use-prefers-reduced-motion.js';
 import { ApiProvider } from '../src/api/api-context.js';
 import { CreatorDropApiError, type CreatorDropApiClient } from '../src/api/client.js';
-import { SessionProvider } from '../src/auth/session-context.js';
 import { AppRoutes } from '../src/app.js';
+import { SessionProvider } from '../src/auth/session-context.js';
+import { isOpeningV2Catalog, type OpeningV2Catalog } from '../src/components/opening-catalog.js';
 import { calculateReelWinnerTranslation } from '../src/components/reel-geometry.js';
 import {
   authSessionResponseFixture,
-  boxOpeningFixture,
   currentFairnessFixture,
   openingV2BoxFixture,
   openingV2ResponseFixture,
-  pendingOpeningProofFixture,
+  pendingOpeningV2ProofFixture,
   publicCreatorBoxesResponseFixture,
   publicCreatorResponseFixture,
   publishedBoxFixture,
 } from './fixtures.js';
 import { browserSession, createTestApiClient, createTestAuthClient } from './test-clients.js';
 
+vi.mock('../src/accessibility/use-prefers-reduced-motion.js', () => ({
+  usePrefersReducedMotion: vi.fn(() => false),
+}));
+
+const mockedReducedMotion = vi.mocked(usePrefersReducedMotion);
+
+const availableEntitlement = (
+  overrides: Partial<OpeningV2EntitlementStateResponse['entitlement']> = {},
+): OpeningV2EntitlementStateResponse => ({
+  entitlement: {
+    available: true,
+    boxId: openingV2BoxFixture.manifest.boxId,
+    consumed: '0',
+    granted: '3',
+    limitReached: false,
+    maxOpeningsPerUser: '3',
+    remaining: '3',
+    successfulOpenings: '0',
+    ...overrides,
+  },
+});
+
 const renderRoute = (
   route: string,
   options: {
     readonly api?: ReturnType<typeof createTestApiClient>;
     readonly auth?: ReturnType<typeof createTestAuthClient>;
-    readonly testCreditsEnabled?: boolean;
   } = {},
 ) => {
   const api = options.api ?? createTestApiClient();
@@ -47,12 +70,32 @@ const renderRoute = (
       <MemoryRouter initialEntries={[route]}>
         <ApiProvider client={api}>
           <SessionProvider apiClient={api} authClient={auth}>
-            <AppRoutes testCreditsEnabled={options.testCreditsEnabled ?? false} />
+            <AppRoutes />
           </SessionProvider>
         </ApiProvider>
       </MemoryRouter>,
     ),
   };
+};
+
+const renderAuthenticatedDrop = (overrides: Partial<CreatorDropApiClient> = {}) =>
+  renderRoute(`/creators/creator-one/boxes/${openingV2BoxFixture.manifest.boxId}`, {
+    api: createTestApiClient({
+      getOpeningEntitlementState: () => Promise.resolve(availableEntitlement()),
+      ...overrides,
+    }),
+    auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
+  });
+
+const openConfirmation = async () => {
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: 'Open Drop' }));
+  const heading = await screen.findByRole('heading', {
+    name: 'Open one of your available Drops?',
+  });
+  const confirmation = heading.closest('section');
+  if (confirmation === null) throw new Error('Expected the Drop confirmation section.');
+  return { confirmation, user };
 };
 
 const deferred = <T,>() => {
@@ -75,114 +118,86 @@ const rectangle = (left: number, width: number): DOMRect => ({
   y: 0,
 });
 
-const committedVersionB = (
-  options: { readonly priceMinor?: string; readonly uniqueWinner?: boolean } = {},
-): { readonly box: PublishedBoxVersionResponse; readonly opening: BoxOpeningResponse } => {
-  if (
-    'openingCompatibilityVersion' in publishedBoxFixture.manifest ||
-    publishedBoxFixture.version.openingCompatibilityVersion !== 'opening-v1'
-  ) {
-    throw new Error('Expected an opening-v1 fixture.');
+const requireOpeningV2Catalog = (catalog: PublishedBoxVersionResponse): OpeningV2Catalog => {
+  if (!isOpeningV2Catalog(catalog)) throw new Error('Expected an opening-v2 fixture.');
+  return catalog;
+};
+
+type OpeningV2 = Extract<
+  BoxOpeningResponse['opening'],
+  { readonly openingCompatibilityVersion: 'opening-v2' }
+>;
+
+const requireOpeningV2 = (response: BoxOpeningResponse): OpeningV2 => {
+  if (!('openingCompatibilityVersion' in response.opening)) {
+    throw new Error('Expected an opening-v2 response fixture.');
   }
-  const versionId = '00000000-0000-4000-8000-000000000105';
-  const first = publishedBoxFixture.entries[0];
-  const second = publishedBoxFixture.entries[1];
-  if (first === undefined || second === undefined) throw new Error('Expected two catalog entries.');
-  const winnerRewardVersion = options.uniqueWinner
+  return response.opening;
+};
+
+const committedVersionB = (uniqueWinner = false) => {
+  const original = requireOpeningV2Catalog(openingV2BoxFixture);
+  const originalOpening = requireOpeningV2(openingV2ResponseFixture);
+  const originalEntry = original.entries[0];
+  const originalManifestEntry = original.manifest.entries[0];
+  if (originalEntry === undefined || originalManifestEntry === undefined) {
+    throw new Error('Expected one opening-v2 reward entry.');
+  }
+  const versionId = '00000000-0000-4000-8000-000000000507';
+  const configurationHash = 'e'.repeat(64);
+  const rewardVersion = uniqueWinner
     ? {
-        ...first.rewardVersion,
-        id: '00000000-0000-4000-8000-000000000305',
+        ...originalEntry.rewardVersion,
+        id: '00000000-0000-4000-8000-000000000508',
         name: 'Version B only reward',
       }
-    : first.rewardVersion;
-  const entries: PublishedBoxVersionResponse['entries'] = [
-    {
-      ...first,
-      id: '00000000-0000-4000-8000-000000000205',
-      rarity: 'common',
-      rarityPolicyVersion: 'rarity-v1',
-      rewardVersion: winnerRewardVersion,
-      weight: '200',
-    },
-    {
-      ...second,
-      id: '00000000-0000-4000-8000-000000000206',
-      rarity: 'common',
-      rarityPolicyVersion: 'rarity-v1',
-      weight: '800',
-    },
-  ];
-  const configurationHash = 'e'.repeat(64);
-  const priceMinor = options.priceMinor ?? '10000';
-  const box: PublishedBoxVersionResponse = {
+    : originalEntry.rewardVersion;
+  const entry = {
+    ...originalEntry,
+    id: '00000000-0000-4000-8000-000000000509',
+    rarity: 'rare' as const,
+    rewardVersion,
+  };
+  const box: OpeningV2Catalog = {
     configurationHash,
-    entries,
+    entries: [entry],
     manifest: {
-      ...publishedBoxFixture.manifest,
+      ...original.manifest,
       boxVersionId: versionId,
-      entries: entries.map((entry) => ({
-        boxVersionRewardId: entry.id,
-        position: entry.position,
-        rewardVersionId: entry.rewardVersion.id,
-        weight: entry.weight,
-      })),
-      priceMinor,
-      totalWeight: '1000',
+      entries: [
+        {
+          ...originalManifestEntry,
+          boxVersionRewardId: entry.id,
+          rarity: entry.rarity,
+          rewardVersionId: rewardVersion.id,
+        },
+      ],
     },
     version: {
-      ...publishedBoxFixture.version,
+      ...original.version,
       configurationHash,
       id: versionId,
-      name: 'Second Drop',
-      priceMinor,
-      totalWeight: '1000',
-      versionNumber: 3,
+      name: 'Updated Free Drop',
+      versionNumber: 2,
     },
   };
   const opening: BoxOpeningResponse = {
     opening: {
-      ...boxOpeningFixture.opening,
+      ...originalOpening,
       boxVersionId: versionId,
-      cost: { currency: publishedBoxFixture.version.currency, priceMinor },
-      fairness: { ...boxOpeningFixture.opening.fairness, configurationHash },
-      pointsAwarded: 5,
+      fairness: { ...originalOpening.fairness, configurationHash },
       reward: {
-        ...boxOpeningFixture.opening.reward,
-        imageUrl: winnerRewardVersion.imageUrl,
-        name: winnerRewardVersion.name,
-        rarity: 'common',
-        rarityPolicyVersion: 'rarity-v1',
-        rewardVersionId: winnerRewardVersion.id,
+        ...originalOpening.reward,
+        name: rewardVersion.name,
+        rarity: entry.rarity,
+        rewardVersionId: rewardVersion.id,
       },
     },
   };
   return { box, opening };
 };
 
-const pendingProofFor = (
-  committed: ReturnType<typeof committedVersionB>,
-): OpeningFairnessProofResponse => {
-  const winner = committed.box.entries.find(
-    (entry) => entry.rewardVersion.id === committed.opening.opening.reward.rewardVersionId,
-  );
-  if (winner === undefined) throw new Error('Expected the committed winner entry.');
-  return {
-    proof: {
-      ...pendingOpeningProofFixture.proof,
-      configurationHash: committed.box.configurationHash,
-      manifest: committed.box.manifest,
-      openingId: committed.opening.opening.id,
-      recorded: {
-        ...pendingOpeningProofFixture.proof.recorded,
-        boxVersionRewardId: winner.id,
-        position: winner.position,
-        rewardVersionId: winner.rewardVersion.id,
-      },
-    },
-  };
-};
-
-describe('Phase 14 web shell', () => {
+describe('R1C active fan product', () => {
   it('renders the public creator catalog without authentication and escapes untrusted text', async () => {
     const maliciousName = '<script>window.hacked=true</script>';
     const response: PublicCreatorsResponse = {
@@ -208,10 +223,10 @@ describe('Phase 14 web shell', () => {
     expect(screen.getByRole('link', { name: 'Skip to content' })).toHaveFocus();
   });
 
-  it('renders creator boxes and immutable box details with safe money and non-zero tiny odds', async () => {
+  it('renders v2 catalog cards and reward odds without prices, currencies, or raw weights', async () => {
     const user = userEvent.setup();
     const getCreatorBox = vi.fn(() =>
-      Promise.resolve({ box: publishedBoxFixture, creator: publicCreatorResponseFixture.creator }),
+      Promise.resolve({ box: openingV2BoxFixture, creator: publicCreatorResponseFixture.creator }),
     );
     renderRoute('/creators/creator-one', {
       api: createTestApiClient({
@@ -221,170 +236,143 @@ describe('Phase 14 web shell', () => {
       }),
     });
 
-    const boxLink = await screen.findByRole('link', { name: /First Drop/u });
-    expect(boxLink).toHaveTextContent('$9.99');
+    const boxLink = await screen.findByRole('link', { name: /Free Drop/u });
+    expect(boxLink).toHaveTextContent('Open with an available Drop');
+    expect(boxLink).not.toHaveTextContent(/USD|\$/u);
     await user.click(boxLink);
 
+    expect(await screen.findByRole('heading', { level: 1, name: 'Free Drop' })).toBeInTheDocument();
+    expect(screen.getByText('100%', { selector: '.odds strong' })).toBeInTheDocument();
+    expect(screen.queryByText('1 / 1')).not.toBeInTheDocument();
     expect(
-      await screen.findByRole('heading', { level: 1, name: 'First Drop' }),
-    ).toBeInTheDocument();
-    expect(screen.getByText('<0.000001%')).toBeInTheDocument();
-    expect(screen.getByText('Base reward', { selector: '.base-label' })).toBeInTheDocument();
-    expect(screen.getByText(publishedBoxFixture.configurationHash)).toBeInTheDocument();
+      screen.queryByText(/total weight|published version|immutable configuration/iu),
+    ).toBeNull();
+    expect(screen.queryByText(/USD|\$0\.00|price|currency/iu)).toBeNull();
     expect(getCreatorBox).toHaveBeenCalledWith(
       publicCreatorResponseFixture.creator.customSlug,
-      publishedBoxFixture.manifest.boxId,
+      openingV2BoxFixture.manifest.boxId,
       expect.any(AbortSignal),
     );
-    expect(screen.getByRole('link', { name: /Back to Creator One/u })).toHaveAttribute(
-      'href',
-      '/creators/creator-one',
-    );
-    expect(screen.queryByRole('button', { name: /open/i })).not.toBeInTheDocument();
   });
 
-  it('keeps technical fairness values in an optional advanced disclosure', async () => {
-    const user = userEvent.setup();
-    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
-      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
+  it('renders all v2 rarity percentages without raw weight fractions', async () => {
+    const original = requireOpeningV2Catalog(openingV2BoxFixture);
+    const originalEntry = original.entries[0];
+    if (originalEntry === undefined) throw new Error('Expected one opening-v2 reward entry.');
+    const rewards = [
+      ['720', '72%', 'common'],
+      ['190', '19%', 'uncommon'],
+      ['70', '7%', 'rare'],
+      ['16', '1.6%', 'epic'],
+      ['4', '0.4%', 'legendary'],
+    ] as const;
+    const entries = rewards.map(([weight, , rarity], index) => ({
+      ...originalEntry,
+      id: `00000000-0000-4000-8000-00000000051${index.toString()}`,
+      position: index,
+      rarity,
+      rewardVersion: {
+        ...originalEntry.rewardVersion,
+        id: `00000000-0000-4000-8000-00000000052${index.toString()}`,
+        name: `${rarity} demo reward`,
+      },
+      weight,
+    }));
+    const box: OpeningV2Catalog = {
+      ...original,
+      entries,
+      manifest: {
+        ...original.manifest,
+        entries: entries.map((entry) => ({
+          boxVersionRewardId: entry.id,
+          position: entry.position,
+          rarity: entry.rarity,
+          rarityPolicyVersion: 'rarity-v1',
+          rewardVersionId: entry.rewardVersion.id,
+          weight: entry.weight,
+        })),
+        totalWeight: '1000',
+      },
+      version: { ...original.version, totalWeight: '1000' },
+    };
+    renderRoute(`/creators/creator-one/boxes/${box.manifest.boxId}`, {
+      api: createTestApiClient({
+        getCreatorBox: () =>
+          Promise.resolve({ box, creator: publicCreatorResponseFixture.creator }),
+      }),
     });
 
-    await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-    const confirmationHeading = await screen.findByRole('heading', { name: 'Open First Drop?' });
-    const confirmation = confirmationHeading.closest('section');
-    if (confirmation === null) throw new Error('Expected the opening confirmation section.');
-    const details = confirmation.querySelector<HTMLDetailsElement>(
-      '.opening-confirmation-fairness',
-    );
-    if (details === null) throw new Error('Expected the fairness disclosure.');
-
-    expect(within(confirmation).getByText('$9.99')).toBeVisible();
-    expect(
-      within(confirmation).getByText('This amount will be deducted from your wallet.'),
-    ).toBeVisible();
-    expect(within(confirmation).getByText('Provably fair')).toBeVisible();
-    expect(details).not.toHaveAttribute('open');
-    expect(
-      within(confirmation).getByText(currentFairnessFixture.fairness.activeSeedSet.commitment),
-    ).not.toBeVisible();
-    expect(
-      within(confirmation).getByText(currentFairnessFixture.fairness.activeSeedSet.id),
-    ).not.toBeVisible();
-    expect(within(confirmation).getByLabelText('Client seed')).not.toBeVisible();
-    expect(within(confirmation).queryByText(/exact confirmed version/u)).not.toBeInTheDocument();
-
-    await user.click(within(confirmation).getByText('Fairness details'));
-    expect(details).toHaveAttribute('open');
-    expect(
-      within(confirmation).getByText(currentFairnessFixture.fairness.activeSeedSet.commitment),
-    ).toBeVisible();
-    expect(
-      within(confirmation).getByText(currentFairnessFixture.fairness.activeSeedSet.id),
-    ).toBeVisible();
-    const clientSeedInput = within(confirmation).getByLabelText('Client seed');
-    expect(clientSeedInput).toBeVisible();
-    const previousClientSeed = currentFairnessFixture.fairness.clientSeed;
-    await user.click(
-      within(confirmation).getByRole('button', { name: 'Generate a new client seed' }),
-    );
-    expect((clientSeedInput as HTMLInputElement).value).toMatch(/^[0-9a-f]{64}$/u);
-    expect(clientSeedInput).not.toHaveValue(previousClientSeed);
+    await screen.findByRole('heading', { level: 1, name: 'Free Drop' });
+    for (const [weight, percentage] of rewards) {
+      expect(screen.getByText(percentage, { selector: '.odds strong' })).toBeVisible();
+      expect(screen.queryByText(`${weight} / 1000`)).toBeNull();
+    }
   });
 
-  it('opens an opening-v2 Drop without wallet, price, funding, or points language', async () => {
-    const getOpeningEntitlementState = vi.fn(() =>
-      Promise.resolve({
-        entitlement: {
-          available: true,
-          boxId: openingV2BoxFixture.manifest.boxId,
-          consumed: '0',
-          granted: '2',
-          limitReached: false,
-          maxOpeningsPerUser: '3',
-          remaining: '2',
-          successfulOpenings: '0',
-        },
-      }),
-    );
-    const openBox = vi.fn(() => Promise.resolve(openingV2ResponseFixture));
-    const user = userEvent.setup();
-    renderRoute(`/creators/creator-one/boxes/${openingV2BoxFixture.manifest.boxId}`, {
+  it('keeps opening-v1 visible only as historical, non-actionable catalog content', async () => {
+    renderRoute(`/creators/creator-one/boxes/${publishedBoxFixture.manifest.boxId}`, {
       api: createTestApiClient({
         getCreatorBox: () =>
           Promise.resolve({
-            box: openingV2BoxFixture,
+            box: publishedBoxFixture,
             creator: publicCreatorResponseFixture.creator,
           }),
-        getOpeningEntitlementState,
-        getPublishedBoxVersion: () => Promise.resolve(openingV2BoxFixture),
-        openBox,
       }),
       auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
     });
 
-    expect(await screen.findByText('2 Drops available')).toBeInTheDocument();
-    expect(screen.queryByText(/wallet balance|fund|\$9\.99|points/iu)).not.toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Open Drop' }));
-    const confirmation = await screen.findByRole('heading', { name: 'Open Free Drop?' });
-    const section = confirmation.closest('section');
-    if (section === null) throw new Error('Expected the opening-v2 confirmation section.');
-    expect(within(section).getByText(/uses one available Drop entitlement/iu)).toBeVisible();
-    expect(within(section).queryByText(/deducted from your wallet|\$/iu)).not.toBeInTheDocument();
-    await user.click(within(section).getByRole('button', { name: 'Open Drop' }));
-    await user.click(await screen.findByRole('button', { name: 'Skip to reveal' }));
-    const resultCopy = await screen.findByText(/using one Drop entitlement/iu);
-    const result = resultCopy.closest('section');
-    if (result === null) throw new Error('Expected the opening-v2 result section.');
-    expect(within(result).getByText(/using one Drop entitlement/iu)).toBeInTheDocument();
-    expect(within(result).getByText('1 Drop remaining')).toBeInTheDocument();
-    expect(within(result).queryByText(/points|wallet|\$/iu)).not.toBeInTheDocument();
-    expect(openBox).toHaveBeenCalledOnce();
+    expect(await screen.findByText('Legacy version · view only')).toBeInTheDocument();
+    expect(screen.getByText(/preserved for past records and proofs/iu)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /open/iu })).not.toBeInTheDocument();
+  });
+
+  it('asks anonymous fans to sign in without showing paid-opening language', async () => {
+    renderRoute(`/creators/creator-one/boxes/${openingV2BoxFixture.manifest.boxId}`);
+
+    expect(await screen.findByText('Sign in to see and open your available Drops.')).toBeVisible();
+    expect(screen.queryByText(/wallet|credit|fund|price|cost|checkout/iu)).toBeNull();
   });
 
   it.each([
     {
-      available: false,
-      label: 'No Drops available',
+      available: true,
+      label: '3 Drops available',
       limitReached: false,
-      maxOpeningsPerUser: '3',
-      remaining: '0',
+      remaining: '3',
       successfulOpenings: '0',
     },
     {
       available: true,
       label: '1 Drop available',
       limitReached: false,
-      maxOpeningsPerUser: '3',
       remaining: '1',
       successfulOpenings: '0',
     },
     {
       available: false,
-      label: "This Drop's personal limit of 3 has been reached.",
+      label: 'No Drops available',
+      limitReached: false,
+      remaining: '0',
+      successfulOpenings: '0',
+    },
+    {
+      available: false,
+      label: "You've reached the opening limit for this Drop.",
       limitReached: true,
-      maxOpeningsPerUser: '3',
-      remaining: '4',
+      remaining: '2',
       successfulOpenings: '3',
     },
-  ])('renders opening-v2 availability as $label', async (state) => {
-    renderRoute(`/creators/creator-one/boxes/${openingV2BoxFixture.manifest.boxId}`, {
-      api: createTestApiClient({
-        getCreatorBox: () =>
-          Promise.resolve({
-            box: openingV2BoxFixture,
-            creator: publicCreatorResponseFixture.creator,
+  ])('renders server-provided availability as "$label"', async (state) => {
+    renderAuthenticatedDrop({
+      getOpeningEntitlementState: () =>
+        Promise.resolve(
+          availableEntitlement({
+            available: state.available,
+            limitReached: state.limitReached,
+            remaining: state.remaining,
+            successfulOpenings: state.successfulOpenings,
           }),
-        getOpeningEntitlementState: () =>
-          Promise.resolve({
-            entitlement: {
-              ...state,
-              boxId: openingV2BoxFixture.manifest.boxId,
-              consumed: '0',
-              granted: state.remaining,
-            },
-          }),
-      }),
-      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
+        ),
     });
 
     expect(await screen.findByText(state.label)).toBeInTheDocument();
@@ -394,321 +382,70 @@ describe('Phase 14 web shell', () => {
     );
   });
 
+  it('confirms and reveals a v2 Drop with consumer copy and no financial or raw-weight fields', async () => {
+    const openBox = vi.fn(() => Promise.resolve(openingV2ResponseFixture));
+    renderAuthenticatedDrop({ openBox });
+    const { confirmation, user } = await openConfirmation();
+
+    expect(within(confirmation).getByText('Free Drop')).toBeVisible();
+    expect(within(confirmation).getByText('Provably Fair')).toBeVisible();
+    expect(
+      within(confirmation).queryByText(
+        /wallet|credit|fund|price|cost|checkout|deduct|entitlement|commitment|seed|HMAC|nonce/iu,
+      ),
+    ).toBeNull();
+    await user.click(within(confirmation).getByRole('button', { name: 'Open Drop' }));
+    await user.click(await screen.findByRole('button', { name: 'Skip to reveal' }));
+
+    const heading = await screen.findByRole('heading', { level: 2, name: 'Free Drop reward' });
+    const result = heading.closest('section');
+    if (result === null) throw new Error('Expected the Drop result section.');
+    expect(within(result).getByText('YOU WON')).toBeInTheDocument();
+    expect(within(result).getByText('Common · 100% chance')).toBeInTheDocument();
+    expect(within(result).getByText('1 Drop remaining')).toBeInTheDocument();
+    expect(within(result).getByText('Reward ready for fulfillment')).toBeInTheDocument();
+    expect(
+      within(result).queryByText(/wallet|credit|fund|price|cost|checkout|points|1 \/ 1/iu),
+    ).toBeNull();
+    expect(openBox).toHaveBeenCalledOnce();
+  });
+
+  it('keeps raw fairness inputs inside the optional result verifier', async () => {
+    const user = userEvent.setup();
+    renderAuthenticatedDrop();
+    await user.click(await screen.findByRole('button', { name: 'Open Drop' }));
+    await user.click(await screen.findByRole('button', { name: 'Open Drop', hidden: false }));
+    await user.click(await screen.findByRole('button', { name: 'Skip to reveal' }));
+
+    const details = (await screen.findByText('Verify opening')).closest('details');
+    if (details === null) throw new Error('Expected the fairness verifier disclosure.');
+    const commitment = pendingOpeningV2ProofFixture.proof.serverSeedCommitment;
+    expect(within(details).getByText(commitment)).not.toBeVisible();
+    await user.click(within(details).getByText('Verify opening'));
+    expect(within(details).getByText(commitment)).toBeVisible();
+  });
+
   it('cancels confirmation without submitting an opening', async () => {
-    const openBox = vi.fn(() => Promise.resolve(boxOpeningFixture));
-    const user = userEvent.setup();
-    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
-      api: createTestApiClient({ openBox }),
-      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
-    });
+    const openBox = vi.fn(() => Promise.resolve(openingV2ResponseFixture));
+    renderAuthenticatedDrop({ openBox });
+    const { confirmation, user } = await openConfirmation();
+    await user.click(within(confirmation).getByRole('button', { name: 'Cancel' }));
 
-    await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-    expect(await screen.findByRole('heading', { name: 'Open First Drop?' })).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Cancel' }));
-
-    expect(screen.queryByRole('heading', { name: 'Open First Drop?' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Open this box' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Open one of your available Drops?' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Open Drop' })).toBeInTheDocument();
     expect(openBox).not.toHaveBeenCalled();
-  });
-
-  it('opens once, reuses one idempotency key after a lost response, and reveals the committed result', async () => {
-    const user = userEvent.setup();
-    const initializeFairness = vi.fn(() => Promise.resolve(currentFairnessFixture));
-    const openBox = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('The response was lost.'))
-      .mockResolvedValue(boxOpeningFixture);
-    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
-      api: createTestApiClient({
-        getCurrentFairness: () => Promise.resolve(currentFairnessFixture),
-        getOpeningFairnessProof: () => Promise.resolve(pendingOpeningProofFixture),
-        initializeFairness,
-        openBox,
-      }),
-      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
-    });
-
-    await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-    expect(screen.getByRole('heading', { name: 'Open First Drop?' })).toHaveFocus();
-    await user.click(screen.getByRole('button', { name: 'Open box' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('The response was lost.');
-    await user.click(screen.getByRole('button', { name: 'Open box' }));
-    expect(
-      await screen.findByRole('heading', { name: 'Unwrapping your reward…' }),
-    ).toBeInTheDocument();
-    const reelItems = document.querySelectorAll('.reel-track > li');
-    expect(reelItems).toHaveLength(20);
-    expect(reelItems[16]).toHaveClass('rarity-common');
-    await user.click(screen.getByRole('button', { name: 'Skip to reveal' }));
-
-    const resultHeading = await screen.findByRole('heading', { level: 2, name: 'Base reward' });
-    expect(resultHeading).toHaveFocus();
-    expect(screen.getByText('+20 points')).toBeInTheDocument();
-    expect(screen.getByText(/Full independent verification is waiting/u)).toBeInTheDocument();
-    expect(openBox).toHaveBeenCalledTimes(2);
-    expect(openBox.mock.calls[0]?.[2]).toBe(openBox.mock.calls[1]?.[2]);
-    expect(openBox.mock.calls[0]?.[1]).toBe(currentFairnessFixture.fairness.clientSeed);
-    expect(initializeFairness).not.toHaveBeenCalled();
-  });
-
-  it('initializes first-use fairness once and displays the commitment before opening', async () => {
-    const notInitialized = new CreatorDropApiError(404, {
-      error: {
-        code: 'FAIRNESS_NOT_INITIALIZED',
-        details: {},
-        message: 'Fairness state has not been initialized.',
-        requestId: 'fairness-not-initialized',
-      },
-    });
-    const unconfiguredFairness = {
-      fairness: { ...currentFairnessFixture.fairness, clientSeed: null },
-    };
-    const getCurrentFairness = vi
-      .fn()
-      .mockRejectedValueOnce(notInitialized)
-      .mockResolvedValueOnce(unconfiguredFairness);
-    const initializeFairness = vi.fn(() => Promise.resolve(unconfiguredFairness));
-    const updateCurrentClientSeed = vi.fn((generatedClientSeed: string) =>
-      Promise.resolve({
-        fairness: {
-          ...currentFairnessFixture.fairness,
-          clientSeed: generatedClientSeed,
-          revision: 2,
-        },
-      }),
-    );
-    const openBox = vi.fn<CreatorDropApiClient['openBox']>((_boxId, submittedClientSeed) =>
-      Promise.resolve({
-        opening: {
-          ...boxOpeningFixture.opening,
-          fairness: { ...boxOpeningFixture.opening.fairness, clientSeed: submittedClientSeed },
-        },
-      }),
-    );
-    const user = userEvent.setup();
-    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
-      api: createTestApiClient({
-        getCurrentFairness,
-        initializeFairness,
-        openBox,
-        updateCurrentClientSeed,
-      }),
-      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
-    });
-
-    await user.dblClick(await screen.findByRole('button', { name: 'Open this box' }));
-    expect(await screen.findByRole('heading', { name: 'Open First Drop?' })).toBeInTheDocument();
-    expect(getCurrentFairness).toHaveBeenCalledTimes(2);
-    expect(initializeFairness).toHaveBeenCalledOnce();
-    expect(initializeFairness.mock.calls[0]).toEqual([]);
-    expect(updateCurrentClientSeed).toHaveBeenCalledOnce();
-    expect(initializeFairness.mock.invocationCallOrder[0]).toBeLessThan(
-      updateCurrentClientSeed.mock.invocationCallOrder[0] ?? 0,
-    );
-    const generatedClientSeed = updateCurrentClientSeed.mock.calls[0]?.[0];
-    expect(generatedClientSeed).toMatch(/^[0-9a-f]{64}$/u);
-    expect(updateCurrentClientSeed.mock.calls[0]?.slice(1)).toEqual([
-      1,
-      currentFairnessFixture.fairness.activeSeedSet.id,
-      currentFairnessFixture.fairness.activeSeedSet.commitment,
-    ]);
-    expect(screen.getByLabelText('Client seed')).not.toBeVisible();
-    await user.click(screen.getByText('Fairness details'));
-    expect(screen.getByLabelText('Client seed')).toBeVisible();
-    expect(screen.getByLabelText('Client seed')).toHaveValue(generatedClientSeed);
-    expect(
-      screen.getByText(currentFairnessFixture.fairness.activeSeedSet.commitment),
-    ).toBeVisible();
-    expect(screen.getByText(/fixed a hidden server seed before this opening/u)).toBeVisible();
-    expect(openBox).not.toHaveBeenCalled();
-
-    await user.click(screen.getByRole('button', { name: 'Open box' }));
-    expect(openBox).toHaveBeenCalledOnce();
-    expect(openBox.mock.calls[0]?.[1]).toBe(generatedClientSeed);
-    expect(openBox.mock.calls[0]?.slice(5)).toEqual([
-      currentFairnessFixture.fairness.activeSeedSet.id,
-      currentFairnessFixture.fairness.activeSeedSet.commitment,
-    ]);
-  });
-
-  it('converges on the existing fairness state after a concurrent first-use initialization', async () => {
-    const notInitialized = new CreatorDropApiError(404, {
-      error: {
-        code: 'FAIRNESS_NOT_INITIALIZED',
-        details: {},
-        message: 'Fairness state has not been initialized.',
-        requestId: 'fairness-race-not-initialized',
-      },
-    });
-    const revisionConflict = new CreatorDropApiError(409, {
-      error: {
-        code: 'FAIRNESS_REVISION_CONFLICT',
-        details: { currentRevision: 2 },
-        message: 'The fairness revision is stale.',
-        requestId: 'fairness-race-conflict',
-      },
-    });
-    const unconfiguredFairness = {
-      fairness: { ...currentFairnessFixture.fairness, clientSeed: null },
-    };
-    const getCurrentFairness = vi
-      .fn()
-      .mockRejectedValueOnce(notInitialized)
-      .mockResolvedValueOnce(unconfiguredFairness)
-      .mockResolvedValueOnce(currentFairnessFixture);
-    const initializeFairness = vi.fn().mockResolvedValue(unconfiguredFairness);
-    const updateCurrentClientSeed = vi.fn().mockRejectedValue(revisionConflict);
-    const openBox = vi.fn<CreatorDropApiClient['openBox']>(() =>
-      Promise.resolve(boxOpeningFixture),
-    );
-    const user = userEvent.setup();
-    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
-      api: createTestApiClient({
-        getCurrentFairness,
-        initializeFairness,
-        openBox,
-        updateCurrentClientSeed,
-      }),
-      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
-    });
-
-    await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-    expect(await screen.findByRole('heading', { name: 'Open First Drop?' })).toBeInTheDocument();
-    expect(getCurrentFairness).toHaveBeenCalledTimes(3);
-    expect(initializeFairness).toHaveBeenCalledOnce();
-    expect(updateCurrentClientSeed).toHaveBeenCalledOnce();
-    await user.click(screen.getByText('Fairness details'));
-    expect(screen.getByLabelText('Client seed')).toHaveValue(
-      currentFairnessFixture.fairness.clientSeed,
-    );
-    expect(openBox).not.toHaveBeenCalled();
-
-    await user.click(screen.getByRole('button', { name: 'Open box' }));
-    expect(openBox).toHaveBeenCalledOnce();
-    expect(openBox.mock.calls[0]?.[1]).toBe(currentFairnessFixture.fairness.clientSeed);
-  });
-
-  it('requires fresh confirmation when the displayed fairness commitment is rotated', async () => {
-    const rotatedFairness = {
-      fairness: {
-        ...currentFairnessFixture.fairness,
-        activeSeedSet: {
-          ...currentFairnessFixture.fairness.activeSeedSet,
-          commitment: 'e'.repeat(64),
-          id: '00000000-0000-4000-8000-000000000405',
-        },
-      },
-    };
-    const stale = new CreatorDropApiError(409, {
-      error: {
-        code: 'FAIRNESS_CONFIRMATION_STALE',
-        details: {},
-        message: 'The active fairness seed changed.',
-        requestId: 'fairness-commitment-stale',
-      },
-    });
-    const rotatedOpening = {
-      opening: {
-        ...boxOpeningFixture.opening,
-        fairness: {
-          ...boxOpeningFixture.opening.fairness,
-          commitment: rotatedFairness.fairness.activeSeedSet.commitment,
-          seedSetId: rotatedFairness.fairness.activeSeedSet.id,
-        },
-      },
-    };
-    const getCurrentFairness = vi
-      .fn()
-      .mockResolvedValueOnce(currentFairnessFixture)
-      .mockResolvedValueOnce(rotatedFairness);
-    const openBox = vi.fn<CreatorDropApiClient['openBox']>().mockRejectedValueOnce(stale);
-    openBox.mockResolvedValueOnce(rotatedOpening);
-    const user = userEvent.setup();
-    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
-      api: createTestApiClient({ getCurrentFairness, openBox }),
-      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
-    });
-
-    await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-    expect(
-      screen.getByText(currentFairnessFixture.fairness.activeSeedSet.commitment),
-    ).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Open box' }));
-
-    expect(await screen.findByRole('alert')).toHaveTextContent('commitment changed');
-    expect(openBox).toHaveBeenCalledOnce();
-    expect(screen.getByText(rotatedFairness.fairness.activeSeedSet.commitment)).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: 'Open box' }));
-    expect(
-      await screen.findByRole('heading', { name: 'Unwrapping your reward…' }),
-    ).toBeInTheDocument();
-    expect(openBox).toHaveBeenCalledTimes(2);
-    expect(openBox.mock.calls[0]?.slice(5)).toEqual([
-      currentFairnessFixture.fairness.activeSeedSet.id,
-      currentFairnessFixture.fairness.activeSeedSet.commitment,
-    ]);
-    expect(openBox.mock.calls[1]?.slice(5)).toEqual([
-      rotatedFairness.fairness.activeSeedSet.id,
-      rotatedFairness.fairness.activeSeedSet.commitment,
-    ]);
-    expect(openBox.mock.calls[0]?.[2]).not.toBe(openBox.mock.calls[1]?.[2]);
-  });
-
-  it('fails first-use initialization without submitting or retaining an opening command', async () => {
-    const notInitialized = new CreatorDropApiError(404, {
-      error: {
-        code: 'FAIRNESS_NOT_INITIALIZED',
-        details: {},
-        message: 'Fairness state has not been initialized.',
-        requestId: 'fairness-failure-not-initialized',
-      },
-    });
-    const initializationFailure = new CreatorDropApiError(503, {
-      error: {
-        code: 'SEED_ENCRYPTION_KEY_UNAVAILABLE',
-        details: {},
-        message: 'Fairness initialization is temporarily unavailable.',
-        requestId: 'fairness-initialization-failure',
-      },
-    });
-    const initializeFairness = vi.fn().mockRejectedValue(initializationFailure);
-    const openBox = vi.fn(() => Promise.resolve(boxOpeningFixture));
-    const user = userEvent.setup();
-    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
-      api: createTestApiClient({
-        getCurrentFairness: () => Promise.reject(notInitialized),
-        initializeFairness,
-        openBox,
-      }),
-      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
-    });
-
-    await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Fairness initialization is temporarily unavailable.',
-    );
-    expect(initializeFairness).toHaveBeenCalledOnce();
-    expect(openBox).not.toHaveBeenCalled();
-    expect(window.sessionStorage).toHaveLength(0);
   });
 
   it('collapses duplicate confirmation clicks into one opening command', async () => {
     const pending = deferred<BoxOpeningResponse>();
     const openBox = vi.fn(() => pending.promise);
-    const user = userEvent.setup();
-    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
-      api: createTestApiClient({ openBox }),
-      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
-    });
+    renderAuthenticatedDrop({ openBox });
+    const { confirmation, user } = await openConfirmation();
 
-    await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-    await user.dblClick(screen.getByRole('button', { name: 'Open box' }));
+    await user.dblClick(within(confirmation).getByRole('button', { name: 'Open Drop' }));
     expect(openBox).toHaveBeenCalledOnce();
-    act(() => pending.resolve(boxOpeningFixture));
-    expect(
-      await screen.findByRole('heading', { name: 'Unwrapping your reward…' }),
-    ).toBeInTheDocument();
+    act(() => pending.resolve(openingV2ResponseFixture));
+    expect(await screen.findByRole('heading', { name: 'Unwrapping your reward…' })).toBeVisible();
   });
 
   it.each([
@@ -719,7 +456,7 @@ describe('Phase 14 web shell', () => {
     [20, 375],
     [20, 1440],
   ])(
-    'measures the committed reel winner at %ipx root sizing and %ipx viewport width',
+    'measures the committed v2 reel winner at %ipx root sizing and %ipx viewport width',
     async (rootFontSize, viewportWidth) => {
       const itemWidth = 6.5 * rootFontSize;
       const itemStep = 7 * rootFontSize;
@@ -738,12 +475,9 @@ describe('Phase 14 web shell', () => {
       Object.defineProperty(window, 'innerWidth', { configurable: true, value: viewportWidth });
 
       try {
-        const user = userEvent.setup();
-        renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
-          auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
-        });
-        await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-        await user.click(screen.getByRole('button', { name: 'Open box' }));
+        renderAuthenticatedDrop();
+        const { confirmation, user } = await openConfirmation();
+        await user.click(within(confirmation).getByRole('button', { name: 'Open Drop' }));
         const reel = await waitFor(() => {
           const candidate = document.querySelector<HTMLOListElement>('.reel-track');
           if (candidate === null) throw new Error('Expected the reel track.');
@@ -762,170 +496,250 @@ describe('Phase 14 web shell', () => {
     },
   );
 
-  it.each([
-    ['common', 'Common'],
-    ['uncommon', 'Uncommon'],
-    ['rare', 'Rare'],
-    ['epic', 'Epic'],
-    ['legendary', 'Legendary'],
-  ] as const)(
-    'renders the test-only %s result presentation with immutable odds and points',
-    async (rarity, label) => {
-      const entries = publishedBoxFixture.entries.map((entry, index) =>
-        index === 0 ? { ...entry, rarity, rarityPolicyVersion: 'rarity-v1' as const } : entry,
-      );
-      const box = { ...publishedBoxFixture, entries };
-      const first = entries[0];
-      const response: BoxOpeningResponse = {
-        opening: {
-          ...boxOpeningFixture.opening,
-          pointsAwarded: 5,
-          reward: {
-            ...boxOpeningFixture.opening.reward,
-            name: first?.rewardVersion.name ?? 'Rare reward',
-            rarity,
-            rarityPolicyVersion: 'rarity-v1',
-            rewardVersionId:
-              first?.rewardVersion.id ?? boxOpeningFixture.opening.reward.rewardVersionId,
-          },
-        },
-      };
-      const user = userEvent.setup();
-      renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
-        api: createTestApiClient({
-          getCreatorBox: () =>
-            Promise.resolve({ box, creator: publicCreatorResponseFixture.creator }),
-          openBox: () => Promise.resolve(response),
-        }),
-        auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
-      });
+  it('reuses one idempotency key after a lost response and preserves the committed reward', async () => {
+    const openBox = vi
+      .fn<CreatorDropApiClient['openBox']>()
+      .mockRejectedValueOnce(new Error('The response was lost.'))
+      .mockResolvedValueOnce(openingV2ResponseFixture);
+    renderAuthenticatedDrop({ openBox });
+    const { confirmation, user } = await openConfirmation();
+    await user.click(within(confirmation).getByRole('button', { name: 'Open Drop' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('The response was lost.');
+    await user.click(screen.getByRole('button', { name: 'Open Drop' }));
 
-      await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-      await user.click(screen.getByRole('button', { name: 'Open box' }));
-      await user.click(await screen.findByRole('button', { name: 'Skip to reveal' }));
-
-      const heading = await screen.findByRole('heading', { level: 2, name: 'Rare reward' });
-      const result = heading.closest('section');
-      if (result === null) throw new Error('Expected the opening result section.');
-      expect(within(result).getByText(label)).toBeInTheDocument();
-      expect(within(result).getByText('<0.000001%')).toBeInTheDocument();
-      expect(within(result).getByText('+5 points')).toBeInTheDocument();
-    },
-  );
-
-  it('uses the exact committed version when publication changes rarity and odds after page load', async () => {
-    const committed = committedVersionB();
-    const getCreatorBox = vi
-      .fn()
-      .mockResolvedValueOnce({
-        box: publishedBoxFixture,
-        creator: publicCreatorResponseFixture.creator,
-      })
-      .mockResolvedValue({
-        box: committed.box,
-        creator: publicCreatorResponseFixture.creator,
-      });
-    const getPublishedBoxVersion = vi.fn(() => Promise.resolve(committed.box));
-    const openBox = vi.fn(() => Promise.resolve(committed.opening));
-    const user = userEvent.setup();
-    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
-      api: createTestApiClient({
-        getCreatorBox,
-        getOpeningFairnessProof: () => Promise.resolve(pendingProofFor(committed)),
-        getPublishedBoxVersion,
-        openBox,
-      }),
-      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
-    });
-
-    await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-    const confirmationHeading = await screen.findByRole('heading', { name: 'Open Second Drop?' });
-    const confirmation = confirmationHeading.closest('section');
-    if (confirmation === null) throw new Error('Expected the opening confirmation section.');
-    expect(within(confirmation).getByText(/\$100\.00/u)).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Open box' }));
-    expect(
-      await screen.findByRole('heading', { name: 'Unwrapping your reward…' }),
-    ).toBeInTheDocument();
-    expect(document.querySelector('.reel-track > [data-reel-winner="true"]')).toHaveClass(
-      'rarity-common',
-    );
-    await user.click(screen.getByRole('button', { name: 'Skip to reveal' }));
-
-    const heading = await screen.findByRole('heading', { level: 2, name: 'Rare reward' });
-    const result = heading.closest('section');
-    if (result === null) throw new Error('Expected the opening result section.');
-    expect(within(result).getByText('Common')).toBeInTheDocument();
-    expect(within(result).getByText('20.00%')).toBeInTheDocument();
-    expect(within(result).getByText(/published version 3/u)).toBeInTheDocument();
-    expect(within(result).getByText(/\$100\.00/u)).toBeInTheDocument();
-    expect(within(result).queryByText('<0.000001%')).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { level: 1, name: 'Second Drop' })).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { level: 1, name: 'First Drop' })).not.toBeInTheDocument();
-    expect(await within(result).findByText(committed.box.configurationHash)).toBeInTheDocument();
-    expect(getCreatorBox).toHaveBeenCalledTimes(2);
-    expect(getPublishedBoxVersion).not.toHaveBeenCalled();
-    expect(openBox).toHaveBeenCalledWith(
-      committed.opening.opening.boxId,
-      currentFairnessFixture.fairness.clientSeed,
-      expect.stringMatching(/^opening_/u),
-      committed.box.version.id,
-      committed.box.configurationHash,
-      currentFairnessFixture.fairness.activeSeedSet.id,
-      currentFairnessFixture.fairness.activeSeedSet.commitment,
-    );
+    expect(await screen.findByRole('heading', { name: 'Unwrapping your reward…' })).toBeVisible();
+    expect(openBox).toHaveBeenCalledTimes(2);
+    expect(openBox.mock.calls[0]?.[2]).toBe(openBox.mock.calls[1]?.[2]);
   });
 
-  it('requires fresh confirmation when the authoritative version changes after confirmation', async () => {
+  it('initializes first-use fairness without displaying raw cryptographic inputs', async () => {
+    const notInitialized = new CreatorDropApiError(404, {
+      error: {
+        code: 'FAIRNESS_NOT_INITIALIZED',
+        details: {},
+        message: 'Fairness state has not been initialized.',
+        requestId: 'fairness-not-initialized',
+      },
+    });
+    const unconfigured: CurrentFairnessResponse = {
+      fairness: { ...currentFairnessFixture.fairness, clientSeed: null },
+    };
+    const getCurrentFairness = vi
+      .fn<CreatorDropApiClient['getCurrentFairness']>()
+      .mockRejectedValueOnce(notInitialized)
+      .mockResolvedValueOnce(unconfigured);
+    const initializeFairness = vi.fn(() => Promise.resolve(unconfigured));
+    const updateCurrentClientSeed = vi.fn((clientSeed: string) =>
+      Promise.resolve({
+        fairness: { ...currentFairnessFixture.fairness, clientSeed, revision: 2 },
+      }),
+    );
+    renderAuthenticatedDrop({ getCurrentFairness, initializeFairness, updateCurrentClientSeed });
+    const { confirmation } = await openConfirmation();
+
+    expect(initializeFairness).toHaveBeenCalledOnce();
+    expect(updateCurrentClientSeed).toHaveBeenCalledWith(
+      expect.stringMatching(/^[0-9a-f]{64}$/u),
+      unconfigured.fairness.revision,
+      unconfigured.fairness.activeSeedSet.id,
+      unconfigured.fairness.activeSeedSet.commitment,
+    );
+    expect(
+      within(confirmation).queryByText(unconfigured.fairness.activeSeedSet.commitment),
+    ).toBeNull();
+    expect(within(confirmation).queryByLabelText(/client seed/iu)).toBeNull();
+  });
+
+  it('converges on an existing fairness state after concurrent first-use setup', async () => {
+    const notInitialized = new CreatorDropApiError(404, {
+      error: {
+        code: 'FAIRNESS_NOT_INITIALIZED',
+        details: {},
+        message: 'Fairness state has not been initialized.',
+        requestId: 'fairness-race-not-initialized',
+      },
+    });
+    const revisionConflict = new CreatorDropApiError(409, {
+      error: {
+        code: 'FAIRNESS_REVISION_CONFLICT',
+        details: { currentRevision: 2 },
+        message: 'The fairness revision is stale.',
+        requestId: 'fairness-race-conflict',
+      },
+    });
+    const unconfigured: CurrentFairnessResponse = {
+      fairness: { ...currentFairnessFixture.fairness, clientSeed: null },
+    };
+    const getCurrentFairness = vi
+      .fn<CreatorDropApiClient['getCurrentFairness']>()
+      .mockRejectedValueOnce(notInitialized)
+      .mockResolvedValueOnce(unconfigured)
+      .mockResolvedValueOnce(currentFairnessFixture);
+    const initializeFairness = vi.fn(() => Promise.resolve(unconfigured));
+    const updateCurrentClientSeed = vi.fn(() => Promise.reject(revisionConflict));
+    renderAuthenticatedDrop({ getCurrentFairness, initializeFairness, updateCurrentClientSeed });
+
+    await openConfirmation();
+    expect(getCurrentFairness).toHaveBeenCalledTimes(3);
+    expect(initializeFairness).toHaveBeenCalledOnce();
+    expect(updateCurrentClientSeed).toHaveBeenCalledOnce();
+  });
+
+  it('requires a new confirmation after fairness state rotates', async () => {
+    const rotatedFairness: CurrentFairnessResponse = {
+      fairness: {
+        ...currentFairnessFixture.fairness,
+        activeSeedSet: {
+          ...currentFairnessFixture.fairness.activeSeedSet,
+          commitment: 'e'.repeat(64),
+          id: '00000000-0000-4000-8000-000000000405',
+        },
+      },
+    };
+    const stale = new CreatorDropApiError(409, {
+      error: {
+        code: 'FAIRNESS_CONFIRMATION_STALE',
+        details: {},
+        message: 'The active fairness seed changed.',
+        requestId: 'fairness-confirmation-stale',
+      },
+    });
+    const getCurrentFairness = vi
+      .fn<CreatorDropApiClient['getCurrentFairness']>()
+      .mockResolvedValueOnce(currentFairnessFixture)
+      .mockResolvedValueOnce(rotatedFairness);
+    const rotatedOpening = requireOpeningV2(openingV2ResponseFixture);
+    const openBox = vi
+      .fn<CreatorDropApiClient['openBox']>()
+      .mockRejectedValueOnce(stale)
+      .mockResolvedValueOnce({
+        opening: {
+          ...rotatedOpening,
+          fairness: {
+            ...rotatedOpening.fairness,
+            commitment: rotatedFairness.fairness.activeSeedSet.commitment,
+            seedSetId: rotatedFairness.fairness.activeSeedSet.id,
+          },
+        },
+      });
+    renderAuthenticatedDrop({ getCurrentFairness, openBox });
+    const { confirmation, user } = await openConfirmation();
+
+    await user.click(within(confirmation).getByRole('button', { name: 'Open Drop' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'The fairness information changed. Please confirm this Drop again.',
+    );
+    expect(openBox).toHaveBeenCalledOnce();
+    await user.click(screen.getByRole('button', { name: 'Open Drop' }));
+    expect(await screen.findByRole('heading', { name: 'Unwrapping your reward…' })).toBeVisible();
+    expect(openBox).toHaveBeenCalledTimes(2);
+    expect(openBox.mock.calls[0]?.[2]).not.toBe(openBox.mock.calls[1]?.[2]);
+    expect(openBox.mock.calls[1]?.slice(5)).toEqual([
+      rotatedFairness.fairness.activeSeedSet.id,
+      rotatedFairness.fairness.activeSeedSet.commitment,
+    ]);
+  });
+
+  it('fails first-use fairness setup without submitting or retaining an opening command', async () => {
+    const notInitialized = new CreatorDropApiError(404, {
+      error: {
+        code: 'FAIRNESS_NOT_INITIALIZED',
+        details: {},
+        message: 'Fairness state has not been initialized.',
+        requestId: 'fairness-failure-not-initialized',
+      },
+    });
+    const initializationFailure = new CreatorDropApiError(503, {
+      error: {
+        code: 'SEED_ENCRYPTION_KEY_UNAVAILABLE',
+        details: {},
+        message: 'Fairness initialization is temporarily unavailable.',
+        requestId: 'fairness-initialization-failure',
+      },
+    });
+    const initializeFairness = vi.fn(() => Promise.reject(initializationFailure));
+    const openBox = vi.fn(() => Promise.resolve(openingV2ResponseFixture));
+    renderAuthenticatedDrop({
+      getCurrentFairness: () => Promise.reject(notInitialized),
+      initializeFairness,
+      openBox,
+    });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('button', { name: 'Open Drop' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Fairness initialization is temporarily unavailable.',
+    );
+    expect(initializeFairness).toHaveBeenCalledOnce();
+    expect(openBox).not.toHaveBeenCalled();
+    expect(window.sessionStorage).toHaveLength(0);
+  });
+
+  it.each([
+    ['OPENING_ENTITLEMENT_REQUIRED', "You don't have an available Drop yet."],
+    ['OPENING_LIMIT_REACHED', "You've reached the opening limit for this Drop."],
+    ['BOX_NOT_OPENABLE', 'This Drop is currently unavailable.'],
+    ['INVENTORY_UNAVAILABLE', 'This Drop is currently unavailable.'],
+  ])('maps %s to fan-facing language', async (code, message) => {
+    const openBox = vi.fn(() =>
+      Promise.reject(
+        new CreatorDropApiError(409, {
+          error: {
+            code,
+            details: {},
+            message: 'Internal product terminology must not be displayed.',
+            requestId: `request-${code.toLowerCase()}`,
+          },
+        }),
+      ),
+    );
+    renderAuthenticatedDrop({ openBox });
+    const { confirmation, user } = await openConfirmation();
+    await user.click(within(confirmation).getByRole('button', { name: 'Open Drop' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(message);
+    expect(screen.queryByText('Internal product terminology must not be displayed.')).toBeNull();
+    expect(openBox).toHaveBeenCalledOnce();
+  });
+
+  it('refreshes and requires confirmation again when the Drop version is stale', async () => {
     const committed = committedVersionB();
-    const creatorBoxA = {
-      box: publishedBoxFixture,
-      creator: publicCreatorResponseFixture.creator,
-    };
-    const creatorBoxB = {
-      box: committed.box,
-      creator: publicCreatorResponseFixture.creator,
-    };
-    const getCreatorBox = vi
-      .fn()
-      .mockResolvedValueOnce(creatorBoxA)
-      .mockResolvedValueOnce(creatorBoxA)
-      .mockResolvedValue(creatorBoxB);
     const stale = new CreatorDropApiError(409, {
       error: {
         code: 'OPENING_CONFIRMATION_STALE',
         details: {},
-        message: 'The box changed after it was loaded.',
-        requestId: 'request-stale-confirmation',
+        message: 'The box version changed.',
+        requestId: 'request-stale-drop',
       },
     });
     const openBox = vi.fn().mockRejectedValueOnce(stale).mockResolvedValue(committed.opening);
-    const user = userEvent.setup();
-    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
-      api: createTestApiClient({ getCreatorBox, openBox }),
-      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
-    });
+    const getCreatorBox = vi
+      .fn()
+      .mockResolvedValueOnce({
+        box: openingV2BoxFixture,
+        creator: publicCreatorResponseFixture.creator,
+      })
+      .mockResolvedValueOnce({
+        box: openingV2BoxFixture,
+        creator: publicCreatorResponseFixture.creator,
+      })
+      .mockResolvedValue({ box: committed.box, creator: publicCreatorResponseFixture.creator });
+    renderAuthenticatedDrop({ getCreatorBox, openBox });
+    const { confirmation, user } = await openConfirmation();
+    await user.click(within(confirmation).getByRole('button', { name: 'Open Drop' }));
 
-    await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-    const firstConfirmationHeading = await screen.findByRole('heading', {
-      name: 'Open First Drop?',
-    });
-    const firstConfirmation = firstConfirmationHeading.closest('section');
-    if (firstConfirmation === null) throw new Error('Expected the opening confirmation section.');
-    expect(within(firstConfirmation).getByText(/\$9\.99/u)).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Open box' }));
-
-    expect(await screen.findByRole('alert')).toHaveTextContent('box changed');
-    const secondConfirmationHeading = screen.getByRole('heading', { name: 'Open Second Drop?' });
-    const secondConfirmation = secondConfirmationHeading.closest('section');
-    if (secondConfirmation === null) throw new Error('Expected the updated confirmation section.');
-    expect(within(secondConfirmation).getByText(/\$100\.00/u)).toBeInTheDocument();
-    expect(openBox).toHaveBeenCalledOnce();
-
-    await user.click(screen.getByRole('button', { name: 'Open box' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'This Drop changed after you reviewed it. Check it and confirm again.',
+    );
     expect(
-      await screen.findByRole('heading', { name: 'Unwrapping your reward…' }),
-    ).toBeInTheDocument();
+      screen.getByRole('heading', { name: 'Open one of your available Drops?' }),
+    ).toBeVisible();
+    expect(screen.getByRole('heading', { level: 1, name: 'Updated Free Drop' })).toBeVisible();
+    expect(openBox).toHaveBeenCalledOnce();
+    expect(getCreatorBox).toHaveBeenCalledTimes(3);
+
+    await user.click(screen.getByRole('button', { name: 'Open Drop' }));
+    expect(await screen.findByRole('heading', { name: 'Unwrapping your reward…' })).toBeVisible();
     expect(openBox).toHaveBeenCalledTimes(2);
     expect(openBox.mock.calls[0]?.[2]).not.toBe(openBox.mock.calls[1]?.[2]);
     expect(openBox.mock.calls[1]?.slice(3)).toEqual([
@@ -936,11 +750,37 @@ describe('Phase 14 web shell', () => {
     ]);
   });
 
-  it('recovers an idempotent Version B opening whose reward does not exist in loaded Version A', async () => {
-    const committed = committedVersionB({ uniqueWinner: true });
+  it('uses the exact refreshed v2 version for the committed reward and odds', async () => {
+    const committed = committedVersionB();
+    const getCreatorBox = vi
+      .fn()
+      .mockResolvedValueOnce({
+        box: openingV2BoxFixture,
+        creator: publicCreatorResponseFixture.creator,
+      })
+      .mockResolvedValue({ box: committed.box, creator: publicCreatorResponseFixture.creator });
+    const getPublishedBoxVersion = vi.fn(() => Promise.resolve(committed.box));
+    renderAuthenticatedDrop({
+      getCreatorBox,
+      getPublishedBoxVersion,
+      openBox: () => Promise.resolve(committed.opening),
+    });
+    const { confirmation, user } = await openConfirmation();
+
+    expect(within(confirmation).getByText('Updated Free Drop')).toBeVisible();
+    await user.click(within(confirmation).getByRole('button', { name: 'Open Drop' }));
+    await user.click(await screen.findByRole('button', { name: 'Skip to reveal' }));
+    expect(await screen.findByText('Rare · 100% chance')).toBeVisible();
+    expect(screen.getByRole('heading', { level: 1, name: 'Updated Free Drop' })).toBeVisible();
+    expect(getCreatorBox).toHaveBeenCalledTimes(2);
+    expect(getPublishedBoxVersion).not.toHaveBeenCalled();
+  });
+
+  it('recovers a v2 result whose reward exists only in its committed historical version', async () => {
+    const committed = committedVersionB(true);
     const idempotencyKey = 'opening_00000000-0000-4000-8000-000000000497';
     window.sessionStorage.setItem(
-      `creatordrop:opening:v1:${publishedBoxFixture.manifest.boxId}`,
+      `creatordrop:opening:v1:${openingV2BoxFixture.manifest.boxId}`,
       JSON.stringify({
         clientSeed: currentFairnessFixture.fairness.clientSeed,
         expectedBoxVersionId: committed.box.version.id,
@@ -954,26 +794,16 @@ describe('Phase 14 web shell', () => {
     );
     const openBox = vi.fn(() => Promise.resolve(committed.opening));
     const getPublishedBoxVersion = vi.fn(() => Promise.resolve(committed.box));
+    renderAuthenticatedDrop({ getPublishedBoxVersion, openBox });
     const user = userEvent.setup();
-    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
-      api: createTestApiClient({
-        getOpeningFairnessProof: () => Promise.resolve(pendingProofFor(committed)),
-        getPublishedBoxVersion,
-        openBox,
-      }),
-      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
-    });
 
-    expect(
-      await screen.findByRole('heading', { name: 'Unwrapping your reward…' }),
-    ).toBeInTheDocument();
-    expect(document.querySelectorAll('.reel-track > li')).toHaveLength(20);
+    expect(await screen.findByRole('heading', { name: 'Unwrapping your reward…' })).toBeVisible();
     await user.click(screen.getByRole('button', { name: 'Skip to reveal' }));
     expect(
       await screen.findByRole('heading', { level: 2, name: 'Version B only reward' }),
-    ).toBeInTheDocument();
+    ).toBeVisible();
     expect(openBox).toHaveBeenCalledWith(
-      publishedBoxFixture.manifest.boxId,
+      openingV2BoxFixture.manifest.boxId,
       currentFairnessFixture.fairness.clientSeed,
       idempotencyKey,
       committed.box.version.id,
@@ -984,136 +814,105 @@ describe('Phase 14 web shell', () => {
     expect(getPublishedBoxVersion).toHaveBeenCalledOnce();
   });
 
-  it('fails closed and only refetches result data when the committed version hash mismatches', async () => {
+  it('fails closed and only refetches result data when the committed v2 hash mismatches', async () => {
     const committed = committedVersionB();
     const mismatched = {
       ...committed.box,
       configurationHash: 'f'.repeat(64),
       version: { ...committed.box.version, configurationHash: 'f'.repeat(64) },
     };
-    const openBox = vi.fn(() => Promise.resolve(committed.opening));
     const getPublishedBoxVersion = vi
       .fn()
       .mockResolvedValueOnce(mismatched)
       .mockResolvedValueOnce(committed.box);
-    const user = userEvent.setup();
-    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
-      api: createTestApiClient({ getPublishedBoxVersion, openBox }),
-      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
+    renderAuthenticatedDrop({
+      getPublishedBoxVersion,
+      openBox: () => Promise.resolve(committed.opening),
     });
+    const { confirmation, user } = await openConfirmation();
 
-    await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-    await user.click(screen.getByRole('button', { name: 'Open box' }));
+    await user.click(within(confirmation).getByRole('button', { name: 'Open Drop' }));
     expect(
       await screen.findByRole('heading', { name: 'Your result is safely recorded' }),
-    ).toBeInTheDocument();
-    expect(screen.getByRole('alert')).toHaveTextContent('opening is committed');
+    ).toBeVisible();
+    expect(screen.getByRole('alert')).toHaveTextContent('reward details could not be loaded');
     expect(document.querySelector('.reel-track')).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Retry result data' }));
-    expect(
-      await screen.findByRole('heading', { name: 'Unwrapping your reward…' }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Unwrapping your reward…' })).toBeVisible();
     expect(getPublishedBoxVersion).toHaveBeenCalledTimes(2);
-    expect(openBox).toHaveBeenCalledOnce();
   });
 
-  it.each([
-    ['INSUFFICIENT_BALANCE', 'Your wallet does not have enough funds.'],
-    ['BOX_NOT_OPENABLE', 'This box is not currently available.'],
-    ['INVENTORY_UNAVAILABLE', 'The selected reward is unavailable.'],
-    ['OPENING_RETRY_REQUIRED', 'Please retry this opening with the same request.'],
-  ])('shows %s without inventing or automatically retrying a result', async (code, message) => {
-    const openBox = vi.fn(() =>
-      Promise.reject(
-        new CreatorDropApiError(409, {
-          error: { code, details: {}, message, requestId: `request-${code.toLowerCase()}` },
-        }),
-      ),
+  it('recovers an R1B pending v2 opening after upgrade even when no entitlement remains', async () => {
+    const pending = {
+      clientSeed: currentFairnessFixture.fairness.clientSeed,
+      expectedBoxVersionId: openingV2BoxFixture.version.id,
+      expectedConfigurationHash: openingV2BoxFixture.configurationHash,
+      expectedSeedSetId: currentFairnessFixture.fairness.activeSeedSet.id,
+      expectedServerSeedCommitment: currentFairnessFixture.fairness.activeSeedSet.commitment,
+      idempotencyKey: 'opening_019c0000-0000-7000-8000-000000000099',
+      recovery: 'automatic',
+      userId: authSessionResponseFixture.user.id,
+    };
+    // R1B used this storage-schema namespace for both opening models.
+    window.sessionStorage.setItem(
+      `creatordrop:opening:v1:${openingV2BoxFixture.manifest.boxId}`,
+      JSON.stringify(pending),
     );
-    const user = userEvent.setup();
-    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
-      api: createTestApiClient({ openBox }),
-      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
+    const openBox = vi
+      .fn<CreatorDropApiClient['openBox']>()
+      .mockResolvedValue(openingV2ResponseFixture);
+    renderAuthenticatedDrop({
+      getOpeningEntitlementState: () =>
+        Promise.resolve(
+          availableEntitlement({
+            available: false,
+            remaining: '0',
+            consumed: '3',
+            successfulOpenings: '3',
+            limitReached: true,
+          }),
+        ),
+      openBox,
     });
 
-    await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-    await user.click(screen.getByRole('button', { name: 'Open box' }));
-
-    expect(await screen.findByRole('alert')).toHaveTextContent(message);
-    expect(screen.queryByText('Your reward')).not.toBeInTheDocument();
-    expect(openBox).toHaveBeenCalledOnce();
+    expect(await screen.findByRole('heading', { name: 'Unwrapping your reward…' })).toBeVisible();
+    expect(openBox).toHaveBeenCalledExactlyOnceWith(
+      openingV2BoxFixture.manifest.boxId,
+      pending.clientSeed,
+      pending.idempotencyKey,
+      pending.expectedBoxVersionId,
+      pending.expectedConfigurationHash,
+      pending.expectedSeedSetId,
+      pending.expectedServerSeedCommitment,
+    );
   });
 
-  it.each(['INSUFFICIENT_BALANCE', 'BOX_NOT_OPENABLE', 'INVENTORY_UNAVAILABLE'])(
-    'clears %s recovery so revisiting cannot purchase automatically',
-    async (code) => {
-      const failure = new CreatorDropApiError(409, {
-        error: {
-          code,
-          details: {},
-          message: `Definitive ${code} failure.`,
-          requestId: `request-${code.toLowerCase()}`,
-        },
-      });
-      const openBox = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue(boxOpeningFixture);
-      const api = createTestApiClient({ openBox });
-      const auth = createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) });
-      const user = userEvent.setup();
-      const firstVisit = renderRoute(
-        '/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101',
-        { api, auth },
-      );
-
-      await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-      await user.click(screen.getByRole('button', { name: 'Open box' }));
-      expect(await screen.findByRole('alert')).toHaveTextContent(code);
-      expect(
-        window.sessionStorage.getItem(
-          `creatordrop:opening:v1:${publishedBoxFixture.manifest.boxId}`,
-        ),
-      ).toBeNull();
-      firstVisit.unmount();
-
-      renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
-        api,
-        auth,
-      });
-      expect(await screen.findByRole('button', { name: 'Open this box' })).toBeInTheDocument();
-      await act(() => Promise.resolve());
-      expect(openBox).toHaveBeenCalledOnce();
-    },
-  );
-
-  it('auto-recovers an ambiguous lost response on remount with the exact original command', async () => {
+  it('auto-recovers an ambiguous v2 response on remount with the exact original command', async () => {
     const openBox = vi
-      .fn()
+      .fn<CreatorDropApiClient['openBox']>()
       .mockRejectedValueOnce(new Error('The response was lost.'))
-      .mockResolvedValue(boxOpeningFixture);
-    const api = createTestApiClient({ openBox });
+      .mockResolvedValueOnce(openingV2ResponseFixture);
+    const api = createTestApiClient({
+      getOpeningEntitlementState: () => Promise.resolve(availableEntitlement()),
+      openBox,
+    });
     const auth = createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) });
-    const user = userEvent.setup();
     const firstVisit = renderRoute(
-      '/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101',
+      `/creators/creator-one/boxes/${openingV2BoxFixture.manifest.boxId}`,
       { api, auth },
     );
+    const { confirmation, user } = await openConfirmation();
 
-    await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-    await user.click(screen.getByRole('button', { name: 'Open box' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('response was lost');
+    await user.click(within(confirmation).getByRole('button', { name: 'Open Drop' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('The response was lost.');
     const stored = window.sessionStorage.getItem(
-      `creatordrop:opening:v1:${publishedBoxFixture.manifest.boxId}`,
+      `creatordrop:opening:v1:${openingV2BoxFixture.manifest.boxId}`,
     );
-    expect(stored).not.toBeNull();
     const original = JSON.parse(stored ?? '{}') as { readonly idempotencyKey?: string };
     firstVisit.unmount();
 
-    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
-      api,
-      auth,
-    });
-    expect(
-      await screen.findByRole('heading', { name: 'Unwrapping your reward…' }),
-    ).toBeInTheDocument();
+    renderRoute(`/creators/creator-one/boxes/${openingV2BoxFixture.manifest.boxId}`, { api, auth });
+    expect(await screen.findByRole('heading', { name: 'Unwrapping your reward…' })).toBeVisible();
     expect(openBox).toHaveBeenCalledTimes(2);
     expect(openBox.mock.calls[1]?.[2]).toBe(original.idempotencyKey);
     expect(openBox.mock.calls[1]?.[1]).toBe(currentFairnessFixture.fairness.clientSeed);
@@ -1124,27 +923,31 @@ describe('Phase 14 web shell', () => {
       error: {
         code: 'OPENING_RETRY_REQUIRED',
         details: {},
-        message: 'Please retry this opening with the same request.',
+        message: 'Internal retry message.',
         requestId: 'request-retry-required',
       },
     });
     const openBox = vi
-      .fn()
+      .fn<CreatorDropApiClient['openBox']>()
       .mockRejectedValueOnce(retryRequired)
-      .mockResolvedValue(boxOpeningFixture);
-    const api = createTestApiClient({ openBox });
+      .mockResolvedValueOnce(openingV2ResponseFixture);
+    const api = createTestApiClient({
+      getOpeningEntitlementState: () => Promise.resolve(availableEntitlement()),
+      openBox,
+    });
     const auth = createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) });
-    const user = userEvent.setup();
     const firstVisit = renderRoute(
-      '/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101',
+      `/creators/creator-one/boxes/${openingV2BoxFixture.manifest.boxId}`,
       { api, auth },
     );
+    const { confirmation, user } = await openConfirmation();
 
-    await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-    await user.click(screen.getByRole('button', { name: 'Open box' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('same request');
+    await user.click(within(confirmation).getByRole('button', { name: 'Open Drop' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'This opening needs your confirmation to retry.',
+    );
     const stored = window.sessionStorage.getItem(
-      `creatordrop:opening:v1:${publishedBoxFixture.manifest.boxId}`,
+      `creatordrop:opening:v1:${openingV2BoxFixture.manifest.boxId}`,
     );
     const original = JSON.parse(stored ?? '{}') as {
       readonly idempotencyKey?: string;
@@ -1153,111 +956,103 @@ describe('Phase 14 web shell', () => {
     expect(original.recovery).toBe('manual');
     firstVisit.unmount();
 
-    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
-      api,
-      auth,
-    });
-    expect(await screen.findByRole('button', { name: 'Open this box' })).toBeInTheDocument();
+    renderRoute(`/creators/creator-one/boxes/${openingV2BoxFixture.manifest.boxId}`, { api, auth });
+    expect(await screen.findByRole('button', { name: 'Open Drop' })).toBeVisible();
     await act(() => Promise.resolve());
     expect(openBox).toHaveBeenCalledOnce();
-    await user.click(screen.getByRole('button', { name: 'Open this box' }));
-    await user.click(screen.getByRole('button', { name: 'Open box' }));
-    expect(
-      await screen.findByRole('heading', { name: 'Unwrapping your reward…' }),
-    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Open Drop' }));
+    await user.click(screen.getByRole('button', { name: 'Open Drop' }));
+    expect(await screen.findByRole('heading', { name: 'Unwrapping your reward…' })).toBeVisible();
     expect(openBox).toHaveBeenCalledTimes(2);
     expect(openBox.mock.calls[1]?.[2]).toBe(original.idempotencyKey);
   });
 
-  it('skips the decorative reel when reduced motion is requested', async () => {
-    Object.defineProperty(window, 'matchMedia', {
-      configurable: true,
-      value: vi.fn().mockImplementation((query: string) => ({
-        addEventListener: vi.fn(),
-        dispatchEvent: vi.fn(),
-        matches: query === '(prefers-reduced-motion: reduce)',
-        media: query,
-        onchange: null,
-        removeEventListener: vi.fn(),
-      })),
+  it.each([
+    'OPENING_ENTITLEMENT_REQUIRED',
+    'OPENING_LIMIT_REACHED',
+    'BOX_NOT_OPENABLE',
+    'INVENTORY_UNAVAILABLE',
+  ])('clears %s recovery so revisiting cannot open automatically', async (code) => {
+    const failure = new CreatorDropApiError(409, {
+      error: {
+        code,
+        details: {},
+        message: `Definitive ${code} failure.`,
+        requestId: `request-${code.toLowerCase()}`,
+      },
     });
-    const user = userEvent.setup();
-    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
-      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
+    const openBox = vi
+      .fn<CreatorDropApiClient['openBox']>()
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValueOnce(openingV2ResponseFixture);
+    const api = createTestApiClient({
+      getOpeningEntitlementState: () => Promise.resolve(availableEntitlement()),
+      openBox,
     });
-
-    await user.click(await screen.findByRole('button', { name: 'Open this box' }));
-    await user.click(screen.getByRole('button', { name: 'Open box' }));
-
-    expect(
-      await screen.findByRole('heading', { level: 2, name: 'Base reward' }),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole('heading', { name: 'Unwrapping your reward…' }),
-    ).not.toBeInTheDocument();
-  });
-
-  it('recovers a refreshed lost response with the persisted opening identity', async () => {
-    const idempotencyKey = 'opening_00000000-0000-4000-8000-000000000499';
-    window.sessionStorage.setItem(
-      `creatordrop:opening:v1:${publishedBoxFixture.manifest.boxId}`,
-      JSON.stringify({
-        clientSeed: currentFairnessFixture.fairness.clientSeed,
-        expectedBoxVersionId: publishedBoxFixture.version.id,
-        expectedConfigurationHash: publishedBoxFixture.configurationHash,
-        expectedSeedSetId: currentFairnessFixture.fairness.activeSeedSet.id,
-        expectedServerSeedCommitment: currentFairnessFixture.fairness.activeSeedSet.commitment,
-        idempotencyKey,
-        recovery: 'automatic',
-        userId: authSessionResponseFixture.user.id,
-      }),
+    const auth = createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) });
+    const firstVisit = renderRoute(
+      `/creators/creator-one/boxes/${openingV2BoxFixture.manifest.boxId}`,
+      { api, auth },
     );
-    const openBox = vi.fn(() => Promise.resolve(boxOpeningFixture));
-    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
-      api: createTestApiClient({ openBox }),
-      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
-    });
+    const { confirmation, user } = await openConfirmation();
 
+    await user.click(within(confirmation).getByRole('button', { name: 'Open Drop' }));
+    expect(await screen.findByRole('alert')).toBeVisible();
     expect(
-      await screen.findByRole('heading', { name: 'Unwrapping your reward…' }),
-    ).toBeInTheDocument();
+      window.sessionStorage.getItem(`creatordrop:opening:v1:${openingV2BoxFixture.manifest.boxId}`),
+    ).toBeNull();
+    firstVisit.unmount();
+
+    renderRoute(`/creators/creator-one/boxes/${openingV2BoxFixture.manifest.boxId}`, { api, auth });
+    expect(await screen.findByRole('button', { name: 'Open Drop' })).toBeVisible();
+    await act(() => Promise.resolve());
     expect(openBox).toHaveBeenCalledOnce();
-    expect(openBox).toHaveBeenCalledWith(
-      publishedBoxFixture.manifest.boxId,
-      currentFairnessFixture.fairness.clientSeed,
-      idempotencyKey,
-      publishedBoxFixture.version.id,
-      publishedBoxFixture.configurationHash,
-      currentFairnessFixture.fairness.activeSeedSet.id,
-      currentFairnessFixture.fairness.activeSeedSet.commitment,
-    );
   });
 
-  it("never replays another user session's pending opening", async () => {
-    window.sessionStorage.setItem(
-      `creatordrop:opening:v1:${publishedBoxFixture.manifest.boxId}`,
-      JSON.stringify({
-        clientSeed: currentFairnessFixture.fairness.clientSeed,
-        expectedBoxVersionId: publishedBoxFixture.version.id,
-        expectedConfigurationHash: publishedBoxFixture.configurationHash,
-        expectedSeedSetId: currentFairnessFixture.fairness.activeSeedSet.id,
-        expectedServerSeedCommitment: currentFairnessFixture.fairness.activeSeedSet.commitment,
-        idempotencyKey: 'opening_00000000-0000-4000-8000-000000000498',
-        recovery: 'automatic',
-        userId: '00000000-0000-4000-8000-000000000497',
-      }),
-    );
-    const openBox = vi.fn(() => Promise.resolve(boxOpeningFixture));
-    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
-      api: createTestApiClient({ openBox }),
+  it('skips the decorative reel when reduced motion is requested', async () => {
+    mockedReducedMotion.mockReturnValue(true);
+    try {
+      renderAuthenticatedDrop();
+      const { confirmation, user } = await openConfirmation();
+      await user.click(within(confirmation).getByRole('button', { name: 'Open Drop' }));
+
+      expect(
+        await screen.findByRole('heading', { level: 2, name: 'Free Drop reward' }),
+      ).toBeVisible();
+      expect(screen.queryByRole('heading', { name: 'Unwrapping your reward…' })).toBeNull();
+    } finally {
+      mockedReducedMotion.mockReturnValue(false);
+    }
+  });
+
+  it('restores a protected account without wallet or test-credit controls', async () => {
+    renderRoute('/account', {
+      api: createTestApiClient(),
       auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
     });
 
-    expect(await screen.findByRole('button', { name: 'Open this box' })).toBeInTheDocument();
-    expect(openBox).not.toHaveBeenCalled();
+    expect(
+      await screen.findByRole('heading', { name: authSessionResponseFixture.user.username }),
+    ).toBeVisible();
+    expect(screen.getByText(/see and open your available Drops/iu)).toBeVisible();
+    expect(screen.queryByText(/wallet|credit|fund|payment|balance/iu)).toBeNull();
   });
 
-  it('covers loading, empty, retryable failure, and public 404 states', async () => {
+  it('covers public not-found and catalog empty states', async () => {
+    const { unmount } = renderRoute('/missing');
+    expect(await screen.findByRole('heading', { name: 'Page not found' })).toBeVisible();
+    unmount();
+
+    renderRoute('/creators/creator-one', {
+      api: createTestApiClient({
+        getCreator: () => Promise.resolve(publicCreatorResponseFixture),
+        listCreatorBoxes: () => Promise.resolve({ boxes: [], nextCursor: null }),
+      }),
+    });
+    expect(await screen.findByRole('heading', { name: 'No active drops' })).toBeVisible();
+  });
+
+  it('covers catalog loading and retryable error states', async () => {
     const pending = deferred<PublicCreatorsResponse>();
     const loading = renderRoute('/creators', {
       api: createTestApiClient({ listCreators: () => pending.promise }),
@@ -1267,100 +1062,26 @@ describe('Phase 14 web shell', () => {
 
     renderRoute('/creators', {
       api: createTestApiClient({
-        listCreators: () => Promise.resolve({ creators: [], nextCursor: null }),
+        listCreators: () => Promise.reject(new Error('The network is unavailable.')),
       }),
-    });
-    expect(
-      await screen.findByRole('heading', { name: 'No public creators yet' }),
-    ).toBeInTheDocument();
-
-    const failure = new Error('The network is unavailable.');
-    renderRoute('/creators', {
-      api: createTestApiClient({ listCreators: () => Promise.reject(failure) }),
     });
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('The network is unavailable.');
-    expect(within(alert).getByRole('button', { name: 'Try again' })).toBeInTheDocument();
-
-    const notFound = new CreatorDropApiError(404, {
-      error: {
-        code: 'CATALOG_RESOURCE_NOT_FOUND',
-        details: {},
-        message: 'Not found.',
-        requestId: 'request-not-found',
-      },
-    });
-    renderRoute('/creators/creator-one/boxes/00000000-0000-4000-8000-000000000101', {
-      api: createTestApiClient({ getCreatorBox: () => Promise.reject(notFound) }),
-    });
-    expect(await screen.findByRole('heading', { name: 'Not found' })).toBeInTheDocument();
+    expect(within(alert).getByRole('button', { name: 'Try again' })).toBeVisible();
   });
 
-  it('restores an authenticated session before protected content can render', async () => {
+  it('restores an authenticated session before protected content renders', async () => {
     const restored = deferred<ReturnType<typeof browserSession>>();
-    const auth = createTestAuthClient({ getSession: () => restored.promise });
-    renderRoute('/account', { auth });
+    renderRoute('/account', {
+      auth: createTestAuthClient({ getSession: () => restored.promise }),
+    });
 
-    expect(await screen.findByText(/Restoring your session/u)).toBeInTheDocument();
-    expect(screen.queryByText(authSessionResponseFixture.user.username)).not.toBeInTheDocument();
+    expect(await screen.findByText(/Restoring your session/u)).toBeVisible();
+    expect(screen.queryByText(authSessionResponseFixture.user.username)).toBeNull();
     act(() => restored.resolve(browserSession()));
     expect(
       await screen.findByRole('heading', { name: authSessionResponseFixture.user.username }),
-    ).toBeInTheDocument();
-  });
-
-  it('shows enabled development credits, uses a fresh key per click, and refreshes the balance', async () => {
-    const wallet = {
-      currency: 'USD',
-      id: '00000000-0000-4000-8000-000000000501',
-      revision: '1',
-    } as const;
-    const listWallets = vi
-      .fn<CreatorDropApiClient['listWallets']>()
-      .mockResolvedValueOnce({ wallets: [{ ...wallet, balanceMinor: '0' }] })
-      .mockResolvedValueOnce({ wallets: [{ ...wallet, balanceMinor: '100000', revision: '2' }] })
-      .mockResolvedValueOnce({ wallets: [{ ...wallet, balanceMinor: '200000', revision: '3' }] });
-    const grantUsdTestCredits = vi.fn<CreatorDropApiClient['grantUsdTestCredits']>(() =>
-      Promise.resolve({ wallet: { ...wallet, balanceMinor: '100000', revision: '2' } }),
-    );
-    const user = userEvent.setup();
-    renderRoute('/account', {
-      api: createTestApiClient({ grantUsdTestCredits, listWallets }),
-      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
-      testCreditsEnabled: true,
-    });
-
-    const button = await screen.findByRole('button', {
-      name: 'DEV ONLY — Add $1,000 Test Credits',
-    });
-    expect(await screen.findByText('$0.00', { selector: 'strong' })).toBeInTheDocument();
-    await user.click(button);
-    expect(await screen.findByText('$1,000.00', { selector: 'strong' })).toBeInTheDocument();
-    await user.click(button);
-    expect(await screen.findByText('$2,000.00', { selector: 'strong' })).toBeInTheDocument();
-
-    expect(listWallets).toHaveBeenCalledTimes(3);
-    expect(grantUsdTestCredits).toHaveBeenCalledTimes(2);
-    const firstKey = grantUsdTestCredits.mock.calls[0]?.[0];
-    const secondKey = grantUsdTestCredits.mock.calls[1]?.[0];
-    expect(firstKey).toMatch(/^wallet_test_credit_[0-9a-f-]{36}$/u);
-    expect(secondKey).toMatch(/^wallet_test_credit_[0-9a-f-]{36}$/u);
-    expect(firstKey).not.toBe(secondKey);
-  });
-
-  it('does not load wallets or show test credits when the frontend capability is disabled', async () => {
-    const listWallets = vi.fn<CreatorDropApiClient['listWallets']>();
-    renderRoute('/account', {
-      api: createTestApiClient({ listWallets }),
-      auth: createTestAuthClient({ getSession: () => Promise.resolve(browserSession()) }),
-    });
-
-    expect(
-      await screen.findByRole('heading', { name: authSessionResponseFixture.user.username }),
-    ).toBeInTheDocument();
-    expect(screen.queryByText('DEV ONLY')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Test Credits/u })).not.toBeInTheDocument();
-    expect(listWallets).not.toHaveBeenCalled();
+    ).toBeVisible();
   });
 
   it('clears an invalid restored session and keeps protected routes private', async () => {
@@ -1381,19 +1102,16 @@ describe('Phase 14 web shell', () => {
       }),
     });
 
-    expect(await screen.findByRole('heading', { name: 'Welcome back' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Welcome back' })).toBeVisible();
     expect(signOut).toHaveBeenCalledOnce();
-    expect(screen.queryByText(authSessionResponseFixture.user.username)).not.toBeInTheDocument();
+    expect(screen.queryByText(authSessionResponseFixture.user.username)).toBeNull();
   });
 
-  it('supports accessible sign-in and sign-out state transitions', async () => {
+  it('supports accessible sign-in and sign-out transitions', async () => {
     const signOut = vi.fn(() => Promise.resolve());
     const auth = createTestAuthClient({
       signIn: () =>
-        Promise.resolve({
-          confirmationRequired: false,
-          session: browserSession('signed-in-token'),
-        }),
+        Promise.resolve({ confirmationRequired: false, session: browserSession('signed-in') }),
       signOut,
     });
     const user = userEvent.setup();
@@ -1404,9 +1122,9 @@ describe('Phase 14 web shell', () => {
     await user.click(screen.getByRole('button', { name: 'Sign in' }));
     expect(
       await screen.findByRole('heading', { name: authSessionResponseFixture.user.username }),
-    ).toBeInTheDocument();
+    ).toBeVisible();
     await user.click(screen.getByRole('button', { name: 'Sign out' }));
-    expect(await screen.findByRole('heading', { name: 'Welcome back' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Welcome back' })).toBeVisible();
     expect(signOut).toHaveBeenCalledOnce();
     await user.click(screen.getByRole('button', { name: 'Show account creation form' }));
     await user.type(screen.getByLabelText('Email address'), 'new-fan@example.test');
@@ -1415,26 +1133,36 @@ describe('Phase 14 web shell', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('Check your email');
   });
 
-  it('surfaces accessible form failures and marks the reduced-motion preference', async () => {
-    Object.defineProperty(window, 'matchMedia', {
-      configurable: true,
-      value: vi.fn().mockImplementation((query: string) => ({
-        addEventListener: vi.fn(),
-        dispatchEvent: vi.fn(),
-        matches: query === '(prefers-reduced-motion: reduce)',
-        media: query,
-        onchange: null,
-        removeEventListener: vi.fn(),
-      })),
-    });
+  it('surfaces accessible auth form failures', async () => {
     const user = userEvent.setup();
-    const { container } = renderRoute('/auth', {
+    renderRoute('/auth', {
       auth: createTestAuthClient({ signIn: () => Promise.reject(new Error('Sign in failed.')) }),
     });
+
     await user.type(await screen.findByLabelText('Email address'), 'fan@example.test');
     await user.type(screen.getByLabelText('Password'), 'safe-password');
     await user.click(screen.getByRole('button', { name: 'Sign in' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Sign in failed.');
-    expect(container.querySelector('[data-reduced-motion="true"]')).toBeInTheDocument();
+  });
+
+  it('does not replay another user session pending Drop command', async () => {
+    const openBox = vi.fn(() => Promise.resolve(openingV2ResponseFixture));
+    window.sessionStorage.setItem(
+      `creatordrop:opening:v1:${openingV2BoxFixture.manifest.boxId}`,
+      JSON.stringify({
+        clientSeed: currentFairnessFixture.fairness.clientSeed,
+        expectedBoxVersionId: openingV2BoxFixture.version.id,
+        expectedConfigurationHash: openingV2BoxFixture.configurationHash,
+        expectedSeedSetId: currentFairnessFixture.fairness.activeSeedSet.id,
+        expectedServerSeedCommitment: currentFairnessFixture.fairness.activeSeedSet.commitment,
+        idempotencyKey: 'opening_00000000-0000-4000-8000-000000000999',
+        recovery: 'automatic',
+        userId: '00000000-0000-4000-8000-000000000999',
+      }),
+    );
+    renderAuthenticatedDrop({ openBox });
+
+    await waitFor(() => expect(screen.getByText('3 Drops available')).toBeVisible());
+    expect(openBox).not.toHaveBeenCalled();
   });
 });

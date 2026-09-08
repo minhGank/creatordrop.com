@@ -11,7 +11,12 @@ describe('catalog display formatting', () => {
   });
 
   it('formats exact and repeating integer weights without hiding a positive probability', () => {
-    expect(formatProbability('1', '100')).toBe('1.00%');
+    expect(formatProbability('1', '100')).toBe('1%');
+    expect(formatProbability('720', '1000')).toBe('72%');
+    expect(formatProbability('190', '1000')).toBe('19%');
+    expect(formatProbability('70', '1000')).toBe('7%');
+    expect(formatProbability('16', '1000')).toBe('1.6%');
+    expect(formatProbability('4', '1000')).toBe('0.4%');
     expect(formatProbability('1', '3')).toBe('≈33.333333%');
     expect(formatProbability('1', '100000000000')).toBe('<0.000001%');
   });

@@ -200,7 +200,7 @@ explicit development/test plus local Supabase, performs an idempotent grant, and
 numeric aggregate state. No fan-facing mutation endpoint exists; application and worker roles
 cannot read or write grant/consumption tables or execute the private operator grant/read functions.
 
-R1B adds only this authenticated state read:
+R1B added this authenticated state read, and R1C makes it the active fan availability source:
 
 | Method | Path                                   | Auth | Purpose                                       |
 | ------ | -------------------------------------- | ---- | --------------------------------------------- |
@@ -212,16 +212,23 @@ It derives the user from authentication and returns the stable box ID, decimal-s
 constrained transaction-owned consumption function, which selects an eligible grant server-side
 and cannot commit an orphan consumption.
 
+The active web client uses the server-returned `remaining` and `limitReached` values. It does not
+derive availability from catalog limits or local opening history. No entitlement grant mutation is
+exposed to fans; until R2, local development/operator grants are the only way to provision access.
+
 The shared creator policy—not controllers—allows owner/manager/editor draft writes, owner/manager publication and archival actions, and viewer reads. Same-creator insufficient roles receive `403`; nonmembers, cross-creator actors, or mismatched resources receive concealed `404`. Catalog mutations emit allowlisted `catalog.audit` records for creation, publication, and archival without tokens, headers, secrets, or profile data.
 
 ## Box opening
 
 ### `POST /v1/boxes/:boxId/open`
 
-The command explicitly dispatches the current published catalog to the preserved paid
-`opening-v1` path or the non-financial entitlement-backed `opening-v2` path. Null, unsupported, or
-internally inconsistent models return the stable `BOX_NOT_OPENABLE` boundary instead of falling
-through another model's implementation.
+New commands in the active runtime accept only the non-financial, entitlement-backed
+`opening-v2` path. R1C rejects new `opening-v1` commands with `BOX_NOT_OPENABLE` before wallet
+or RNG access. Exact completed v1 idempotency replays remain readable without a new debit.
+The legacy paid implementation requires an explicit service-level opt-in used only by historical
+regression tests; no environment flag enables it in active startup. Null, unsupported, or internally
+inconsistent models return the stable `BOX_NOT_OPENABLE` boundary instead of falling through
+another model's implementation.
 
 Requires user authentication and `Idempotency-Key`. Request:
 
@@ -321,6 +328,11 @@ successful-opening maximum before availability, and consumes the oldest eligible
 creation time and canonical ID. `OPENING_LIMIT_REACHED` and `OPENING_ENTITLEMENT_REQUIRED` are
 distinct `409` responses and neither commits a consumption, nonce, inventory movement, or opening.
 
+Normal v2 catalog and result screens show percentages derived from immutable weights, not raw
+`weight / totalWeight` fractions. Confirmation and result screens omit price, balance, payment,
+seed, commitment, hash, and algorithm copy. The command still binds the exact fairness and catalog
+expectations, while raw verification material remains available through the collapsed proof UI.
+
 The reward object also contains the immutable per-entry `rarity` and `rarityPolicyVersion` snapshots. Both are null only for historical pre-rarity publications. New publications contain one of `common`, `uncommon`, `rare`, `epic`, or `legendary` with `rarityPolicyVersion: "rarity-v1"`.
 
 The server has already decided and committed the reward when either response is generated. The frontend reel must land on that reward. Grandfathered or inconsistent versions return `BOX_NOT_OPENABLE`. Other stable errors include `OPENING_CONFIRMATION_STALE`, `FAIRNESS_CONFIRMATION_STALE`, `OPENING_ENTITLEMENT_REQUIRED`, `OPENING_LIMIT_REACHED`, `CLIENT_SEED_MISMATCH`, `INVENTORY_UNAVAILABLE`, `INSUFFICIENT_BALANCE`, `OPENING_CURRENCY_NOT_ENABLED`, `SEED_ROTATION_REQUIRED`, `OPENING_RETRY_REQUIRED`, and `IDEMPOTENCY_KEY_REUSED`. `OPENING_CONFIRMATION_STALE` is a definitive non-commit response that requires the current version to be shown and explicitly confirmed. `OPENING_RETRY_REQUIRED` means PostgreSQL aborted the transaction after RNG may have run; all state rolled back and the client may retry with the same idempotency key.
@@ -383,28 +395,29 @@ Phase 7 implements the public seed-set lifecycle route, and Phase 15 implements 
 
 Active and retired seed sets map to `pending_reveal`; compromised sets map to `unverifiable`; revealed sets map to `ready`. `serverSeedHex` is omitted for active, retired, and compromised sets and included only for revealed sets. `ready` means sufficient proof material is available—it never claims verification. Only the independent browser verifier may display a successful verification after recomputing the commitment, manifest hash, HMAC rejection rounds, selection value, and winner.
 
-## Wallet, funding, and ledger receipts
+## Retired fan wallet and funding routes
 
-Phase 8 implements only:
+R1C unregisters these Phase 8–11 fan-financial paths from normal application composition:
 
-| Method | Path                                    | Auth               | Purpose                                                     |
-| ------ | --------------------------------------- | ------------------ | ----------------------------------------------------------- |
-| `GET`  | `/v1/me/wallets`                        | active user        | Actor-owned settled wallet projections, ordered by currency |
-| `POST` | `/v1/me/wallets/:currency/test-credits` | user + idempotency | Synthetic credit grant; route absent in production          |
-| `POST` | `/v1/me/wallets/USD/funding-intents`    | user + idempotency | Create local + Stripe test-mode funding intent              |
-| `POST` | `/v1/webhooks/stripe`                   | Stripe signature   | Exact-raw-body authoritative provider event ingestion       |
+| Method | Retired path                            | Active behavior |
+| ------ | --------------------------------------- | --------------- |
+| `GET`  | `/v1/me/wallets`                        | `404 NOT_FOUND` |
+| `POST` | `/v1/me/wallets/:currency/test-credits` | `404 NOT_FOUND` |
+| `POST` | `/v1/me/wallets/USD/funding-intents`    | `404 NOT_FOUND` |
+| `POST` | `/v1/webhooks/stripe`                   | `404 NOT_FOUND` |
 
-`GET` returns `{ "wallets": [{ "id", "currency", "balanceMinor", "revision" }] }`. Decimal strings preserve bigint precision. It never creates wallets and never exposes the linked ledger account, system accounts, entries, or idempotency metadata.
+The server does not construct the wallet service, fan payment service, or Stripe funding provider,
+and none of the retired routes has a runtime configuration switch. `WALLET_TEST_CREDITS_ENABLED`,
+`WALLET_MUTATION_RATE_LIMIT_*`, `STRIPE_FUNDING_ENABLED`, `STRIPE_SECRET_KEY`,
+`STRIPE_WEBHOOK_SECRET`, and `STRIPE_WEBHOOK_BODY_LIMIT_BYTES` are not active API configuration.
+Opening mutations use the model-neutral `OPENING_MUTATION_RATE_LIMIT_MAX` and
+`OPENING_MUTATION_RATE_LIMIT_WINDOW_MS` settings.
 
-The test-credit command accepts exactly `{ "amountMinor": "2000" }` plus an 8–128 character `Idempotency-Key`. Only `USD` is enabled in Phase 8. The deterministic fingerprint covers its version, operation, actor, currency, and canonical amount. Same-key/same-request replay returns the original `201` body; material reuse returns `409 IDEMPOTENCY_KEY_REUSED`. `WALLET_CURRENCY_NOT_ENABLED`, `WALLET_AMOUNT_OVERFLOW`, and validation errors fail without a committed claim or movement. Both route registration and the service require the explicit `WALLET_TEST_CREDITS_ENABLED=true` opt-in, and configuration rejects that opt-in in production.
-
-Funding-intent input is exactly `{ "amountMinor": "2000" }`; 500 and 50000 are the inclusive USD limits. The response is `{ "fundingIntent": { "fundingIntentId", "amountMinor", "currency": "USD", "clientSecret" } }`. User/wallet/provider/settlement identity comes from the actor and server. No provider object, ledger account, event, payment-method, or secret-key field is exposed. The same actor/idempotency key replays one local/Stripe intent; conflicting input returns `IDEMPOTENCY_KEY_REUSED`.
-
-`POST /v1/webhooks/stripe` is mounted before JSON parsing and accepts `application/json` bytes plus `Stripe-Signature`. Invalid signatures return `STRIPE_SIGNATURE_INVALID` and create no trusted database state. Browser redirect/client success cannot credit a wallet. A verified, matched `payment_intent.succeeded` event atomically records the provider event, balanced wallet credit, and settlement. Duplicate/different events for the same payment cannot create another settlement; a distinct success after refund/dispute is retained as a harmless audited duplicate without changing the terminal state. A verified refund/dispute delivered before settlement returns `STRIPE_EVENT_RETRY_REQUIRED`. Amount/currency/linkage mismatches are retained for reconciliation without credit even when the local intent was not successfully bound; the provider event preserves the external object identity while the local intent remains explicitly reconciliation-required.
-
-Funding is absent unless `STRIPE_FUNDING_ENABLED=true` with an explicit development/test runtime, a Stripe test API key, and webhook secret. It is unavailable in production. `ACCOUNT_FUNDING_RESTRICTED` blocks funding and spending while an unresolved provider shortfall exists. Reconciliation is an internal read-only service operation, not a public repair endpoint.
-
-There is no self-service refund, wallet withdrawal, creator payout, production charge, currency conversion, generic balance setter, or public adjustment endpoint. Stripe-driven refunds/disputes preserve original funding/opening history and use unique compensating postings. Any unrecoverable amount becomes a separate immutable unresolved deficit; spendable wallet balance never becomes negative.
+The underlying wallet, ledger, funding, settlement, refund/dispute, and reconciliation modules remain
+in the repository with their historical tests. Their immutable rows and migrations are preserved
+for v1 proof/accounting compatibility and audit; posted financial history is never edited or
+deleted. This retention does not make them an active fan API. Future creator SaaS billing is R4
+scope and is not represented by the retired fan Stripe flow.
 
 ## Fulfillment
 

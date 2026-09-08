@@ -20,12 +20,14 @@ import {
 } from '../api/client.js';
 import { usePrefersReducedMotion } from '../accessibility/use-prefers-reduced-motion.js';
 import type { SessionState } from '../auth/session-context-value.js';
-import { formatMinorUnits } from '../formatting/money.js';
 import { formatProbability } from '../formatting/probability.js';
-import { isOpeningV1Catalog, isOpeningV2Catalog, type OpeningCatalog } from './opening-catalog.js';
+import { isOpeningV2Catalog, type OpeningV2Catalog } from './opening-catalog.js';
 import { calculateReelWinnerTranslation } from './reel-geometry.js';
 
-type Opening = BoxOpeningResponse['opening'];
+type Opening = Extract<
+  BoxOpeningResponse['opening'],
+  { readonly openingCompatibilityVersion: 'opening-v2' }
+>;
 type Stage =
   | 'confirm'
   | 'idle'
@@ -52,6 +54,7 @@ interface PendingOpening {
 const canonicalUuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
+// This versions the stored command shape, not its opening model. R1B stored v2 here too.
 const storageKey = (boxId: string): string => `creatordrop:opening:v1:${boxId}`;
 
 const readPending = (boxId: string, userId: string): PendingOpening | undefined => {
@@ -111,21 +114,9 @@ const generateClientSeed = (): string => {
 const catalogMatchesOpening = (
   catalog: PublishedBoxVersionResponse,
   opening: Opening,
-): catalog is OpeningCatalog => {
-  if ('openingCompatibilityVersion' in opening) {
-    if (!isOpeningV2Catalog(catalog)) return false;
-    if (catalog.version.maxOpeningsPerUser !== opening.entitlement.maxOpeningsPerUser) return false;
-  } else {
-    if (!isOpeningV1Catalog(catalog)) return false;
-    if (
-      catalog.version.priceMinor !== opening.cost.priceMinor ||
-      catalog.version.currency !== opening.cost.currency ||
-      catalog.manifest.priceMinor !== opening.cost.priceMinor ||
-      catalog.manifest.currency !== opening.cost.currency
-    ) {
-      return false;
-    }
-  }
+): catalog is OpeningV2Catalog => {
+  if (!isOpeningV2Catalog(catalog)) return false;
+  if (catalog.version.maxOpeningsPerUser !== opening.entitlement.maxOpeningsPerUser) return false;
   if (
     catalog.manifest.boxId !== opening.boxId ||
     catalog.manifest.boxVersionId !== opening.boxVersionId ||
@@ -171,6 +162,25 @@ const catalogMatchesOpening = (
 const rarityLabel = (rarity: RewardRarity | null): string =>
   rarity === null ? 'Unspecified' : `${rarity[0]?.toUpperCase() ?? ''}${rarity.slice(1)}`;
 
+const fulfillmentLabel = (status: Opening['fulfillmentStatus']): string =>
+  status === 'awaiting_restock' ? 'Reward is awaiting restock' : 'Reward ready for fulfillment';
+
+const openingErrorMessage = (error: CreatorDropApiError): string => {
+  switch (error.code) {
+    case 'OPENING_ENTITLEMENT_REQUIRED':
+      return "You don't have an available Drop yet.";
+    case 'OPENING_LIMIT_REACHED':
+      return "You've reached the opening limit for this Drop.";
+    case 'BOX_NOT_OPENABLE':
+    case 'INVENTORY_UNAVAILABLE':
+      return 'This Drop is currently unavailable.';
+    case 'OPENING_RETRY_REQUIRED':
+      return 'This opening needs your confirmation to retry. Your available Drop has not been used.';
+    default:
+      return 'This Drop could not be opened. Please try again.';
+  }
+};
+
 const FairnessProof = ({
   api,
   opening,
@@ -204,7 +214,7 @@ const FairnessProof = ({
 
   return (
     <details className="opening-fairness">
-      <summary>{verification === 'valid' ? 'Provably Fair ✓' : 'Provably fair details'}</summary>
+      <summary>{verification === 'valid' ? 'Provably Fair ✓' : 'Verify opening'}</summary>
       {error === undefined ? null : (
         <div className="inline-error" role="alert">
           {error} <button onClick={() => void load()}>Try again</button>
@@ -279,7 +289,7 @@ export const OpeningExperience = ({
   session,
 }: {
   readonly api: CreatorDropApiClient;
-  readonly box: OpeningCatalog;
+  readonly box: OpeningV2Catalog;
   readonly customSlug: string;
   readonly onCatalogChange: (catalog: PublishedBoxVersionResponse) => void;
   readonly session: SessionState;
@@ -287,8 +297,8 @@ export const OpeningExperience = ({
   const reducedMotion = usePrefersReducedMotion();
   const [stage, setStage] = useState<Stage>('idle');
   const [opening, setOpening] = useState<Opening>();
-  const [confirmationCatalog, setConfirmationCatalog] = useState<OpeningCatalog>();
-  const [committedCatalog, setCommittedCatalog] = useState<OpeningCatalog>();
+  const [confirmationCatalog, setConfirmationCatalog] = useState<OpeningV2Catalog>();
+  const [committedCatalog, setCommittedCatalog] = useState<OpeningV2Catalog>();
   const [entitlementState, setEntitlementState] = useState<OpeningV2EntitlementStateContract>();
   const [error, setError] = useState<string>();
   const [resultError, setResultError] = useState<string>();
@@ -309,7 +319,7 @@ export const OpeningExperience = ({
     entitlementState === undefined
       ? 'Checking Drop availability…'
       : entitlementState.limitReached
-        ? `This Drop's personal limit of ${entitlementState.maxOpeningsPerUser} has been reached.`
+        ? "You've reached the opening limit for this Drop."
         : entitlementState.remaining === '0'
           ? 'No Drops available'
           : `${entitlementState.remaining} ${entitlementState.remaining === '1' ? 'Drop' : 'Drops'} available`;
@@ -373,30 +383,23 @@ export const OpeningExperience = ({
     throw new Error('Fairness setup changed repeatedly. Review it and try again.');
   }, [api]);
 
-  const loadCurrentCatalog = useCallback(async (): Promise<OpeningCatalog> => {
+  const loadCurrentCatalog = useCallback(async (): Promise<OpeningV2Catalog> => {
     const current = await api.getCreatorBox(customSlug, box.manifest.boxId);
     if (
       current.creator.customSlug !== customSlug ||
       current.box.manifest.boxId !== box.manifest.boxId
     ) {
-      throw new Error('The current box version is not available for opening.');
+      throw new Error('This Drop is currently unavailable.');
     }
-    if (isOpeningV2Catalog(box)) {
-      if (!isOpeningV2Catalog(current.box)) {
-        throw new Error('The current box version is not available for opening.');
-      }
-      onCatalogChange(current.box);
-      return current.box;
-    }
-    if (!isOpeningV1Catalog(current.box)) {
-      throw new Error('The current box version is not available for opening.');
+    if (!isOpeningV2Catalog(current.box)) {
+      throw new Error('This Drop is currently unavailable.');
     }
     onCatalogChange(current.box);
     return current.box;
   }, [api, box, customSlug, onCatalogChange]);
 
   useEffect(() => {
-    if (!isOpeningV2Catalog(box) || session.status !== 'authenticated') {
+    if (session.status !== 'authenticated') {
       return;
     }
     let current = true;
@@ -435,7 +438,7 @@ export const OpeningExperience = ({
       } catch {
         setCommittedCatalog(undefined);
         setResultError(
-          'The opening is committed, but its authoritative published version could not be loaded.',
+          'Your result is safely recorded, but its reward details could not be loaded.',
         );
         setStage('result-error');
       }
@@ -464,12 +467,13 @@ export const OpeningExperience = ({
         ) {
           throw new Error('The committed opening did not match the confirmed fairness seed.');
         }
-        if ('openingCompatibilityVersion' in response.opening) {
-          void api
-            .getOpeningEntitlementState(response.opening.boxId)
-            .then(({ entitlement }) => setEntitlementState(entitlement))
-            .catch(() => setEntitlementState(undefined));
+        if (!('openingCompatibilityVersion' in response.opening)) {
+          throw new CreatorDropProtocolError();
         }
+        void api
+          .getOpeningEntitlementState(response.opening.boxId)
+          .then(({ entitlement }) => setEntitlementState(entitlement))
+          .catch(() => setEntitlementState(undefined));
         setOpening(response.opening);
         await resolveCommittedCatalog(response.opening);
       } catch (submissionError) {
@@ -483,7 +487,7 @@ export const OpeningExperience = ({
             try {
               const refreshed = await api.getCurrentFairness();
               if (refreshed.fairness.clientSeed === null) {
-                setError('Your fairness commitment changed. Reload it before opening.');
+                setError('The fairness information changed. Please try again.');
                 setStage('idle');
                 return;
               }
@@ -492,13 +496,11 @@ export const OpeningExperience = ({
               setFairnessRevision(refreshed.fairness.revision);
               setSeedSetId(refreshed.fairness.activeSeedSet.id);
               setServerSeedCommitment(refreshed.fairness.activeSeedSet.commitment);
-              setError(
-                'Your fairness commitment changed. Review the new commitment and confirm again.',
-              );
+              setError('The fairness information changed. Please confirm this Drop again.');
               setStage('confirm');
               return;
             } catch {
-              setError('Your fairness commitment changed. Reload it before opening.');
+              setError('The fairness information changed. Please try again.');
               setStage('idle');
               return;
             }
@@ -506,16 +508,18 @@ export const OpeningExperience = ({
           if (submissionError.code === 'OPENING_CONFIRMATION_STALE') {
             try {
               const currentCatalog = await loadCurrentCatalog();
-              setConfirmationCatalog(currentCatalog);
-              setError(
-                'This box changed after you reviewed it. Check the updated version and price, then confirm again.',
+              const { entitlement } = await api.getOpeningEntitlementState(
+                currentCatalog.manifest.boxId,
               );
+              setEntitlementState(entitlement);
+              setConfirmationCatalog(currentCatalog);
+              setError('This Drop changed after you reviewed it. Check it and confirm again.');
               setStage('confirm');
               return;
             } catch {
               setConfirmationCatalog(undefined);
               setError(
-                'This box changed, but the current version could not be loaded. Try again before opening.',
+                'This Drop changed, but its current details could not be loaded. Try again.',
               );
               setStage('idle');
               return;
@@ -523,9 +527,11 @@ export const OpeningExperience = ({
           }
         }
         setError(
-          submissionError instanceof Error
-            ? submissionError.message
-            : 'The opening could not be completed.',
+          submissionError instanceof CreatorDropApiError
+            ? openingErrorMessage(submissionError)
+            : submissionError instanceof Error
+              ? submissionError.message
+              : 'The opening could not be completed.',
         );
         setStage('confirm');
       }
@@ -550,10 +556,10 @@ export const OpeningExperience = ({
     confirming.current = true;
     try {
       if (session.status !== 'authenticated') {
-        throw new Error('Sign in before opening this box.');
+        throw new Error('Sign in before opening this Drop.');
       }
       if (confirmationCatalog === undefined) {
-        throw new Error('Review the current box version before confirming this opening.');
+        throw new Error('Review the current Drop before confirming.');
       }
       let pending = readPending(box.manifest.boxId, session.user.id);
       if (
@@ -572,7 +578,7 @@ export const OpeningExperience = ({
           serverSeedCommitment === undefined ||
           !/^[0-9a-f]{64}$/u.test(clientSeed)
         ) {
-          throw new Error('Client seed must be exactly 64 lowercase hexadecimal characters.');
+          throw new Error('Fairness setup is incomplete. Please try again.');
         }
         let authoritativeClientSeed = clientSeed;
         if (originalClientSeed.current !== clientSeed) {
@@ -627,7 +633,7 @@ export const OpeningExperience = ({
           setFairnessRevision(refreshed.fairness.revision);
           setSeedSetId(refreshed.fairness.activeSeedSet.id);
           setServerSeedCommitment(refreshed.fairness.activeSeedSet.commitment);
-          setError('Your fairness settings changed. Review them and confirm again.');
+          setError('The fairness information changed. Please confirm this Drop again.');
           setStage('confirm');
           return;
         } catch {
@@ -654,14 +660,22 @@ export const OpeningExperience = ({
     setStage('preparing-confirmation');
     try {
       if (session.status !== 'authenticated') {
-        throw new Error('Sign in before opening this box.');
+        throw new Error('Sign in before opening this Drop.');
       }
-      const [fairness, currentCatalog] = await Promise.all([
+      const [fairness, currentCatalog, entitlementResponse] = await Promise.all([
         loadOrInitializeFairness(),
         loadCurrentCatalog(),
+        api.getOpeningEntitlementState(box.manifest.boxId),
       ]);
+      setEntitlementState(entitlementResponse.entitlement);
+      if (entitlementResponse.entitlement.limitReached) {
+        throw new Error("You've reached the opening limit for this Drop.");
+      }
+      if (!entitlementResponse.entitlement.available) {
+        throw new Error("You don't have an available Drop yet.");
+      }
       if (fairness.fairness.clientSeed === null) {
-        throw new Error('Choose a client seed before opening.');
+        throw new Error('Fairness setup is incomplete. Please try again.');
       }
       const existing = readPending(box.manifest.boxId, session.user.id);
       if (
@@ -740,11 +754,7 @@ export const OpeningExperience = ({
     if (session.status !== 'authenticated') {
       return (
         <section className="opening-callout">
-          <p>
-            {isOpeningV2Catalog(box)
-              ? 'Sign in to use an available Drop entitlement.'
-              : 'Sign in to spend wallet balance and open this box.'}
-          </p>
+          <p>Sign in to see and open your available Drops.</p>
           <Link className="button primary" to="/auth">
             Sign in to open
           </Link>
@@ -753,15 +763,9 @@ export const OpeningExperience = ({
     }
     return (
       <section className="opening-callout">
-        <p>The result is committed by the backend before the reveal animation begins.</p>
-        {isOpeningV2Catalog(box) ? (
-          <p>
-            <strong>{entitlementAvailability}</strong>
-            {entitlementState === undefined || entitlementState.limitReached
-              ? null
-              : ` · ${entitlementState.successfulOpenings} of ${entitlementState.maxOpeningsPerUser} opened`}
-          </p>
-        ) : null}
+        <p>
+          <strong>{entitlementAvailability}</strong>
+        </p>
         {error === undefined ? null : (
           <p className="inline-error" role="alert">
             {error}
@@ -769,10 +773,10 @@ export const OpeningExperience = ({
         )}
         <button
           className="button primary"
-          disabled={isOpeningV2Catalog(box) && !entitlementState?.available}
+          disabled={!entitlementState?.available}
           onClick={() => void beginConfirmation()}
         >
-          {isOpeningV2Catalog(box) ? 'Open Drop' : 'Open this box'}
+          Open Drop
         </button>
       </section>
     );
@@ -781,12 +785,8 @@ export const OpeningExperience = ({
   if (stage === 'preparing-confirmation') {
     return (
       <section className="opening-dialog">
-        <p className="eyebrow">Preparing confirmation</p>
-        <p role="status">
-          {isOpeningV2Catalog(box)
-            ? 'Checking the current authoritative box version and entitlement…'
-            : 'Checking the current authoritative box version and price…'}
-        </p>
+        <p className="eyebrow">Preparing your Drop</p>
+        <p role="status">Checking current Drop availability…</p>
       </section>
     );
   }
@@ -796,75 +796,10 @@ export const OpeningExperience = ({
       <section aria-labelledby="opening-confirm-heading" className="opening-dialog">
         <p className="eyebrow">Confirm opening</p>
         <h2 id="opening-confirm-heading" ref={confirmationHeading} tabIndex={-1}>
-          Open {confirmationCatalog.version.name}?
+          Open one of your available Drops?
         </h2>
-        {isOpeningV1Catalog(confirmationCatalog) ? (
-          <>
-            <p className="opening-confirmation-price">
-              {formatMinorUnits(
-                confirmationCatalog.version.priceMinor,
-                confirmationCatalog.version.currency,
-              )}
-            </p>
-            <p className="opening-confirmation-charge">
-              This amount will be deducted from your wallet.
-            </p>
-          </>
-        ) : (
-          <p className="opening-confirmation-charge">
-            This uses one available Drop entitlement. It does not charge your wallet.
-          </p>
-        )}
-        <details className="opening-confirmation-fairness">
-          <summary>
-            <span className="opening-confirmation-fairness-status">
-              <span aria-hidden="true">🔒</span>
-              Provably fair
-            </span>
-            <span className="opening-confirmation-fairness-label">Fairness details</span>
-          </summary>
-          <div className="opening-confirmation-fairness-content">
-            <p>
-              CreatorDrop fixed a hidden server seed before this opening. The commitment lets you
-              verify the result after that seed is revealed; your client seed and nonce also
-              contribute to the result.
-            </p>
-            <dl>
-              <div>
-                <dt>Server-seed commitment</dt>
-                <dd className="hash-value">{serverSeedCommitment}</dd>
-              </div>
-              <div>
-                <dt>Seed-set ID</dt>
-                <dd className="hash-value">{seedSetId}</dd>
-              </div>
-            </dl>
-            <label className="client-seed-control">
-              Client seed
-              <input
-                aria-describedby="client-seed-help"
-                autoComplete="off"
-                disabled={stage === 'submitting'}
-                maxLength={64}
-                onChange={(event) => setClientSeed(event.target.value)}
-                spellCheck={false}
-                value={clientSeed ?? ''}
-              />
-            </label>
-            <p id="client-seed-help" className="field-help">
-              This seed is combined with the hidden server seed and nonce. If you generate a new
-              one, CreatorDrop saves it before submitting the opening.
-            </p>
-            <button
-              className="text-button"
-              disabled={stage === 'submitting'}
-              onClick={() => setClientSeed(generateClientSeed())}
-              type="button"
-            >
-              Generate a new client seed
-            </button>
-          </div>
-        </details>
+        <p>{confirmationCatalog.version.name}</p>
+        <p className="opening-confirmation-fairness-status">Provably Fair</p>
         {error === undefined ? null : (
           <p className="inline-error" role="alert">
             {error}
@@ -876,11 +811,7 @@ export const OpeningExperience = ({
             disabled={stage === 'submitting' || !/^[0-9a-f]{64}$/u.test(clientSeed ?? '')}
             onClick={() => void confirm()}
           >
-            {stage === 'submitting'
-              ? 'Committing opening…'
-              : isOpeningV2Catalog(confirmationCatalog)
-                ? 'Open Drop'
-                : 'Open box'}
+            {stage === 'submitting' ? 'Opening…' : 'Open Drop'}
           </button>
           <button
             className="button secondary"
@@ -897,11 +828,9 @@ export const OpeningExperience = ({
   if (stage === 'resolving-result' && opening !== undefined) {
     return (
       <section aria-labelledby="opening-committed-heading" className="opening-dialog">
-        <p className="eyebrow">Opening committed</p>
-        <h2 id="opening-committed-heading">Loading your authoritative result…</h2>
-        <p role="status">
-          CreatorDrop is loading the exact immutable box version used for this opening.
-        </p>
+        <p className="eyebrow">Drop opened</p>
+        <h2 id="opening-committed-heading">Loading your reward…</h2>
+        <p role="status">Your result is safely recorded.</p>
       </section>
     );
   }
@@ -909,12 +838,12 @@ export const OpeningExperience = ({
   if (stage === 'result-error' && opening !== undefined) {
     return (
       <section aria-labelledby="opening-committed-heading" className="opening-dialog">
-        <p className="eyebrow">Opening committed</p>
+        <p className="eyebrow">Drop opened</p>
         <h2 id="opening-committed-heading">Your result is safely recorded</h2>
         <p className="inline-error" role="alert">
           {resultError}
         </p>
-        <p>No second opening will be submitted while the authoritative result is reloaded.</p>
+        <p>No second Drop will be opened while your result is reloaded.</p>
         <button
           className="button secondary"
           onClick={() => void resolveCommittedCatalog(opening, true)}
@@ -933,7 +862,7 @@ export const OpeningExperience = ({
   ) {
     return (
       <section aria-labelledby="reel-heading" className="reel-stage">
-        <p className="eyebrow">Opening committed</p>
+        <p className="eyebrow">Drop opened</p>
         <h2 id="reel-heading">Unwrapping your reward…</h2>
         <div className="reel-window">
           <div className="reel-marker" aria-hidden="true" />
@@ -975,9 +904,9 @@ export const OpeningExperience = ({
     <section
       aria-live="polite"
       aria-labelledby="opening-result-heading"
-      className={`opening-result rarity-${opening.reward.rarity ?? 'unspecified'}`}
+      className={`opening-result rarity-${opening.reward.rarity}`}
     >
-      <p className="eyebrow">Your reward</p>
+      <p className="eyebrow">YOU WON</p>
       <div className="result-art">
         {winnerEntry.rewardVersion.imageUrl === null ? (
           <div className="result-gift gift" aria-hidden="true">
@@ -993,43 +922,17 @@ export const OpeningExperience = ({
       <h2 id="opening-result-heading" ref={resultHeading} tabIndex={-1}>
         {winnerEntry.rewardVersion.name}
       </h2>
-      <p className="rarity-name">{rarityLabel(winnerEntry.rarity)}</p>
-      <p>
-        Opened {committedCatalog.version.name}, published version{' '}
-        {committedCatalog.version.versionNumber.toString()}
-        {'cost' in opening ? (
-          <>
-            , for{' '}
-            <strong>{formatMinorUnits(opening.cost.priceMinor, opening.cost.currency)}</strong>
-          </>
-        ) : (
-          <> using one Drop entitlement</>
-        )}
-        .
+      <p className="rarity-name">
+        {rarityLabel(winnerEntry.rarity)} ·{' '}
+        {formatProbability(winnerEntry.weight, committedCatalog.manifest.totalWeight)} chance
       </p>
       <p>
-        Exact odds:{' '}
         <strong>
-          {formatProbability(winnerEntry.weight, committedCatalog.manifest.totalWeight)}
-        </strong>{' '}
-        ({winnerEntry.weight} / {committedCatalog.manifest.totalWeight})
+          {opening.entitlement.remaining} {opening.entitlement.remaining === '1' ? 'Drop' : 'Drops'}{' '}
+          remaining
+        </strong>
       </p>
-      <p>
-        {'pointsAwarded' in opening ? (
-          <>
-            <strong>+{opening.pointsAwarded.toString()} points</strong> ·{' '}
-          </>
-        ) : (
-          <>
-            <strong>
-              {opening.entitlement.remaining}{' '}
-              {opening.entitlement.remaining === '1' ? 'Drop' : 'Drops'} remaining
-            </strong>{' '}
-            ·{' '}
-          </>
-        )}
-        Fulfillment: {opening.fulfillmentStatus.replaceAll('_', ' ')}
-      </p>
+      <p>{fulfillmentLabel(opening.fulfillmentStatus)}</p>
       <FairnessProof api={api} opening={opening} />
       <button
         className="button secondary"
@@ -1040,7 +943,7 @@ export const OpeningExperience = ({
           setStage('idle');
         }}
       >
-        Open another
+        {opening.entitlement.remaining === '0' ? 'Done' : 'Open another Drop'}
       </button>
     </section>
   );

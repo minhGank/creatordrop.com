@@ -27,11 +27,7 @@ const NotFoundPage = lazy(async () => ({
   default: (await import('./pages/not-found-page.js')).NotFoundPage,
 }));
 
-export const AppRoutes = ({
-  testCreditsEnabled = false,
-}: {
-  readonly testCreditsEnabled?: boolean;
-}) => {
+export const AppRoutes = () => {
   const reducedMotion = usePrefersReducedMotion();
   return (
     <div data-reduced-motion={reducedMotion ? 'true' : 'false'}>
@@ -40,10 +36,7 @@ export const AppRoutes = ({
           <Routes>
             <Route path="/" element={<HomePage />} />
             <Route path="/auth" element={<AuthPage />} />
-            <Route
-              path="/account"
-              element={<AccountPage testCreditsEnabled={testCreditsEnabled} />}
-            />
+            <Route path="/account" element={<AccountPage />} />
             <Route path="/creators" element={<CreatorListPage />} />
             <Route path="/creators/:customSlug" element={<CreatorDetailPage />} />
             <Route path="/creators/:customSlug/boxes/:boxId" element={<BoxDetailPage />} />
@@ -58,16 +51,14 @@ export const AppRoutes = ({
 export const App = ({
   apiClient,
   authClient,
-  testCreditsEnabled,
 }: {
   readonly apiClient: CreatorDropApiClient;
   readonly authClient: BrowserAuthClient;
-  readonly testCreditsEnabled: boolean;
 }) => (
   <BrowserRouter>
     <ApiProvider client={apiClient}>
       <SessionProvider apiClient={apiClient} authClient={authClient}>
-        <AppRoutes testCreditsEnabled={testCreditsEnabled} />
+        <AppRoutes />
       </SessionProvider>
     </ApiProvider>
   </BrowserRouter>

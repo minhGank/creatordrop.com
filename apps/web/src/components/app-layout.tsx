@@ -49,10 +49,7 @@ export const AppLayout = ({ children }: { readonly children: ReactNode }) => {
       )}
       <main id="main-content">{children}</main>
       <footer className="site-footer">
-        <p>
-          Published odds are immutable snapshots. Opening eligibility is always
-          server-authoritative.
-        </p>
+        <p>Every Drop uses published odds and a provably fair result.</p>
       </footer>
     </div>
   );

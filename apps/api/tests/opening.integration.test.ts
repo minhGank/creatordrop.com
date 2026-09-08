@@ -48,6 +48,7 @@ import {
 import type { ClientSeed, RngSeedSetId } from '../src/modules/fairness/fairness.js';
 import { FairnessConfirmationStaleError } from '../src/modules/fairness/fairness.errors.js';
 import {
+  BoxNotOpenableError,
   OpeningConfirmationStaleError,
   OpeningEntitlementRequiredError,
   OpeningRetryableError,
@@ -102,6 +103,9 @@ const applicationEnvironment = parseDatabaseEnvironment({
   DATABASE_URL: process.env.DATABASE_URL ?? localApplicationUrl,
 });
 const logger: Logger = { error: () => undefined, info: () => undefined };
+// Preserve the historical paid-opening invariant suite with an explicit, test-only opt-in.
+const createLegacyOpeningService = (options: Parameters<typeof createOpeningService>[0]) =>
+  createOpeningService({ ...options, allowLegacyPaidOpenings: true });
 const usd = parseCurrency('USD');
 const masterKeyHex = '0'.repeat(64);
 
@@ -271,7 +275,7 @@ describe('atomic box opening', { concurrent: false }, () => {
       policy: { maxAgeMs: 86_400_000, maxOpenings: 1000n },
     });
     wallets = createWalletService({ database, logger, testCreditsEnabled: true });
-    openings = createOpeningService({ database, fairnessService: fairness, logger });
+    openings = createLegacyOpeningService({ database, fairnessService: fairness, logger });
     fulfillments = createFulfillmentService({
       actorBindingProvider: createEnvironmentFulfillmentActorBindingProvider({
         keyHex: '33'.repeat(32),
@@ -713,6 +717,53 @@ describe('atomic box opening', { concurrent: false }, () => {
     }
   };
 
+  it('rejects new paid openings in the active service without mutating financial or opening state', async () => {
+    const creatorId = await createCreator();
+    const rewardVersionId = await createReward(creatorId, { mode: 'finite', quantity: '1' });
+    const box = await createBox(creatorId, rewardVersionId);
+    const user = await createUser('999');
+    const poolId = await inventoryPoolForVersion(rewardVersionId);
+    const activeOpenings = createOpeningService({ database, fairnessService: fairness, logger });
+    const command = {
+      boxId: box.boxId,
+      clientSeed: user.clientSeed,
+      ...(await openingExpectation(box.boxId, user)),
+      idempotencyKey: `opening_${randomUUID()}`,
+      requestId: randomUUID(),
+      userId: user.id,
+    };
+    const state = () =>
+      database.query(
+        `select
+         (select available_balance_minor::text from app.wallets where user_id = $1) as balance,
+         (select available_quantity::text from app.inventory_pools where id = $2) as quantity,
+         (select next_nonce::text from app.rng_seed_sets
+            where user_id = $1 and status = 'active') as nonce,
+         (select count(*)::text from app.idempotency_records
+            where actor_user_id = $1 and operation = 'box.open') as idempotency,
+         (select count(*)::text from app.box_opens where user_id = $1) as openings,
+         (select count(*)::text from app.reward_wins where user_id = $1) as wins,
+         (select count(*)::text from app.ledger_transactions
+            where actor_user_id = $1) as ledger,
+         (select count(*)::text from app.event_outbox
+            where aggregate_id in (select id from app.box_opens where user_id = $1)) as events`,
+        [user.id, poolId],
+      );
+    const before = await state();
+    await expect(activeOpenings.openBox(command)).rejects.toBeInstanceOf(BoxNotOpenableError);
+    await expect(activeOpenings.openBox(command)).rejects.toBeInstanceOf(BoxNotOpenableError);
+    expect((await state()).rows).toEqual(before.rows);
+
+    // Historical replay is still allowed after retirement, without a second debit or nonce.
+    const historical = await openings.openBox(command);
+    const afterHistorical = await state();
+    expect(await activeOpenings.openBox(command)).toEqual({ ...historical, replayed: true });
+    expect((await state()).rows).toEqual(afterHistorical.rows);
+    await expect(
+      activeOpenings.openBox({ ...command, clientSeed: 'ff'.repeat(32) as ClientSeed }),
+    ).rejects.toBeInstanceOf(IdempotencyKeyReusedError);
+  });
+
   it('commits one balanced opening, fee/earnings/points/outbox, and exact replay', async () => {
     const creatorId = await createCreator();
     const rewardVersionId = await createReward(creatorId, { mode: 'unlimited' });
@@ -781,7 +832,7 @@ describe('atomic box opening', { concurrent: false }, () => {
     ]);
 
     const changedFeeUser = await createUser('999');
-    const changedFeeOpening = await createOpeningService({
+    const changedFeeOpening = await createLegacyOpeningService({
       database,
       fairnessService: fairness,
       logger,
@@ -883,7 +934,18 @@ describe('atomic box opening', { concurrent: false }, () => {
          from app.wallets where user_id = $1 and currency = 'USD'`,
       [user.id],
     );
-    const result = await open(user, box.boxId);
+    const result = await createOpeningService({
+      database,
+      fairnessService: fairness,
+      logger,
+    }).openBox({
+      boxId: box.boxId,
+      clientSeed: user.clientSeed,
+      ...(await openingExpectation(box.boxId, user)),
+      idempotencyKey: `opening_${randomUUID()}`,
+      requestId: randomUUID(),
+      userId: user.id,
+    });
     expect(result.replayed).toBe(false);
     if (!('openingCompatibilityVersion' in result.body.opening)) {
       throw new Error('Expected an opening-v2 response.');
@@ -1117,12 +1179,12 @@ describe('atomic box opening', { concurrent: false }, () => {
     const user = await createUser('1');
     await grantOpeningEntitlement(user.id, creatorId, box.boxId, 2n);
 
-    const firstService = createOpeningService({
+    const firstService = createLegacyOpeningService({
       database: firstConcurrencyDatabase,
       fairnessService: fairness,
       logger,
     });
-    const secondService = createOpeningService({
+    const secondService = createLegacyOpeningService({
       database: secondConcurrencyDatabase,
       fairnessService: fairness,
       logger,
@@ -1168,12 +1230,12 @@ describe('atomic box opening', { concurrent: false }, () => {
     const user = await createUser('1');
     const firstGrantId = await grantOpeningEntitlement(user.id, creatorId, box.boxId, 1n);
 
-    const firstService = createOpeningService({
+    const firstService = createLegacyOpeningService({
       database: firstConcurrencyDatabase,
       fairnessService: fairness,
       logger,
     });
-    const secondService = createOpeningService({
+    const secondService = createLegacyOpeningService({
       database: secondConcurrencyDatabase,
       fairnessService: fairness,
       logger,
@@ -1252,7 +1314,7 @@ describe('atomic box opening', { concurrent: false }, () => {
     const user = await createUser('1');
     await grantOpeningEntitlement(user.id, creatorId, box.boxId, 2n);
     const key = `opening_${randomUUID()}`;
-    const service = createOpeningService({ database, fairnessService: fairness, logger });
+    const service = createLegacyOpeningService({ database, fairnessService: fairness, logger });
 
     const results = await Promise.all([
       openWith(service, user, box.boxId, key),
@@ -1285,7 +1347,7 @@ describe('atomic box opening', { concurrent: false }, () => {
     const box = await createOpeningV2Box(creatorId, rewardVersionId);
     const user = await createUser('1');
     await grantOpeningEntitlement(user.id, creatorId, box.boxId, 1n);
-    const failingService = createOpeningService({
+    const failingService = createLegacyOpeningService({
       database,
       fairnessService: {
         selectForOpening: async (transaction, input) => {
@@ -1355,12 +1417,12 @@ describe('atomic box opening', { concurrent: false }, () => {
     const secondUser = await createUser('1');
     await grantOpeningEntitlement(firstUser.id, creatorId, box.boxId, 1n);
     await grantOpeningEntitlement(secondUser.id, creatorId, box.boxId, 1n);
-    const firstService = createOpeningService({
+    const firstService = createLegacyOpeningService({
       database: firstConcurrencyDatabase,
       fairnessService: fairness,
       logger,
     });
-    const secondService = createOpeningService({
+    const secondService = createLegacyOpeningService({
       database: secondConcurrencyDatabase,
       fairnessService: fairness,
       logger,
@@ -1387,12 +1449,12 @@ describe('atomic box opening', { concurrent: false }, () => {
     const secondUser = await createUser('1');
     await grantOpeningEntitlement(firstUser.id, creatorId, box.boxId, 1n);
     await grantOpeningEntitlement(secondUser.id, creatorId, box.boxId, 1n);
-    const firstService = createOpeningService({
+    const firstService = createLegacyOpeningService({
       database: firstConcurrencyDatabase,
       fairnessService: fairness,
       logger,
     });
-    const secondService = createOpeningService({
+    const secondService = createLegacyOpeningService({
       database: secondConcurrencyDatabase,
       fairnessService: fairness,
       logger,
@@ -1478,7 +1540,7 @@ describe('atomic box opening', { concurrent: false }, () => {
     const user = await createUser('999');
     const poolId = await inventoryPoolForVersion(rewardVersionId);
     let selectorCalls = 0;
-    const failingOpenings = createOpeningService({
+    const failingOpenings = createLegacyOpeningService({
       database,
       fairnessService: {
         selectForOpening: async (transaction, input) => {
@@ -1553,7 +1615,7 @@ describe('atomic box opening', { concurrent: false }, () => {
     const user = await createUser('1');
     const poolId = await inventoryPoolForVersion(rewardVersionId);
     let selectorCalls = 0;
-    const guardedOpenings = createOpeningService({
+    const guardedOpenings = createLegacyOpeningService({
       database,
       fairnessService: {
         selectForOpening: async (transaction, input) => {
@@ -1603,7 +1665,7 @@ describe('atomic box opening', { concurrent: false }, () => {
     const originalExpectation = await openingExpectation(box.boxId, user);
     const poolId = await inventoryPoolForVersion(rewardVersionId);
     let selectorCalls = 0;
-    const guardedOpenings = createOpeningService({
+    const guardedOpenings = createLegacyOpeningService({
       database,
       fairnessService: {
         selectForOpening: async (transaction, input) => {
@@ -3102,12 +3164,12 @@ describe('atomic box opening', { concurrent: false }, () => {
         return result;
       },
     });
-    const firstOpenings = createOpeningService({
+    const firstOpenings = createLegacyOpeningService({
       database: firstConcurrencyDatabase,
       fairnessService: coordinatedFairness(0, firstSelection),
       logger,
     });
-    const secondOpenings = createOpeningService({
+    const secondOpenings = createLegacyOpeningService({
       database: secondConcurrencyDatabase,
       fairnessService: coordinatedFairness(1, secondSelection),
       logger,
