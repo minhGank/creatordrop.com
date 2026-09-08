@@ -72,6 +72,131 @@ Initialization accepts an exact empty JSON object. It atomically creates the fai
 
 Rotation requires an 8–128 character allowlisted `Idempotency-Key` and an empty body/query. It locks the user's fairness/active-seed state, retires the old row, activates a fresh commitment at nonce `0`, and records the operation type/reason fingerprint and old/new relationship atomically. Same-key/same-intent retries replay; reuse for a different transition conflicts. Phase 7 exposes the authenticated lifecycle service primitive for eligible retirement reveal; automatic scheduling remains deferred. Active ciphertext, IV, authentication tag, key material, and raw server seed are never response fields.
 
+## R2A entry methods and manual claims
+
+These are additive APIs, not an opening or RNG version change. `entry-policy-v1` is separate from
+`opening-v2`; all strategies are `manual_evidence`. A pending claim means **submitted proof**, not
+provider-verified completion. Actor/reviewer IDs and grant IDs are always server-derived.
+
+The platform registry returned by `GET /v1/entry-platforms` has this supported action matrix:
+
+| Platform    | Supported actions                                                         |
+| ----------- | ------------------------------------------------------------------------- |
+| `instagram` | `follow_account`, `like_post`, `comment_post`, `share_post`               |
+| `youtube`   | `subscribe_channel`, `like_video`, `comment_video`, `paid_channel_member` |
+| `twitch`    | `follow_channel`, `paid_subscription`                                     |
+| `tiktok`    | `follow_account`, `like_video`, `comment_video`, `share_video`            |
+| `facebook`  | `follow_page`, `like_post`, `comment_post`, `share_post`                  |
+| `commerce`  | `previous_purchase`                                                       |
+| `custom`    | `manual_requirement`                                                      |
+
+Unsupported combinations and arbitrary actions are rejected. New harmless registry additions do
+not require a schema migration; they still require validation and compatibility review.
+
+All paths below start with `/v1`. `C` means `/creators/:creatorId`, `B` means `/boxes/:boxId`,
+and `M` means `C/boxes/:boxId/entry-methods`.
+
+| Method | Path                                     | Authorization / result                                                                               |
+| ------ | ---------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| GET    | `/entry-platforms`                       | Public `{ platforms }` registry                                                                      |
+| GET    | `B/entry-methods`                        | Public `{ methods: EntryPolicySnapshot[] }`, enabled current policies for current active v2 box only |
+| GET    | `M`                                      | Creator member; `{ methods: EntryMethodContract[] }`, includes drafts                                |
+| POST   | `M`                                      | Owner/manager/editor; create draft, 201 `{ method }`                                                 |
+| PUT    | `M/:methodId/draft`                      | Owner/manager/editor; replace definition with revision precondition                                  |
+| POST   | `M/:methodId/publish`                    | Owner/manager; publish separate immutable policy with revision precondition                          |
+| PATCH  | `M/:methodId/availability`               | Owner/manager; enable/disable new submissions with revision precondition                             |
+| POST   | `B/entry-claims`                         | Active user; 201 `{ claim }` pending or matching idempotent replay                                   |
+| GET    | `/me/entry-claims/:claimId`              | Claim owner; `{ claim }` with exact policy and own evidence                                          |
+| GET    | `C/entry-claims`                         | Owner/manager; `{ claims }`, oldest 100 pending ordered by created time/ID                           |
+| GET    | `C/entry-claims/:claimId`                | Owner/manager in same creator; `{ claim }` with exact policy/evidence                                |
+| POST   | `C/entry-claims/:claimId/review`         | Owner/manager; `{ claim }` terminal decision                                                         |
+| POST   | `B/entry-evidence`                       | Active user; initialize private object metadata, 201 `{ evidence }`                                  |
+| POST   | `/me/entry-evidence/:evidenceId/content` | Evidence owner; raw PNG/JPEG upload, `{ evidence }`                                                  |
+| GET    | `/me/entry-evidence/:evidenceId/content` | Evidence owner; authenticated binary attachment                                                      |
+| GET    | `C/entry-evidence/:evidenceId/content`   | Owner/manager; binary attachment for evidence linked to submitted claim in this creator              |
+
+All query parameters and unknown body fields are rejected. JSON commands require
+`Content-Type: application/json`; binary upload requires `image/png` or `image/jpeg` and a maximum
+5 MiB body. Private responses use `Cache-Control: private, no-store`. Binary responses also set
+`Content-Disposition: attachment` and `X-Content-Type-Options: nosniff`; never public/signed URLs.
+Rate limits are a shared 200 requests/IP/minute, plus 30 writes or 120 reads/actor/minute for
+authenticated entry routes. These process-local limits are defense in depth; PostgreSQL owns
+claim limits. Storage also authorizes each request through RLS.
+
+Create/replace draft bodies contain exactly `{ "definition": ... }`. Example definition:
+
+```json
+{
+  "policyVersion": "entry-policy-v1",
+  "platform": "instagram",
+  "action": "like_post",
+  "verificationStrategy": "manual_evidence",
+  "title": "Like our announcement",
+  "instructions": "Submit your username and screenshot for human review.",
+  "targetReference": "https://instagram.com/p/synthetic-example",
+  "openingsGranted": "1",
+  "perUserClaimLimit": "1",
+  "evidenceRequirements": {
+    "platform_username": "required",
+    "profile_url": "not_applicable",
+    "order_reference": "not_applicable",
+    "screenshot": "required",
+    "note": "optional"
+  }
+}
+```
+
+Each evidence field must explicitly be required, optional or not applicable; at least one is
+required. Title/instructions are bounded at 120/2000 characters. Target references are nullable
+for commerce/custom; social platforms require an HTTPS URL on that platform's allowlisted host
+(including subdomains), no credentials or fragment, and no query except YouTube's `v` parameter.
+Treat public text as text, never HTML. Counts are canonical positive signed-64 decimal strings.
+Definitions reject tokens, credentials, fan evidence and other unknown properties.
+
+Methods return `id`, `creatorId`, `boxId`, `revision`, `enabled`, `draft` and nullable `published`.
+Use the returned revision as quoted `If-Match: "2"` for updates/publication/availability. Publish
+accepts `{ "boxVersionId": "<current published v2 UUID>" }`; availability accepts
+`{ "enabled": false }`. Missing preconditions return 428; stale revisions return 409. Creates
+follow the existing catalog create convention (no idempotency key). After an ambiguous method
+write, refresh the creator list before retrying. A publication includes policy `id`, method,
+creator, box and box-version IDs, `versionNumber`, `publishedAt` and `definition`.
+
+Screenshot flow:
+
+1. POST metadata `{ "policyId": "<UUID>", "mediaType": "image/png", "byteLength": 1234 }`.
+   The server returns only `{ evidence: { id, mediaType, byteLength, uploaded } }`.
+2. POST exact raw bytes to the own-evidence content route. No multipart path, arbitrary URL or
+   base64 JSON. The server validates and reads back the private object, binding its SHA-256 before
+   marking upload complete. Retry the same ID/bytes after an ambiguous failure; changed bytes
+   conflict. Incomplete registered uploads expire for Storage insertion after one hour.
+3. Submit `{ "policyId": "<UUID>", "evidence": { "platform_username": "synthetic_fan",
+"screenshot": "<opaque evidence UUID>" } }` with `Idempotency-Key` (8–128 characters from
+   letters, digits, `.`, `_`, `:`, `-`). Screenshot references must belong to the actor and exact
+   policy and be complete. Username/profile/order/note bounds are 120/2048/160/2000 characters;
+   profile URLs require HTTPS without embedded credentials. Required omissions and non-applicable
+   or unknown fields fail. Keys are durable per user; matching box/policy/evidence retries return
+   the same claim, different intent conflicts.
+4. The authorized reviewer reads the private claim and evidence and submits
+   `{ "decision": "approved", "note": "Optional private review note" }` or `rejected`.
+   Notes are optional/null or 1–2000 characters, persisted privately, never public policy fields.
+   A claimant cannot review their own claim, including when they are a creator owner or manager.
+
+A claim response contains `id`, creator/box/method/policy IDs, exact `policy`, `status`, submitted
+`evidence`, `createdAt`, and nullable `reviewedAt`. It does not expose grant IDs, reviewer notes,
+storage paths, credentials, or file bytes. There is no client-supplied user/reviewer/grant field.
+Pending claims reserve a stable-method slot; approved consumes it, rejected releases it. Existing
+pending claims retain their published rules after disablement/republication. Same terminal review
+decision replays the original decision and grant without overwriting reviewer/note; the opposite
+decision returns 409. Approval and exactly one existing R1 grant commit together, using frozen
+quantity and stable `entry_claim:<claimId>` identity. Review does not open the Drop or change odds.
+
+Stable errors: `ENTRY_INVALID_INPUT` (400), `ENTRY_FORBIDDEN` (403, known creator member without
+required role), `ENTRY_NOT_FOUND` (404, unknown/private cross-scope resource), `ENTRY_CONFLICT`,
+`ENTRY_CLAIM_LIMIT_REACHED`, `ENTRY_REVISION_CONFLICT`, `ENTRY_UNAVAILABLE` (409), and
+`ENTRY_STORAGE_UNAVAILABLE` (503). Existing authentication, 413 body-size, 415 content-type,
+428 precondition and 429 rate-limit errors also apply. No entry event is emitted to Socket.io.
+R2B will supply the polished creator/fan/reviewer UI; platform API automation is not implemented.
+
 ## Creators
 
 Phase 4 implements this private workspace surface:

@@ -39,6 +39,7 @@ const child = spawn(
     '--config',
     'vitest.integration.config.ts',
     '--passWithNoTests',
+    ...process.argv.slice(2),
   ],
   {
     env: {

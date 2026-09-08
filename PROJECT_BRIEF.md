@@ -21,5 +21,8 @@ percentage odds and keeps raw proof details optional.
 
 The retired paid `opening-v1` model, wallet/ledger records, funding history, migrations, and proof
 parsers remain immutable compatibility and audit history. They are not active fan product
-surfaces. Entry claims, XP/levels, Universal Entries, creator SaaS billing, and the creator
-management redesign remain future roadmap work.
+surfaces. R2A adds Platform → Action → creator entry methods, separately versioned immutable
+eligibility policies, private submitted proof, and owner/manager manual review. Only an approved
+claim atomically grants R1 opening entitlements; submitted evidence is not automatic verification.
+The polished entry configuration/claim/review UI (R2B), provider automation, XP/levels, Universal
+Entries, creator SaaS billing, and the creator management redesign remain future roadmap work.

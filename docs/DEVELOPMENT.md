@@ -10,13 +10,17 @@ The Supabase CLI is a lockfile-pinned development dependency. No global CLI inst
 
 ## Local PostgreSQL and Auth workflow
 
-Start the minimal Supabase stack required by Phases 3–5:
+Start the minimal Supabase stack required by the active product:
 
 ```bash
 npm run db:start
 ```
 
-This starts PostgreSQL, Supabase Auth, and the local API gateway. Realtime, storage, PostgREST, Studio, Edge Runtime, analytics, the pooler, and mail services remain excluded. This project is local-only: no Supabase login, hosted project, link, or cloud mutation is used.
+This starts PostgreSQL, Supabase Auth, private Storage (R2A), and the local API gateway. Realtime,
+image transformation, PostgREST, Studio, Edge Runtime, analytics, the pooler, and mail services
+remain excluded. This project is local-only: no Supabase login, hosted project, link, or cloud
+mutation is used. If an older minimal stack is already running without Storage, stop with
+`npx supabase stop --workdir infra` (keeps a local backup), then run `npm run db:start` again.
 
 Copy `.env.example` to `.env` if local overrides are needed. The default integration-test URLs connect to PostgreSQL on port `54322`; Auth/JWKS are exposed through the local gateway on port `54321`. The application URL assumes the restricted `creatordrop_app` role through a local `postgres` connection. Production must use separately provisioned credentials and must never reuse these local values.
 
@@ -63,7 +67,8 @@ adds typed fulfillment, protected delivery data, audited creator access, and man
 restock events. Phase 13 adds disposable Redis leaderboards/public catalog cache plus authoritative
 PostgreSQL seasons/champion achievements. R1A–R1C add the free-entry `opening-v2` model and atomic
 entitlements, then retire active fan wallet/funding routes and UI while preserving the Phase 8–11
-schema and code for historical v1 audit/regression needs. Claims, XP, creator SaaS billing, payout,
+schema and code for historical v1 audit/regression needs. R2A adds manual entry claims, private
+evidence and exactly-once approval grants. XP, creator SaaS billing, payout,
 carrier integration, automatic restock/box resume, currency conversion, and leaderboard UI remain
 absent.
 
@@ -84,6 +89,42 @@ npm run test:integration
 Tests connect to real PostgreSQL. Foundation transaction tests use dedicated PostgreSQL sessions and session-private temporary tables. Identity, creator-tenancy, and catalog tests use local Supabase Auth and production migrations. Wallet tests use unique synthetic users plus independent one-connection pools and PostgreSQL lock-graph barriers to prove same-wallet serialization, different-wallet concurrency, exact-once idempotency, rollback, balancing, immutability, and reconciliation. The upgrade harness applies Phase 8 over representative completed Phase 7 history in an isolated temporary database. The test runner reads the local publishable key from `supabase status` in memory and does not print or commit it.
 
 `npm test` excludes `*.integration.test.ts`; unit tests never silently require PostgreSQL.
+
+## R2A private entry evidence and API testing
+
+Configure `ENTRY_STORAGE_URL` (local `http://127.0.0.1:54321/storage/v1`) and
+`ENTRY_STORAGE_PUBLISHABLE_KEY` from the local Supabase publishable/anon key. Never use a secret
+or service-role key. Storage must use the same origin as `AUTH_JWT_ISSUER`, path `/storage/v1`,
+HTTPS except local loopback, with no embedded credentials/query/fragment. This integration uses
+Supabase Auth identities (`AUTH_PROVIDER=supabase`), and forwards the verified caller JWT to
+Storage; there is no server-side service-role bypass. Production must provision the matching
+Storage bucket/policies and existing actor-binding signing key lifecycle before enabling the API.
+The entry command signer reuses `FULFILLMENT_ACTOR_BINDING_KEY` and its version under a distinct
+message domain; the signing secret is never sent to Storage, browser or logs.
+
+The pinned local Storage API supports operation-aware RLS helpers. The private bucket permits
+only registered PNG/JPEG objects up to 5 MiB and authenticated downloads. No signed URLs,
+listings, overwrite or deletion are enabled. The API does not decode/transform images, scan
+malware, compare screenshots, or perform provider verification. Abandoned objects and synthetic
+test evidence require a later retention/cleanup policy before production operation; do not turn
+the bucket public to inspect them.
+
+Run the focused real-provider tests with:
+
+```bash
+npm run test:integration -- apps/api/tests/entry.integration.test.ts
+```
+
+The integration runner obtains the local public key in memory. Entry tests create isolated UUID
+fixtures and synthetic Auth users, use production migrations and the restricted runtime role,
+and retain synthetic rows/objects until the next local reset. They prove independent-connection
+concurrency using PostgreSQL lock-graph barriers, failed-grant rollback, immutable snapshots,
+private Storage and a full Instagram username/screenshot HTTP approval flow. They also consume an
+approved grant through unchanged R1 opening-v2. Run `npm run ci` for the full suite; it resets local
+database data before integration testing. No hosted resource or real evidence is needed.
+
+See [API.md](./API.md#r2a-entry-methods-and-manual-claims) for request shapes and authorization.
+The fan/configuration/review UI is intentionally deferred to R2B; no debug UI is required.
 
 ## Deterministic RNG and verifier
 

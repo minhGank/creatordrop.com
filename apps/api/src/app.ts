@@ -24,6 +24,8 @@ import { createLeaderboardRouter } from './modules/leaderboards/leaderboard.rout
 import type { LeaderboardService } from './modules/leaderboards/leaderboard.service.js';
 import { createOpeningRouter } from './modules/openings/opening.route.js';
 import type { OpeningService } from './modules/openings/opening.service.js';
+import type { EntryService } from './modules/entries/entry.service.js';
+import { createEntryRouter } from './modules/entries/entry.route.js';
 
 const sendStatus =
   (status: ServiceStatusResponse['status']) =>
@@ -40,6 +42,7 @@ export interface AppOptions {
   readonly logger: Logger;
   readonly leaderboardService?: LeaderboardService;
   readonly openingService?: OpeningService;
+  readonly entryService?: EntryService;
   readonly publicCatalogService?: PublicCatalogService;
   readonly security: {
     readonly allowedOrigins: readonly string[];
@@ -64,6 +67,7 @@ export const createApp = ({
   leaderboardService,
   logger,
   openingService,
+  entryService,
   publicCatalogService,
   security,
 }: AppOptions): Express => {
@@ -75,6 +79,8 @@ export const createApp = ({
   app.use(helmet());
   app.use(cors(createCorsOptions(security.allowedOrigins)));
   app.use(express.json({ limit: security.requestBodyLimitBytes }));
+  if (entryService !== undefined)
+    app.use('/v1', createEntryRouter({ authenticate, service: entryService }));
   app.get('/health', sendStatus('ok'));
   app.get('/ready', sendStatus('ready'));
   if (leaderboardService !== undefined) {

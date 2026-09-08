@@ -171,11 +171,21 @@ free confirmation, consumer reward/fulfillment copy, and collapsed fairness veri
 financial fields or raw implementation details. `opening-v1` backend behavior, proof parsing,
 immutable financial records, migrations, and audit/regression code remain preserved.
 
-### R2 — Entry claims & manual verification (planned)
+### R2A — Entry methods, claims & manual verification ✅
 
-Planned: screenshot evidence, authoritative usernames/handles, proof-review records, and creator
-approval/rejection workflows. Provider-specific Twitch, YouTube, Instagram, or Shopify integration
-requires its own approved design rather than being inferred by R1A.
+Completed after full CI validation: typed Platform → Action registry, creator-scoped revisioned methods,
+immutable separate `entry-policy-v1` publications, typed private submitted proof, Supabase private
+screenshots, PostgreSQL-authoritative pending/approved claim limits, owner/manager terminal review,
+and atomic exactly-once R1 entitlement grants. No RNG manifest/hash or opening behavior changes.
+Real PostgreSQL/Storage tests cover the full Instagram HTTP flow, concurrent submissions/reviews,
+rollback, private evidence access, effective role privileges, and unchanged R1 opening consumption.
+
+### R2B — Entry configuration, fan claims & review UI (planned)
+
+Polished platform/action chooser, creator configuration, fan proof submission/status flow, and
+responsive/accessible reviewer inbox remain deferred. Usernames/screenshots are submitted proof,
+not automatic verification. Provider-specific Twitch, YouTube, Instagram, TikTok, Facebook or
+Shopify integration and platform-team review authority require separate approved designs.
 
 ### R3 — XP, levels & Universal Entries (planned)
 

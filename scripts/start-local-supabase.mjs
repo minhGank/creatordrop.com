@@ -2,7 +2,6 @@ import { spawn } from 'node:child_process';
 
 const excludedServices = [
   'realtime',
-  'storage-api',
   'imgproxy',
   'mailpit',
   'postgrest',
@@ -35,7 +34,9 @@ child.once('error', () => {
 
 child.once('exit', (code) => {
   if (code === 0) {
-    process.stdout.write('Local Supabase PostgreSQL and Auth services are ready.\n');
+    process.stdout.write(
+      'Local Supabase PostgreSQL, Auth, and private Storage services are ready.\n',
+    );
     return;
   }
 

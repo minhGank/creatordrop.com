@@ -36,6 +36,81 @@ product and unregisters fan wallet, test-credit, funding-intent, and Stripe fund
 from normal API composition. Historical financial data, migrations, services, and v1 parsers are
 preserved for compatibility and audit; they are not active fan product surfaces.
 
+### R2A entry methods and manual-evidence authority
+
+The typed contract registry models Platform → supported Action → creator entry method. Only
+`manual_evidence` is operational: usernames, screenshots, purchase references, and other proof are
+fan assertions until a creator owner/manager reviews them. There is no scraping, OAuth/provider
+verification, external-payment accounting, or new platform-admin role.
+
+A method has a stable creator/box identity, an optimistic draft revision, and an enabled flag.
+Owner/manager/editor may edit drafts; owner/manager may publish or change availability. Publication
+creates an immutable `entry-policy-v1` snapshot bound to the currently published `opening-v2` box
+version. Updating a draft leaves its old publication intact. Publishing new rules replaces only
+the method's current-policy pointer; old snapshots and claims remain immutable. Republishing a
+box requires republishing its entry methods against the new box version before new claims.
+Eligibility is **not** an RNG input: no `opening-v2` manifest, configuration hash, selector,
+fairness proof, inventory rule, or historical version changes.
+
+Evidence requirements explicitly mark each of `platform_username`, `profile_url`,
+`order_reference`, `screenshot`, and `note` as required, optional, or not applicable. Unknown
+fields fail validation. Quantities and limits are positive signed-64 integers serialized as
+decimal strings. Public policy DTOs contain configuration only; submitted evidence and review
+notes are absent from public catalog, events, caches, and logs.
+
+Submission creates `pending`, never a grant. Pending reserves a slot; approved consumes it
+permanently; rejected releases it. The count spans all publications of the stable method. A lower
+new limit does not revoke prior claims, but blocks new submissions while their count reaches it.
+Claims use durable user-scoped idempotency keys: exact box/policy/evidence replay returns the
+same current claim; different intent conflicts, even after terminal review or method disablement.
+Non-rejected order references are unique within a creator, normalized with PostgreSQL
+`upper(btrim(...))`, across users and methods. This is obvious-reference duplicate detection, not
+screenshot matching, payment validation, or fraud detection.
+
+Review requires a currently active local actor and creator membership with owner/manager role. A
+claimant cannot review their own claim, even when they are also an owner or manager.
+The private claim read includes its exact frozen policy. One transaction records the terminal
+decision, immutable review/audit record, and, for approval, invokes the existing R1 entitlement
+grant primitive with frozen quantity and source `entry_claim:<claimId>`. Deferred checks require
+the approved claim, review, and exact grant to agree in both directions. Rejection has no grant.
+Same-decision retries return the first decision without replacing its reviewer/note; the opposite
+decision conflicts. Pending claims remain reviewable under their original policy after method
+disablement or republication. No network call or opening/RNG work occurs in this transaction.
+
+R2A lock order at `READ COMMITTED`:
+
+- Creator configuration: creator shared lock (serializes membership changes) → method update
+  lock → current box shared lock for publication.
+- Submission: actor submission guard → method shared lock → user/stable-method claim guard →
+  immutable claim insert. The first guard serializes user-scoped idempotency across methods.
+- Review: creator shared lock → user/stable-method claim guard → claim update lock → existing
+  R1 immutable entitlement grant. It neither acquires the opening-consumption guard nor consumes
+  an entitlement. PostgreSQL uniqueness also serializes cross-user order-reference duplicates.
+
+The restricted runtime role cannot read/write entry tables or invoke the operator grant directly.
+Allowlisted security-definer entry commands require a 30-second, actor/operation/exact-payload-bound
+HMAC capability. They reuse the existing fulfillment actor-key lifecycle with a separate
+`creatordrop:entry-command:v1` domain, and recheck actor/membership in PostgreSQL. The key is not
+readable by the runtime role. Caller-owned transactions include DTO validation before commit.
+
+Screenshot storage uses Supabase's private `entry-evidence` bucket and generated opaque UUID
+names. API initialization binds user, creator, box, and exact policy before upload. PNG/JPEG only,
+maximum 5 MiB, metadata/byte-count and image-signature checks; the API reads back and hashes stored
+bytes before marking immutable evidence complete. No arbitrary path, public URL, service key, or
+binary database column is accepted. Uploads and bounded, timed authenticated downloads occur
+outside database transactions using the caller's verified Supabase JWT and a publishable key.
+Incomplete uploads cannot enter claims; same-byte upload retries converge without overwrite.
+
+Storage RLS independently checks active users and ownership or owner/manager membership for a
+submitted claim. Operation-aware policies allow object upload and authenticated download only:
+listing, signed download/upload URLs, public reads, overwrite, and deletion are not granted.
+API evidence reads also append a private authorization-access audit event, then return an
+attachment with `private, no-store` and `nosniff`; this event records authorization, not proof of
+completed delivery. Direct authorized Storage downloads remain RLS-controlled but do not produce
+that API audit event. Membership revocation is checked on each Storage request. File signatures
+are not a full image decoder or malware scanner. Abandoned upload retention/cleanup, advanced
+abuse controls, and platform-team review authorization require later policy work.
+
 ### One currency per wallet and integer amounts
 
 All monetary amounts are signed 64-bit integer minor units plus an ISO 4217 currency code. No floating point is permitted. A wallet is unique by owner and currency. The ledger uses balanced postings, and the wallet balance is an atomically maintained projection guarded by a non-negative constraint.

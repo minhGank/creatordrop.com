@@ -2,6 +2,7 @@ import {
   assertCryptographicKeySeparation,
   parseApiEnvironment,
   parseDatabaseEnvironment,
+  parseEntryStorageEnvironment,
   parseFulfillmentEnvironment,
   parseRngEnvironment,
   type ApiEnvironment,
@@ -11,6 +12,7 @@ import {
 } from '@creatordrop/config';
 
 export const getApiEnvironment = (): ApiEnvironment => parseApiEnvironment(process.env);
+export const getEntryStorageEnvironment = () => parseEntryStorageEnvironment(process.env);
 
 export const getDatabaseEnvironment = (): DatabaseEnvironment =>
   parseDatabaseEnvironment(process.env);

@@ -11,6 +11,7 @@ import {
 import { createApp } from './app.js';
 import {
   getApiEnvironment,
+  getEntryStorageEnvironment,
   getDatabaseEnvironment,
   getFulfillmentEnvironment,
   getRngEnvironment,
@@ -31,6 +32,9 @@ import { createEnvironmentFulfillmentActorBindingProvider } from './modules/fulf
 import { createEnvironmentFulfillmentKeyProvider } from './modules/fulfillment/fulfillment.key-provider.js';
 import { createFulfillmentService } from './modules/fulfillment/fulfillment.service.js';
 import { createOpeningService } from './modules/openings/opening.service.js';
+import { createEntryService } from './modules/entries/entry.service.js';
+import { createEntryActorSigner } from './modules/entries/entry.actor-binding.js';
+import { createSupabaseEntryStorage } from './modules/entries/entry.storage.js';
 import { createLeaderboardRepository } from './modules/leaderboards/leaderboard.repository.js';
 import { createLeaderboardService } from './modules/leaderboards/leaderboard.service.js';
 import { createRealtimeServer } from './platform/realtime/realtime.server.js';
@@ -100,6 +104,14 @@ const fairnessService = createFairnessService({
   },
 });
 const openingService = createOpeningService({ database, fairnessService, logger });
+const entryService = createEntryService({
+  database,
+  signer: createEntryActorSigner({
+    keyHex: fulfillmentEnvironment.actorBinding.keyHex,
+    keyVersion: fulfillmentEnvironment.actorBinding.version,
+  }),
+  storage: createSupabaseEntryStorage(getEntryStorageEnvironment()),
+});
 const fulfillmentService = createFulfillmentService({
   actorBindingProvider: createEnvironmentFulfillmentActorBindingProvider({
     keyHex: fulfillmentEnvironment.actorBinding.keyHex,
@@ -130,6 +142,7 @@ const app = createApp({
   leaderboardService,
   logger,
   openingService,
+  entryService,
   publicCatalogService,
   security: {
     allowedOrigins: environment.corsAllowedOrigins,

@@ -74,6 +74,7 @@ import {
   FundingWebhookSignatureError,
 } from '../modules/payments/payment.errors.js';
 import { ApiError } from './errors.js';
+import { EntryError, entryErrorStatuses } from '../modules/entries/entry.errors.js';
 
 const hasErrorType = (value: unknown, expectedType: string): boolean =>
   typeof value === 'object' && value !== null && 'type' in value && value.type === expectedType;
@@ -89,6 +90,8 @@ const databaseErrorAttributes = (error: unknown): Readonly<Record<string, string
 };
 
 const normalizeError = (error: unknown): ApiError => {
+  if (error instanceof EntryError)
+    return new ApiError(entryErrorStatuses[error.code], error.code, error.message);
   if (error instanceof ApiError) {
     return error;
   }

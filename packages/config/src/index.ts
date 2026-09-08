@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { z } from 'zod';
+export { parseEntryStorageEnvironment } from './entry-storage.js';
 
 const runtimeModeSchema = z.enum(['development', 'test', 'production']);
 const maximumSignedBigint = 9_223_372_036_854_775_807n;
